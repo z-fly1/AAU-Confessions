@@ -647,8 +647,13 @@ async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMCont
     except (ValueError, IndexError): await callback_query.answer("Invalid data.", show_alert=True); return
 
     async with db.acquire() as conn: exists = await conn.fetchval("SELECT 1 FROM confessions WHERE id=$1 AND status='approved'", confession_id)
-    if not exists: await callback_query.answer("Confession not found/approved.", show_alert=True); try:await callback_query.message.edit_reply_markup(None);except Exception:pass; return
-
+        if not exists:
+    await callback_query.answer("Confession not found/approved.", show_alert=True)
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    return
     await state.update_data(confession_id=confession_id, parent_comment_id=None)
     await state.set_state(CommentForm.waiting_for_comment)
     await safe_send_message(callback_query.from_user.id, f"📝 Send comment for Confession #{confession_id}:")
