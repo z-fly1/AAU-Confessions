@@ -586,10 +586,10 @@ async def handle_reaction(callback_query: types.CallbackQuery):
     if kbd and action != "none":
         try: await callback_query.message.edit_reply_markup(reply_markup=kbd); await callback_query.answer(alert); logging.info(f"Updated markup comm {comm_id} after {action}")
         except TelegramBadRequest as e: err_str = str(e).lower();
-            if "message is not modified" in err_str: logging.info(f"Markup {comm_id} not modified."); await callback_query.answer(alert + " (No visual change)")
-            elif "message to edit not found" in err_str: logging.warning(f"Msg not found react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view not)", show_alert=False)
-            elif "query is too old" in err_str: logging.warning(f"Query old react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view stale)", show_alert=False)
-            else: logging.error(f"TG error update react markup {comm_id}: {e}"); await callback_query.answer("Error updating display.", show_alert=True)
+        if "message is not modified" in err_str: logging.info(f"Markup {comm_id} not modified."); await callback_query.answer(alert + " (No visual change)")
+        elif "message to edit not found" in err_str: logging.warning(f"Msg not found react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view not)", show_alert=False)
+        elif "query is too old" in err_str: logging.warning(f"Query old react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view stale)", show_alert=False)
+        else: logging.error(f"TG error update react markup {comm_id}: {e}"); await callback_query.answer("Error updating display.", show_alert=True)
         except Exception as e: logging.error(f"Unexpected error update react markup {comm_id}: {e}", exc_info=True); await callback_query.answer("Error updating display.", show_alert=True)
     elif action != "none": logging.error(f"Action {action} comm {comm_id} DB done, kbd build failed."); await callback_query.answer("Reaction processed (internal error).", show_alert=True)
 
