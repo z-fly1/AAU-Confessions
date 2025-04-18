@@ -1464,6 +1464,7 @@ async def handle_text_without_state(message: types.Message):
 
 # --- Main Execution ---
 async def main():
+    global ADMIN_ID
     # Perform environment variable check before setup
     missing_vars = []
     if not DATABASE_URL: missing_vars.append("DATABASE_URL")
@@ -1478,7 +1479,6 @@ async def main():
 
     try:
         # Validate ADMIN_ID format early
-        global ADMIN_ID
         ADMIN_ID = int(ADMIN_ID)
     except ValueError:
         logging.critical("FATAL: ADMIN_ID environment variable must be an integer.")
