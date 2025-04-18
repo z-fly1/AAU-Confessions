@@ -325,7 +325,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             # Determine display name for the *current* comment's author
             author_display = "(You)" if commenter_user_id == user_id else "" # Simpler "(You)" indicator
             # Format metadata including the sequence number
-            comment_metadata = f"<i>#{current_sequence_num} {author_display} | {timestamp}</i>"
+            comment_metadata = f"<i>#{current_sequence_num} #anonymous {author_display} | {timestamp}</i>"
 
             # Build keyboard
             keyboard = await build_comment_keyboard(comment_id)
