@@ -16,6 +16,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 from aiogram.utils.keyboard import InlineKeyboardBuilder # Use builder for dynamic keyboards
 from datetime import datetime # For formatting timestamps
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from typing import Optional
 
 # --- Constants ---
 CATEGORIES = [
