@@ -520,7 +520,8 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
     # ... (remains the same) ...
     try: parent_id = int(callback_query.data.split("_", 1)[1])
     except (ValueError, IndexError): logging.error(f"Invalid reply cb: {callback_query.data}"); await callback_query.answer("Invalid data.", show_alert=True); return
-    msg_id_reply_to = callback_query.message.message_id; async with db.acquire() as conn: comm_data = await conn.fetchrow("SELECT confession_id, text FROM comments WHERE id = $1", parent_id)
+    msg_id_reply_to = callback_query.message.message_id 
+    async with db.acquire() as conn: comm_data = await conn.fetchrow("SELECT confession_id, text FROM comments WHERE id = $1", parent_id)
     if not comm_data: await callback_query.answer("Original comment not found.", show_alert=True); await callback_query.message.edit_reply_markup(reply_markup=None); return
     conf_id = comm_data['confession_id']; preview = html.quote(comm_data['text'][:80]) + ('...' if len(comm_data['text']) > 80 else '')
     await state.update_data(confession_id=conf_id, parent_comment_id=parent_id, message_id_to_reply_to=msg_id_reply_to); await state.set_state(CommentForm.waiting_for_reply)
