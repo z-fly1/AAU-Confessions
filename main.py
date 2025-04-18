@@ -337,6 +337,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             # If not the author, check if it's the user browsing
             elif commenter_user_id == user_id:
                 author_tag = "(You)"
+            else:
+                author_tag = "Anonymous"
             # Construct the tag string (adds a space if a tag exists)
             display_tag = f" {author_tag}" if author_tag else ""
             # <<< --- END AUTHOR/YOU TAG LOGIC --- >>>
