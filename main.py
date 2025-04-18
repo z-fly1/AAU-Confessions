@@ -388,8 +388,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
              # If we started with a message to edit but FOUND comments (which were sent above), send a new message for the final prompt.
              await safe_send_message(user_id, end_text, reply_markup=add_comment_button, parse_mode=ParseMode.HTML)
              # Optionally delete the original message_to_edit (like the "Loading..." message)
-             try: await message_to_edit.delete()
-             except Exception: pass
         else:
             # If we didn't have an initial message to edit, just send the final prompt.
             await safe_send_message(user_id, end_text, reply_markup=add_comment_button, parse_mode=ParseMode.HTML)
