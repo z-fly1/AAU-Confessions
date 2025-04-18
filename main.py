@@ -414,11 +414,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         elif message_to_edit and comments:
              # If comments were found, we sent them individually. Send the final prompt as a new message.
              await safe_send_message(user_id, end_text, reply_markup=add_comment_button)
-             # Optionally delete the original "Loading..." message if message_to_edit was provided
-             try:
-                 await message_to_edit.delete()
-             except Exception:
-                 pass # Ignore if deletion fails
+             # Optionally delete the original "Loading..." message if message_to_edit was provi# Ignore if deletion fails
         else:
             # No message_to_edit provided, send the final prompt as a new message
             await safe_send_message(user_id, end_text, reply_markup=add_comment_button)
