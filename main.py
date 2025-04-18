@@ -647,7 +647,7 @@ async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMCont
     except (ValueError, IndexError): await callback_query.answer("Invalid data.", show_alert=True); return
 
     async with db.acquire() as conn: exists = await conn.fetchval("SELECT 1 FROM confessions WHERE id=$1 AND status='approved'", confession_id)
-        if not exists:
+    if not exists:
     await callback_query.answer("Confession not found/approved.", show_alert=True)
     try:
         await callback_query.message.edit_reply_markup(reply_markup=None)
