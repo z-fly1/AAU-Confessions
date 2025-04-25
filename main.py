@@ -457,9 +457,8 @@ async def show_help(message: types.Message):
     help_text = (
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
-        "🔹 /confess - Start the process to submit a new anonymous confession (+1🏅).\n"
+        "🔹 /confess - Start the process to submit a new anonymous confession.\n"
         "🔹 /start - Show the welcome message.\n"
-        "🔹 /start view_&lt;id&gt; - View a specific confession and its comments.\n"
         "🔹 /help - Display this help message.\n"
         "🔹 /privacy - View information about data privacy.\n\n"
         "Interact with comments using the buttons:\n"
@@ -467,7 +466,6 @@ async def show_help(message: types.Message):
         "↪️ Reply: Add a reply to a comment.\n"
         "⚠️ Report: Report a comment to the admin.\n"
         "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
-        "Your total medals (🏅) are shown next to your comments if > 0.\n\n"
         "Need to reach the admin directly?"
     )
     contact_admin_keyboard = InlineKeyboardMarkup(
@@ -1527,7 +1525,7 @@ async def main():
         if db and bot_info:
             commands_list = [
                 types.BotCommand(command="start", description="Start the bot / View confession"),
-                types.BotCommand(command="confess", description="Submit an anonymous confession (+1🏅)"),
+                types.BotCommand(command="confess", description="Submit an anonymous confession"),
                 types.BotCommand(command="help", description="Show help and commands"),
                 types.BotCommand(command="privacy", description="View privacy information"),
                 types.BotCommand(command="cancel", description="Cancel current action"),
