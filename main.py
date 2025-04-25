@@ -346,7 +346,10 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 # --- Handlers ---
 
 @dp.message(Command("start"))
-async def start(message: types.Message, command: CommandObject | None = None, state: FSMContext): # Added state
+# Corrected order
+async def start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
+    # ... rest of your function code
+    # Added state
     # --- *** ADDITION: Clear state on /start *** ---
     await state.clear() # Clear any lingering state when user types /start
     # --- *** END ADDITION *** ---
