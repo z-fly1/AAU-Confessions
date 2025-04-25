@@ -1,6 +1,6 @@
 # --- START OF FILE main.py ---
 
-# --- START OF FILE main[V2.0.1.8] - Stable.py --- # Added admin-only User ID view in comments
+# --- START OF FILE main[V2.1.0.0] - Medal & Report Features.py ---
 
 # --- START OF FILE main.py ---
 
@@ -20,13 +20,16 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any # Added Dict, Any
 
 # --- Constants ---
 CATEGORIES = [
     "Relationship", "Education", "Family", "School", "Friendship",
     "Religion", "Entertainment", "Information", "Sexual Assault", "Other"
 ]
+POINTS_PER_CONFESSION = 1
+POINTS_PER_LIKE_RECEIVED = 3
+POINTS_PER_DISLIKE_RECEIVED = -3 # Note: This is negative
 
 # Load environment variables at the top level
 load_dotenv()
@@ -45,7 +48,6 @@ try:
     ADMIN_ID = int(ADMIN_ID_STR)
 except ValueError:
     raise ValueError("FATAL: ADMIN_ID environment variable must be a valid integer!")
-
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -72,14 +74,13 @@ class CommentForm(StatesGroup):
 class ContactAdminForm(StatesGroup): # State for contacting admin
     waiting_for_message = State()
 
-# --- *** ADDITION: New FSM State for Admin Rejection Reason *** ---
 class AdminActions(StatesGroup):
     waiting_for_rejection_reason = State()
-# --- *** END ADDITION *** ---
 
+# --- *** ADDITION: FSM State for Report Confirmation (although not strictly needed as we use callbacks) *** ---
+# We can use callback data instead of FSM for simple confirmation flows like reporting.
 
 # --- Database ---
-# ... (Database setup code remains the same) ...
 db = None
 async def create_db_pool():
     try:
@@ -105,7 +106,6 @@ async def setup():
                 id SERIAL PRIMARY KEY, text TEXT NOT NULL, user_id BIGINT NOT NULL,
                 status VARCHAR(10) DEFAULT 'pending', message_id BIGINT, category VARCHAR(50),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                -- *** ADDITION: Optional column for rejection reason ***
                 rejection_reason TEXT NULL
             );
         """)
@@ -115,7 +115,6 @@ async def setup():
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='confessions' AND column_name='category') THEN ALTER TABLE confessions ADD COLUMN category VARCHAR(50); END IF;
                 IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='confessions' AND column_name='created_at' AND data_type != 'timestamp with time zone') THEN ALTER TABLE confessions ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE USING created_at AT TIME ZONE 'UTC'; ALTER TABLE confessions ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP; END IF;
                 COMMENT ON COLUMN confessions.category IS 'Category chosen by the user'; COMMENT ON COLUMN confessions.message_id IS 'Message ID of the post in the channel';
-                -- *** ADDITION: Add rejection_reason column if not exists ***
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='confessions' AND column_name='rejection_reason') THEN ALTER TABLE confessions ADD COLUMN rejection_reason TEXT NULL; END IF;
                 COMMENT ON COLUMN confessions.rejection_reason IS 'Reason provided by admin upon rejection (optional)';
             END $$;
@@ -154,11 +153,42 @@ async def setup():
             COMMENT ON COLUMN contact_requests.requested_user_id IS 'User ID of the commenter being asked for contact.'; COMMENT ON COLUMN contact_requests.status IS 'pending, approved, denied, approved_no_username';
         """)
         logging.info("Checked/Created 'contact_requests' table.")
+
+        # --- *** ADDITION: Create User Points Table *** ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_points (
+                user_id BIGINT PRIMARY KEY,
+                points INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_points_user_id ON user_points(user_id);
+            COMMENT ON TABLE user_points IS 'Stores medal points for each user.';
+            COMMENT ON COLUMN user_points.points IS 'Total points accumulated by the user.';
+        """)
+        logging.info("Checked/Created 'user_points' table and index.")
+
+        # --- *** ADDITION: Create Reports Table *** ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id SERIAL PRIMARY KEY,
+                comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+                reporter_user_id BIGINT NOT NULL,
+                reported_user_id BIGINT NOT NULL, -- ID of the user who wrote the comment
+                status VARCHAR(20) NOT NULL DEFAULT 'pending', -- e.g., pending, dismissed, action_taken
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (comment_id, reporter_user_id) -- Prevent duplicate reports
+            );
+            CREATE INDEX IF NOT EXISTS idx_reports_comment_id ON reports(comment_id);
+            CREATE INDEX IF NOT EXISTS idx_reports_reporter_user_id ON reports(reporter_user_id);
+            CREATE INDEX IF NOT EXISTS idx_reports_reported_user_id ON reports(reported_user_id);
+            COMMENT ON TABLE reports IS 'Stores user reports about comments.';
+            COMMENT ON COLUMN reports.reported_user_id IS 'User ID of the person who wrote the reported comment.';
+            COMMENT ON COLUMN reports.status IS 'Status of the report (pending, dismissed, action_taken).';
+        """)
+        logging.info("Checked/Created 'reports' table and indexes.")
+
         logging.info("Database tables setup complete.")
 
-
 # --- Helper Functions ---
-# ... (Most helper functions remain the same) ...
 def create_category_keyboard():
     builder = InlineKeyboardBuilder()
     for category in CATEGORIES:
@@ -179,19 +209,42 @@ async def get_comment_reactions(comment_id: int) -> Tuple[int, int]: # Added typ
             dislikes = counts['dislikes']
     return likes, dislikes
 
+# --- *** ADDITION: Helper to get user points *** ---
+async def get_user_points(user_id: int) -> int:
+    """Fetches the current points for a given user ID."""
+    async with db.acquire() as conn:
+        points = await conn.fetchval("SELECT points FROM user_points WHERE user_id = $1", user_id)
+        return points or 0 # Return 0 if user not found or points are null
 
+# --- *** ADDITION: Helper to update user points *** ---
+async def update_user_points(conn: asyncpg.Connection, user_id: int, delta: int):
+    """Atomically updates user points within a transaction."""
+    if delta == 0: return # No change needed
+    # Upsert operation: If user exists, add delta; otherwise, insert with delta.
+    await conn.execute("""
+        INSERT INTO user_points (user_id, points) VALUES ($1, $2)
+        ON CONFLICT (user_id) DO UPDATE SET points = user_points.points + $2
+        """, user_id, delta)
+    logging.debug(f"Updated points for user {user_id} by {delta}")
+
+# --- *** MODIFIED: build_comment_keyboard *** ---
 async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
     likes, dislikes = await get_comment_reactions(comment_id)
     builder = InlineKeyboardBuilder()
     builder.button(text=f"👍 {likes}", callback_data=f"react_like_{comment_id}")
     builder.button(text=f"👎 {dislikes}", callback_data=f"react_dislike_{comment_id}")
     builder.button(text="↪️ Reply", callback_data=f"reply_{comment_id}")
-    # Allow author to request contact UNLESS it's their own comment
+    # --- *** ADDITION: Report Button *** ---
+    builder.button(text="⚠️ Report", callback_data=f"report_confirm_{comment_id}")
+
+    # Determine layout based on whether the contact button is needed
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
         builder.button(text="🤝 Request Contact", callback_data=f"req_contact_{comment_id}")
-        builder.adjust(3, 1) # Adjust layout: 3 reaction/reply buttons, 1 contact button below
+        # Layout: Like/Dislike/Reply/Report (4) on top row, Contact (1) below
+        builder.adjust(4, 1)
     else:
-        builder.adjust(3) # Just the 3 buttons in one row
+        # Layout: Like/Dislike/Reply/Report (4) on one row
+        builder.adjust(4)
     return builder.as_markup()
 
 async def safe_send_message(user_id: int, text: str, **kwargs):
@@ -223,15 +276,15 @@ async def update_channel_post_button(confession_id: int):
         else: logging.error(f"Failed edit channel post {ch_msg_id} for conf {confession_id}: {e}")
     except Exception as e: logging.error(f"Unexpected err updating btn for conf {confession_id}: {e}", exc_info=True)
 
-
-# --- MODIFIED: show_comments_for_confession ---
-# ... (show_comments_for_confession remains the same, still shows admin UIDs) ...
+# --- *** MODIFIED: show_comments_for_confession *** ---
 async def show_comments_for_confession(user_id: int, confession_id: int, message_to_edit: Optional[types.Message] = None):
     """
-    Displays comments for a given confession.
-    If the viewer (user_id) is the ADMIN_ID, includes the commenter's User ID.
+    Displays comments for a given confession. Includes commenter's User ID for admin
+    and medal points for all users.
     """
     confession_owner_id: Optional[int] = None
+    comment_data_list: list[Dict[str, Any]] = [] # To store comment data including points
+
     async with db.acquire() as conn:
         conf_data = await conn.fetchrow("SELECT status, user_id FROM confessions WHERE id = $1", confession_id)
         if not conf_data or conf_data['status'] != 'approved':
@@ -243,37 +296,51 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             except Exception as e: logging.warning(f"Could not send/edit 'conf not found' to {user_id}: {e}")
             return
         confession_owner_id = conf_data['user_id']
-        comments = await conn.fetch(
-            "SELECT id, user_id, text, parent_comment_id, created_at FROM comments WHERE confession_id = $1 ORDER BY created_at ASC",
+
+        # Fetch comments
+        comments_raw = await conn.fetch(
+            """
+            SELECT c.id, c.user_id, c.text, c.parent_comment_id, c.created_at, COALESCE(up.points, 0) as user_points
+            FROM comments c
+            LEFT JOIN user_points up ON c.user_id = up.user_id
+            WHERE c.confession_id = $1
+            ORDER BY c.created_at ASC
+            """,
             confession_id
         )
+        comment_data_list = [dict(row) for row in comments_raw] # Convert records to dicts
 
     sent_msg_ids = {}; comment_id_to_seq = {}; counter = 0
     comments_html = ""
 
-    if not comments:
+    if not comment_data_list:
         comments_html = "<i>No comments yet. Be the first!</i>\n"
     else:
         comments_html = f"--- Comments for Confession #{confession_id} ---\n\n"
         temp_map = {}
 
-        for c_data in comments:
-            counter += 1
+        # First pass: Assign sequence numbers
+        for i, c_data in enumerate(comment_data_list):
+            counter = i + 1
             db_id = c_data['id']
             comment_id_to_seq[db_id] = counter
-            temp_map[db_id] = c_data
+            temp_map[db_id] = c_data # Use the dictionary directly
 
-        for c in comments:
-            comm_id = c['id']
+        # Second pass: Build and send messages
+        for c_data in comment_data_list:
+            comm_id = c_data['id']
             seq_num = comment_id_to_seq[comm_id]
-            commenter_uid = c['user_id'] # <<< The ID of the person who wrote this comment
-            comm_text = html.quote(c['text'])
-            ts = c['created_at'].strftime("%Y-%m-%d %H:%M")
+            commenter_uid = c_data['user_id']
+            comm_text = html.quote(c_data['text'])
+            ts = c_data['created_at'].strftime("%Y-%m-%d %H:%M")
+            # --- *** ADDITION: Get medal points *** ---
+            commenter_points = c_data['user_points'] # Already fetched
+            medal_str = f" 🏅{commenter_points}" if commenter_points > 0 else ""
 
             reply_prefix = ""
-            if c['parent_comment_id'] and c['parent_comment_id'] in comment_id_to_seq:
-                reply_prefix = f"↪️ <i>Replying to #{comment_id_to_seq[c['parent_comment_id']]}</i>\n"
-            elif c['parent_comment_id']:
+            if c_data['parent_comment_id'] and c_data['parent_comment_id'] in comment_id_to_seq:
+                reply_prefix = f"↪️ <i>Replying to #{comment_id_to_seq[c_data['parent_comment_id']]}</i>\n"
+            elif c_data['parent_comment_id']:
                 reply_prefix = f"↪️ <i>Replying to deleted comment</i>\n"
 
             tag = ""
@@ -282,7 +349,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 elif commenter_uid == user_id: tag = "(You)" # The viewer is the commenter
                 else: tag = "Anonymous"
             else: tag = "Anonymous"
-            display_tag = f" {tag}" if tag else " Anonymous"
+            # Add medal points to the tag
+            display_tag = f" {tag}{medal_str}" if tag else f" Anonymous{medal_str}"
 
             # --- Admin-only User ID display ---
             admin_info = ""
@@ -319,13 +387,13 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]
     ])
 
-    end_txt = f"--- End of comments for Confession #{confession_id} ---\n" if comments else comments_html
+    end_txt = f"--- End of comments for Confession #{confession_id} ---\n" if comment_data_list else comments_html
     end_txt += "\nYou can add your own comment below:"
 
     try:
-        if message_to_edit and not comments:
+        if message_to_edit and not comment_data_list:
             await message_to_edit.edit_text(end_txt, reply_markup=add_comm_btn, parse_mode=ParseMode.HTML)
-        elif message_to_edit and comments:
+        elif message_to_edit and comment_data_list:
             # Comments were sent as new messages, so send the end prompt as a new message too
             await safe_send_message(user_id, end_txt, reply_markup=add_comm_btn, parse_mode=ParseMode.HTML)
             # Try to remove the original "Loading..." text if possible
@@ -342,17 +410,11 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     except Exception as e:
         logging.warning(f"Could not send/edit final 'Add Comment' prompt to {user_id} for {confession_id}: {e}")
 
-
 # --- Handlers ---
 
 @dp.message(Command("start"))
-# Corrected order
 async def start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
-    # ... rest of your function code
-    # Added state
-    # --- *** ADDITION: Clear state on /start *** ---
     await state.clear() # Clear any lingering state when user types /start
-    # --- *** END ADDITION *** ---
 
     deep_link_args = command.args if command else None
     if deep_link_args and deep_link_args.startswith("view_"):
@@ -360,13 +422,21 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             conf_id = int(deep_link_args.split("_", 1)[1])
             logging.info(f"User {message.from_user.id} started via deep link for conf {conf_id}")
             async with db.acquire() as conn:
-                conf_data = await conn.fetchrow("SELECT text, category, status, user_id FROM confessions WHERE id = $1", conf_id)
-                comm_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", conf_id) or 0
+                # Fetch confession and comment count in one go if possible
+                conf_data = await conn.fetchrow("""
+                    SELECT c.text, c.category, c.status, c.user_id, COUNT(com.id) as comment_count
+                    FROM confessions c
+                    LEFT JOIN comments com ON c.id = com.confession_id
+                    WHERE c.id = $1
+                    GROUP BY c.id, c.text, c.category, c.status, c.user_id
+                    """, conf_id)
 
             if not conf_data or conf_data['status'] != 'approved':
                 await message.answer(f"Confession #{conf_id} not found or not approved.")
                 return
-            txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n#{conf_data['category']}\n---"
+
+            comm_count = conf_data['comment_count']
+            txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n#{html.quote(conf_data['category'])}\n---"
             builder = InlineKeyboardBuilder()
             builder.button(text="➕ Add Comment", callback_data=f"add_{conf_id}")
             builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
@@ -384,16 +454,20 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 # --- Help Command Handler ---
 @dp.message(Command("help"), StateFilter(None))
 async def show_help(message: types.Message):
-    # ... (Help text remains the same) ...
     help_text = (
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
-        "🔹 /confess - Start the process to submit a new anonymous confession.\n"
+        "🔹 /confess - Start the process to submit a new anonymous confession (+1🏅).\n"
         "🔹 /start - Show the welcome message.\n"
         "🔹 /start view_&lt;id&gt; - View a specific confession and its comments.\n"
         "🔹 /help - Display this help message.\n"
         "🔹 /privacy - View information about data privacy.\n\n"
-        "Confessions approved by the admin will be posted in the channel. You can then interact using the buttons.\n\n"
+        "Interact with comments using the buttons:\n"
+        "👍/👎: Like/Dislike (+3🏅/-3🏅 for the commenter).\n"
+        "↪️ Reply: Add a reply to a comment.\n"
+        "⚠️ Report: Report a comment to the admin.\n"
+        "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
+        "Your total medals (🏅) are shown next to your comments if > 0.\n\n"
         "Need to reach the admin directly?"
     )
     contact_admin_keyboard = InlineKeyboardMarkup(
@@ -404,14 +478,13 @@ async def show_help(message: types.Message):
     if message.from_user and message.from_user.id == ADMIN_ID:
         help_text += (
             "\n\n<b>Admin Commands:</b>\n"
-            "🔹 /id &lt;user_id&gt; - Get info about a specific user."
+            "🔹 /id &lt;user_id&gt; - Get info about a specific user (incl. points)."
         )
     await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=contact_admin_keyboard)
 
 # --- Callback Handler to Start Contact Admin Flow ---
 @dp.callback_query(F.data == "contact_admin_start", StateFilter(None))
 async def start_contact_admin_callback(callback_query: types.CallbackQuery, state: FSMContext):
-    # ... (Contact Admin start remains the same) ...
     await state.set_state(ContactAdminForm.waiting_for_message)
     cancel_button = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="/cancel")]],
@@ -429,15 +502,17 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
 # --- Privacy Command Handler ---
 @dp.message(Command("privacy"), StateFilter(None))
 async def show_privacy(message: types.Message):
-    # ... (Privacy text remains the same) ...
+    # Added mention of points and reports
     privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confession-Bot-04-16" # Replace with your actual URL
     privacy_text = (
         "<b>Privacy Information</b>\n\n"
         "Your privacy is important:\n"
-        "▪️ When you /confess, your Telegram User ID is stored but never shown to other users. \n"
-        "▪️ Comments are posted anonymously. Your User ID is stored with the comment for identification purposes (e.g., for the author to request contact, for admin review) but is not displayed publicly to regular users or authors.\n"
-        "▪️ The confession author can request to contact a commenter. You (the commenter) must explicitly 'Approve' sharing your @username (if set). If you approve without a username, the author is notified you approved but have no public username.\n"
-        "▪️ Reactions (likes/dislikes) are linked to your User ID but not publicly displayed which user reacted.\n"
+        "▪️ When you /confess, your Telegram User ID is stored but never shown to other users. Submission contributes to your medal points.\n"
+        "▪️ Comments are posted anonymously. Your User ID is stored with the comment for identification, reaction points, and reporting, but is not displayed publicly to regular users or authors.\n"
+        "▪️ Your medal points (🏅), derived from reactions and confessions, are displayed next to your anonymous tag on comments.\n"
+        "▪️ The confession author can request to contact a commenter. You (the commenter) must explicitly 'Approve' sharing your @username (if set).\n"
+        "▪️ Reactions (likes/dislikes) are linked to your User ID and affect the commenter's points, but it's not public who reacted.\n"
+        "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
         f"▪️ All data is stored in a secure database hosted potentially outside your region.\n"
         f"▪️ The bot admin (User ID: <code>{ADMIN_ID}</code>) manages the review process and has access to stored User IDs for moderation and operational purposes.\n\n"
         f'For more details, please read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
@@ -458,7 +533,6 @@ async def cancel_any_state(message: types.Message, state: FSMContext):
 # --- Contact Admin Message Handling ---
 @dp.message(ContactAdminForm.waiting_for_message, F.text)
 async def receive_admin_message(message: types.Message, state: FSMContext):
-    # ... (Receiving contact admin message remains the same) ...
     user_id = message.from_user.id; user_info = message.from_user; message_text = message.text
     if not user_info:
         await message.answer("Could not identify sender. Action cancelled.")
@@ -481,19 +555,25 @@ async def receive_admin_message(message: types.Message, state: FSMContext):
 # --- Handler for Admin Replies to User Messages ---
 @dp.message(F.from_user.id == ADMIN_ID, F.reply_to_message)
 async def handle_admin_reply(message: types.Message, state: FSMContext): # Added state
-    # --- *** ADDITION: Check if admin is in a specific state first *** ---
     current_admin_state = await state.get_state()
     if current_admin_state is not None:
         # If admin is in a state (like waiting for rejection reason),
         # let that state's handler process the message, not this reply handler.
         logging.debug(f"Admin {ADMIN_ID} sent a reply, but is in state {current_admin_state}. Letting state handler process.")
         return
-    # --- *** END ADDITION *** ---
+    # --- *** ADDITION: Check if replying to a report notification *** ---
+    # This check needs to be specific to avoid interfering with contact replies
+    replied_to_message = message.reply_to_message
+    if replied_to_message and replied_to_message.text and "⚠️ New Comment Report" in replied_to_message.text:
+        # Let's just ignore direct replies to report notifications for now.
+        # Admin can use /id or other means to take action.
+        logging.info(f"Admin {ADMIN_ID} replied to a report notification. Ignoring reply action.")
+        await message.reply("ℹ️ Replying directly to report notifications doesn't perform any action currently. Use /id <user_id> for info.")
+        return
 
-    # ... (Rest of the admin reply logic remains the same) ...
     global bot_info
     if not bot_info: logging.error("Cannot handle admin reply: Bot info not loaded."); return
-    admin_reply_text = message.text; replied_to_message = message.reply_to_message
+    admin_reply_text = message.text;
     if not replied_to_message or not replied_to_message.from_user or replied_to_message.from_user.id != bot_info.id: logging.debug("Admin replied to a non-bot message or bot info mismatch. Ignoring."); return
     target_user_id = None; original_html_text = replied_to_message.html_text; original_plain_text = replied_to_message.text
     text_to_search = original_html_text if original_html_text else original_plain_text
@@ -516,13 +596,20 @@ async def handle_admin_reply(message: types.Message, state: FSMContext): # Added
             else: await message.reply("⚠️ Failed to send reply. User may have blocked the bot or is deactivated."); logging.warning(f"Failed to send admin reply to user {target_user_id} (likely blocked/deactivated).")
         except Exception as e: logging.error(f"Error sending admin reply to user {target_user_id}: {e}"); await message.reply(f"❌ Error sending reply: {e}")
     else:
-        if "Contact Request from User" in text_to_search and "<b>User ID:</b>" in text_to_search: await message.reply("⚠️ Couldn't identify the target user ID from the message you replied to. Was the format changed? Please check the User ID provided in the original request."); logging.warning(f"Admin {message.from_user.id} replied to a potential contact message, but User ID couldn't be extracted.")
-        else: logging.debug("Admin replied to a generic bot message, or format was unrecognizable, or it wasn't a contact forward reply. Ignoring.")
+        # Added check for contact request context before warning
+        if "Contact Request from User" in text_to_search and "<b>User ID:</b>" in text_to_search:
+             await message.reply("⚠️ Couldn't identify the target user ID from the message you replied to. Was the format changed? Please check the User ID provided in the original request.")
+             logging.warning(f"Admin {message.from_user.id} replied to a potential contact message, but User ID couldn't be extracted.")
+        else:
+             # Avoid logging noise if it wasn't a contact forward reply attempt
+             if "Contact Request from User" in text_to_search:
+                 logging.warning(f"Admin {message.from_user.id} reply format unrecognizable for User ID extraction.")
+             else:
+                 logging.debug("Admin replied to a generic bot message, or format was unrecognizable. Ignoring.")
 
-# --- Admin /id Command Handler ---
+# --- *** MODIFIED: Admin /id Command Handler *** ---
 @dp.message(Command("id"))
 async def get_user_info_command(message: types.Message, command: CommandObject):
-    # ... (Admin /id command remains the same) ...
     if not message.from_user or message.from_user.id != ADMIN_ID: logging.warning(f"Unauthorized /id attempt by {message.from_user.id if message.from_user else 'unknown user'}"); return
     if not command.args: await message.reply("Usage: /id <user_id>"); return
     try: target_user_id = int(command.args.strip())
@@ -540,24 +627,40 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
         tg_info_fetched = True
     except TelegramBadRequest as e: info_parts.append(f"⚠️ <b>Telegram Details:</b> Could not fetch info. (Error: {html.quote(str(e))})"); logging.warning(f"Failed to get_chat for {target_user_id}: {e}")
     except Exception as e: info_parts.append(f"❌ <b>Telegram Details:</b> An unexpected error occurred: {html.quote(str(e))}"); logging.error(f"Unexpected error get_chat for {target_user_id}: {e}", exc_info=True)
+
     info_parts.append("\n<b>Bot Interaction History:</b>")
     try:
         async with db.acquire() as conn:
+            # Fetch points
+            user_points = await get_user_points(target_user_id) # Use helper
+            info_parts.append(f"  - <b>Medal Points:</b> 🏅 {user_points}")
+
             conf_stats = await conn.fetchrow("SELECT COUNT(*) as count, MAX(created_at) as last_ts FROM confessions WHERE user_id = $1", target_user_id)
             conf_count = conf_stats['count'] if conf_stats else 0; last_conf_ts = conf_stats['last_ts'].strftime("%Y-%m-%d %H:%M:%S %Z") if conf_stats and conf_stats['last_ts'] else "N/A"
             info_parts.append(f"  - <b>Confessions Submitted:</b> {conf_count}" + (f" (Last: {last_conf_ts})" if conf_count > 0 else ""))
+
             comm_stats = await conn.fetchrow("SELECT COUNT(*) as count, MAX(created_at) as last_ts FROM comments WHERE user_id = $1", target_user_id)
             comm_count = comm_stats['count'] if comm_stats else 0; last_comm_ts = comm_stats['last_ts'].strftime("%Y-%m-%d %H:%M:%S %Z") if comm_stats and comm_stats['last_ts'] else "N/A"
             info_parts.append(f"  - <b>Comments Made:</b> {comm_count}" + (f" (Last: {last_comm_ts})" if comm_count > 0 else ""))
+
             react_stats = await conn.fetchrow("SELECT COUNT(*) as count, MAX(created_at) as last_ts FROM reactions WHERE user_id = $1", target_user_id)
             react_count = react_stats['count'] if react_stats else 0; last_react_ts = react_stats['last_ts'].strftime("%Y-%m-%d %H:%M:%S %Z") if react_stats and react_stats['last_ts'] else "N/A"
             info_parts.append(f"  - <b>Reactions Given:</b> {react_count}" + (f" (Last: {last_react_ts})" if react_count > 0 else ""))
+
             req_made_stats = await conn.fetchrow("SELECT COUNT(*) as count, MAX(created_at) as last_ts FROM contact_requests WHERE requester_user_id = $1", target_user_id)
             req_made_count = req_made_stats['count'] if req_made_stats else 0; last_req_made_ts = req_made_stats['last_ts'].strftime("%Y-%m-%d %H:%M:%S %Z") if req_made_stats and req_made_stats['last_ts'] else "N/A"
             info_parts.append(f"  - <b>Contact Requests Sent (as Author):</b> {req_made_count}" + (f" (Last: {last_req_made_ts})" if req_made_count > 0 else ""))
+
             req_rec_stats = await conn.fetchrow("SELECT COUNT(*) as count, MAX(updated_at) as last_ts FROM contact_requests WHERE requested_user_id = $1", target_user_id)
             req_rec_count = req_rec_stats['count'] if req_rec_stats else 0; last_req_rec_ts = req_rec_stats['last_ts'].strftime("%Y-%m-%d %H:%M:%S %Z") if req_rec_stats and req_rec_stats['last_ts'] else "N/A"
             info_parts.append(f"  - <b>Contact Requests Received (as Commenter):</b> {req_rec_count}" + (f" (Last Action: {last_req_rec_ts})" if req_rec_count > 0 else ""))
+
+            # Fetch report stats
+            reports_made_count = await conn.fetchval("SELECT COUNT(*) FROM reports WHERE reporter_user_id = $1", target_user_id)
+            reports_received_count = await conn.fetchval("SELECT COUNT(*) FROM reports WHERE reported_user_id = $1", target_user_id)
+            info_parts.append(f"  - <b>Reports Made:</b> {reports_made_count}")
+            info_parts.append(f"  - <b>Reports Received (as Commenter):</b> {reports_received_count}")
+
     except Exception as e: info_parts.append("❌ <b>Bot Interaction History:</b> Error fetching database info."); logging.error(f"Error fetching DB info for user {target_user_id}: {e}", exc_info=True)
     final_message = "\n".join(info_parts); await message.reply(final_message, parse_mode=ParseMode.HTML)
 
@@ -574,19 +677,28 @@ async def category_chosen(callback_query: types.CallbackQuery, state: FSMContext
     try: await callback_query.message.edit_text(f"Category selected: <b>{category}</b>\n\nNow, please send me the text of your confession.\n\nType /cancel to stop.")
     except Exception as e: logging.warning(f"Could not edit category message for {callback_query.from_user.id}: {e}"); await callback_query.answer(); await safe_send_message(callback_query.from_user.id, f"Category: <b>{category}</b>\n\nSend confession text or /cancel.")
 
+# --- *** MODIFIED: receive_confession_text *** ---
 @dp.message(ConfessionForm.waiting_for_text, F.text)
 async def receive_confession_text(message: types.Message, state: FSMContext):
     conf_text = message.text; user_id = message.from_user.id; state_data = await state.get_data(); category = state_data.get("category")
     if not category: await message.answer("⚠️ Error: Category information was lost. Please start again with /confess."); await state.clear(); logging.error(f"State missing category for user {user_id} in receive_confession_text"); return
     if len(conf_text) < 10: await message.answer("Your confession is too short. Please provide at least 10 characters, or type /cancel."); return
     if len(conf_text) > 3900: await message.answer(f"Your confession is too long (max ~3900 characters). It currently has {len(conf_text)} characters. Please shorten it, or type /cancel."); return
+
     conf_id = None
     try:
-        async with db.acquire() as conn: conf_id = await conn.fetchval("INSERT INTO confessions (text, user_id, category, status) VALUES ($1, $2, $3, 'pending') RETURNING id", conf_text, user_id, category)
-        if not conf_id: await message.answer("There was an error submitting your confession. Please try again."); logging.error(f"Failed to get confession ID after insert for user {user_id}"); await state.clear(); return
+        async with db.acquire() as conn:
+            async with conn.transaction(): # Use transaction for insert + points update
+                conf_id = await conn.fetchval("INSERT INTO confessions (text, user_id, category, status) VALUES ($1, $2, $3, 'pending') RETURNING id", conf_text, user_id, category)
+                if not conf_id:
+                    raise Exception("Failed to get confession ID after insert")
+
+                # --- *** ADDITION: Update user points *** ---
+                await update_user_points(conn, user_id, POINTS_PER_CONFESSION)
+                logging.info(f"Awarded {POINTS_PER_CONFESSION} point(s) to user {user_id} for submitting confession {conf_id}")
 
         # Store the original message details in state for later editing
-        await state.update_data(admin_review_message_id=message.message_id) # Store admin message ID
+        # await state.update_data(admin_review_message_id=message.message_id) # Store admin message ID <-- This seems incorrect, admin gets a NEW message
 
         kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{conf_id}")], [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{conf_id}")]])
         admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Category:</b> {html.quote(category)}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
@@ -600,11 +712,16 @@ async def receive_confession_text(message: types.Message, state: FSMContext):
 
         await message.answer("✅ Your confession has been submitted successfully and is pending review.")
         logging.info(f"Confession #{conf_id} (Category: {category}) submitted by User ID {user_id}")
-    except Exception as e: logging.error(f"Error processing confession text from user {user_id} (Conf ID might be {conf_id}): {e}", exc_info=True); await message.answer("An internal error occurred while submitting your confession.")
-    finally: await state.clear() # Clear user state, admin state is handled separately
 
+    except Exception as e:
+        logging.error(f"Error processing confession text from user {user_id} (Conf ID might be {conf_id}): {e}", exc_info=True)
+        await message.answer("An internal error occurred while submitting your confession.")
+        # No need to manually rollback points, transaction handles it if insert failed
 
-# --- *** MODIFIED: Admin Action Handler *** ---
+    finally:
+        await state.clear() # Clear user state, admin state is handled separately
+
+# --- Admin Action Handler (Approval/Rejection Prompt) ---
 def is_confession_action_callback(data: str) -> bool:
     if not isinstance(data, str): return False
     parts = data.split("_")
@@ -643,9 +760,11 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext): 
         if conf_status != 'pending':
             await callback_query.answer(f"This confession (#{conf_id}) has already been '{conf_status}'.", show_alert=True)
             try: # Try to update the message to show it was already processed
+                # Fetch original text to append status (more reliable than assuming it exists)
                 final_admin_txt = callback_query.message.html_text + f"\n\n-- Already {conf_status.capitalize()} --"
                 await callback_query.message.edit_text(final_admin_txt, reply_markup=None, parse_mode=ParseMode.HTML)
-            except Exception: pass
+            except Exception as e:
+                 logging.warning(f"Could not edit admin msg for already processed conf {conf_id}: {e}")
             return
 
         # --- Handle Approval Directly ---
@@ -683,16 +802,21 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext): 
                         final_admin_txt = callback_query.message.html_text + f"\n\n-- Status: {final_status} --"
                         await callback_query.message.edit_text(final_admin_txt, reply_markup=None, parse_mode=ParseMode.HTML)
 
-                except (TelegramForbiddenError, TelegramBadRequest, Exception) as e:
+                except (TelegramForbiddenError, TelegramBadRequest) as e:
                     logging.error(f"Error during approval process for Confession {conf_id}: {e}", exc_info=True)
                     await callback_query.answer(f"Error during approval: {e}. Check logs.", show_alert=True)
                     # Transaction will rollback automatically on exception
-                    # Optionally try to update the admin message to indicate failure
                     try:
-                         fail_txt = callback_query.message.html_text + "\n\n-- Approval Failed! --"
+                         fail_txt = callback_query.message.html_text + "\n\n-- Approval Failed! Check Logs. --"
                          await callback_query.message.edit_text(fail_txt, reply_markup=None)
                     except Exception: pass
-
+                except Exception as e: # Catch other potential errors
+                    logging.error(f"Unexpected error during approval process for Confession {conf_id}: {e}", exc_info=True)
+                    await callback_query.answer(f"Unexpected error during approval: {e}. Check logs.", show_alert=True)
+                    try:
+                         fail_txt = callback_query.message.html_text + "\n\n-- Approval Failed! Check Logs. --"
+                         await callback_query.message.edit_text(fail_txt, reply_markup=None)
+                    except Exception: pass
 
         # --- Handle Rejection: Ask for Reason ---
         elif action == "reject":
@@ -700,7 +824,8 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext): 
             await state.update_data(
                 rejecting_conf_id=conf_id,
                 admin_review_chat_id=callback_query.message.chat.id,
-                admin_review_message_id=callback_query.message.message_id
+                admin_review_message_id=callback_query.message.message_id,
+                original_admin_text = callback_query.message.html_text # Store text for better update later
             )
             await state.set_state(AdminActions.waiting_for_rejection_reason)
 
@@ -724,7 +849,7 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext): 
             )
             logging.info(f"Admin {callback_query.from_user.id} initiated rejection for Confession #{conf_id}, waiting for reason.")
 
-# --- *** ADDITION: Handler for Admin Rejection Reason *** ---
+# --- Handler for Admin Rejection Reason ---
 @dp.message(AdminActions.waiting_for_rejection_reason, F.text)
 async def receive_rejection_reason(message: types.Message, state: FSMContext):
     admin_id = message.from_user.id
@@ -736,6 +861,7 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
     conf_id = data.get("rejecting_conf_id")
     admin_review_chat_id = data.get("admin_review_chat_id")
     admin_review_message_id = data.get("admin_review_message_id")
+    original_admin_text = data.get("original_admin_text", f"Review for Confession #{conf_id}") # Fallback text
 
     if not conf_id or not admin_review_chat_id or not admin_review_message_id:
         logging.error(f"Admin {admin_id} sent rejection reason, but state data is missing: {data}")
@@ -748,13 +874,23 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
     reason_text_for_log = "(No reason provided)"
     final_status_text = "Rejected"
 
-    if message.text == "/skip":
-        reason = None # Explicitly null for DB
-        reason_text_for_log = "(Skipped reason)"
-        await message.answer("Skipping reason. Confession will be rejected.", reply_markup=ReplyKeyboardRemove())
-    elif message.text == "/cancel":
-        # Handled by the global cancel handler
-        return
+    if message.text.startswith("/"):
+        command = message.text.split()[0]
+        if command == "/skip":
+            reason = None # Explicitly null for DB
+            reason_text_for_log = "(Skipped reason)"
+            await message.answer("Skipping reason. Confession will be rejected.", reply_markup=ReplyKeyboardRemove())
+        elif command == "/cancel":
+            # Let the global cancel handler deal with state clearing etc.
+            await message.answer("Rejection cancelled.", reply_markup=ReplyKeyboardRemove())
+            logging.info(f"Admin {admin_id} cancelled rejection for Confession {conf_id}.")
+            # No need to edit the original admin message as the action was cancelled
+            await state.clear()
+            return # Important: exit after cancelling
+        else:
+            # Treat other commands as invalid input in this state
+            await message.answer("Invalid command here. Please provide a reason, or use /skip or /cancel.")
+            return
     else:
         reason = message.text # Store the provided reason
         if len(reason) > 500: # Optional: Limit reason length
@@ -762,7 +898,7 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
             return
         reason_text_for_user = f"Your confession was rejected for the following reason:\n\n<i>{html.quote(reason)}</i>"
         reason_text_for_log = reason
-        final_status_text = f"Rejected (Reason: {html.quote(reason[:50])}{'...' if len(reason)>50 else ''})"
+        final_status_text = f"Rejected (Reason Provided)" # Keep it concise for the admin message
         await message.answer("Reason recorded. Rejecting confession...", reply_markup=ReplyKeyboardRemove())
 
     # --- Perform the rejection ---
@@ -782,13 +918,15 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
                     await message.answer(f"Error: Confession already {conf_data['status']}.", reply_markup=ReplyKeyboardRemove())
                      # Try to update original admin message anyway if possible
                     try:
-                        original_admin_msg = await bot.edit_message_text(
+                        await bot.edit_message_text(
                             chat_id=admin_review_chat_id,
                             message_id=admin_review_message_id,
-                            text=f"Review for Confession #{conf_id}\n\n-- Already {conf_data['status'].capitalize()} --",
-                            reply_markup=None # Remove buttons
+                            text=original_admin_text + f"\n\n-- Already {conf_data['status'].capitalize()} --",
+                            reply_markup=None, # Remove buttons
+                            parse_mode=ParseMode.HTML
                         )
-                    except Exception: pass # Ignore if editing fails
+                    except Exception as e:
+                        logging.warning(f"Could not edit admin msg for already processed conf {conf_id} during rejection attempt: {e}")
                     await state.clear()
                     return
 
@@ -805,29 +943,21 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
                 user_notification = f"❌ {reason_text_for_user}\n(Confession ID: #{conf_id}, Category: #{category})"
                 await safe_send_message(user_id, user_notification, parse_mode=ParseMode.HTML)
 
-                # Update the original admin review message
+                # Update the original admin review message using stored text
                 try:
-                    original_admin_msg_content = await bot.get_chat_history(admin_review_chat_id, limit=1, offset= -admin_review_message_id) # A way to get text? Seems complex.
-                    # Let's rebuild the essential info + status
-                    admin_update_text = (
-                        f"<b>Confession Review (ID: {conf_id})</b>\n"
-                        f"<i>Category: {html.quote(category)}</i>\n\n"
-                        f"-- Status: {final_status_text} --"
-                        # Maybe add original text snippet here if easily fetchable or passed via state?
-                    )
-                    # Alternative: Edit existing text + append status (might be messy if original text was long)
-                    # admin_update_text = data.get('original_admin_text', '') + f"\n\n-- Status: {final_status_text} --" # Needs original text in state
-
+                    admin_update_text = original_admin_text + f"\n\n-- Status: {final_status_text} --"
                     await bot.edit_message_text(
                         chat_id=admin_review_chat_id,
                         message_id=admin_review_message_id,
-                        text=admin_update_text, # Use the rebuilt or appended text
+                        text=admin_update_text,
                         reply_markup=None, # Remove buttons
                         parse_mode=ParseMode.HTML
                     )
                 except TelegramBadRequest as e:
                      if "message not found" in str(e).lower():
                          logging.warning(f"Could not find original admin msg {admin_review_message_id} to update after rejection.")
+                     elif "message is not modified" not in str(e).lower():
+                         logging.warning(f"Admin msg {admin_review_message_id} not modified after rejection: {e}")
                      else:
                          logging.error(f"Error updating original admin message {admin_review_message_id} after rejection: {e}")
                 except Exception as e:
@@ -846,21 +976,17 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
 
     await state.clear() # Clear state regardless of success/failure after processing
 
-
 # --- Commenting Flow Handlers ---
 @dp.callback_query(F.data.startswith("browse_"))
 async def browse_comments_action(callback_query: types.CallbackQuery):
-    # ... (Browse comments remains the same) ...
     try: conf_id = int(callback_query.data.split("_", 1)[1])
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid browse comments callback data: {callback_query.data}"); await callback_query.answer("Invalid data format.", show_alert=True); return
     await callback_query.answer("Loading comments...")
     # Call the modified function, passing the viewer's ID
-    await show_comments_for_confession(callback_query.from_user.id, conf_id)
-
+    await show_comments_for_confession(callback_query.from_user.id, conf_id, callback_query.message)
 
 @dp.callback_query(F.data.startswith("add_"))
 async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMContext):
-    # ... (Add comment prompt remains the same) ...
     try:
         conf_id = int(callback_query.data.split("_", 1)[1])
     except (ValueError, IndexError, TypeError):
@@ -887,7 +1013,6 @@ async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMCont
 
 @dp.message(CommentForm.waiting_for_comment, F.text)
 async def receive_comment(message: types.Message, state: FSMContext):
-    # ... (Receiving comment remains the same) ...
     comm_text = message.text; user_id = message.from_user.id; data = await state.get_data(); conf_id = data.get("confession_id")
     if not conf_id: await message.answer("⚠️ Error: No confession context. Start again."); await state.clear(); logging.error(f"State missing conf_id for {user_id}"); return
     if len(comm_text) < 2: await message.answer("Comment too short (min 2 chars), or /cancel."); return
@@ -904,6 +1029,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
         if conf_owner_id and conf_owner_id != user_id and bot_info and bot_info.username:
             link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"; preview = html.quote(comm_text[:150]) + ('...' if len(comm_text) > 150 else ''); notif = (f"💬 Comment on your confession #{conf_id}.\n\n<i>{preview}</i>\n\n<a href='{link}'>View comments.</a>"); await safe_send_message(conf_owner_id, notif, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         elif not (bot_info and bot_info.username): logging.warning(f"Cannot gen notif link for author {conf_owner_id} - bot_info missing.")
+        # Show updated comments view including the new comment
         await show_comments_for_confession(user_id, conf_id)
     except asyncpg.exceptions.ForeignKeyViolationError: logging.warning(f"Attempt add comment to non-existent/unapproved conf {conf_id} by {user_id}"); await message.answer("⚠️ Cannot add comment. Confession removed/unapproved.")
     except Exception as e: logging.error(f"Error saving comment for conf {conf_id} by {user_id}: {e}", exc_info=True); await message.answer("❌ Internal error saving comment.")
@@ -912,7 +1038,6 @@ async def receive_comment(message: types.Message, state: FSMContext):
 # --- Reply Flow Handlers ---
 @dp.callback_query(F.data.startswith("reply_"))
 async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMContext):
-    # ... (Reply prompt remains the same) ...
     try: parent_id = int(callback_query.data.split("_", 1)[1])
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid reply cb: {callback_query.data}"); await callback_query.answer("Invalid data.", show_alert=True); return
     msg_id_reply_to = callback_query.message.message_id
@@ -929,16 +1054,15 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
     try: prompt = (f"📝 Replying to comment:\n<i>{preview}</i>\n\nPlease send reply or /cancel."); await safe_send_message(callback_query.from_user.id, prompt, parse_mode=ParseMode.HTML); await callback_query.answer()
     except Exception as e: logging.warning(f"Could not send reply prompt to {callback_query.from_user.id}: {e}"); await callback_query.answer("Could not ask for reply.", show_alert=True); await state.clear()
 
-
+# --- *** MODIFIED: receive_reply *** ---
 @dp.message(CommentForm.waiting_for_reply, F.text)
 async def receive_reply(message: types.Message, state: FSMContext):
-    # ... (Receiving reply remains the same) ...
     reply_text = message.text
     user_id = message.from_user.id
     data = await state.get_data()
     conf_id = data.get("confession_id")
     parent_id = data.get("parent_comment_id")
-    msg_id_reply_to = data.get("message_id_to_reply_to")
+    msg_id_reply_to = data.get("message_id_to_reply_to") # Message ID of the comment *being replied to* in the user's chat
 
     if not conf_id or not parent_id or not msg_id_reply_to:
         await message.answer("⚠️ Error: Reply context lost. Try again."); await state.clear();
@@ -950,12 +1074,22 @@ async def receive_reply(message: types.Message, state: FSMContext):
     try:
         async with db.acquire() as conn:
             async with conn.transaction():
+                # Check parent comment exists
                 parent_data = await conn.fetchrow("SELECT user_id FROM comments WHERE id = $1 FOR UPDATE", parent_id);
-                if not parent_data: await message.answer("⚠️ Original comment deleted."); await state.clear(); return
+                if not parent_data:
+                    await message.answer("⚠️ The comment you were replying to seems to have been deleted.")
+                    await state.clear()
+                    return
                 parent_owner_id = parent_data['user_id']
-                conf_owner_id = await conn.fetchval("SELECT user_id FROM confessions WHERE id = $1", conf_id);
-                if not conf_owner_id: raise Exception("Confession not found during reply save")
 
+                # Check confession exists
+                conf_owner_id = await conn.fetchval("SELECT user_id FROM confessions WHERE id = $1", conf_id);
+                if not conf_owner_id:
+                    await message.answer("⚠️ The confession this comment belongs to seems to have been removed.")
+                    await state.clear()
+                    return
+
+                # Insert the new reply
                 new_comm_id = await conn.fetchval(
                     "INSERT INTO comments (confession_id, user_id, text, parent_comment_id) VALUES ($1, $2, $3, $4) RETURNING id",
                     conf_id, user_id, reply_text, parent_id
@@ -965,48 +1099,10 @@ async def receive_reply(message: types.Message, state: FSMContext):
         logging.info(f"User {user_id} added reply {new_comm_id} to comment {parent_id} on conf {conf_id}")
         await update_channel_post_button(conf_id) # Update count
 
-        # --- Send Confirmation back to the Replier ---
-        try:
-            async with db.acquire() as conn:
-                new_reply_seq = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1 AND created_at <= (SELECT created_at FROM comments WHERE id = $2)", conf_id, new_comm_id) or new_comm_id # Fallback
-            tag = ""
-            if conf_owner_id is not None:
-                 if user_id == conf_owner_id: tag = "(Author)"
-                 elif user_id == message.from_user.id: tag = "(You)"
-                 else: tag = "Anonymous"
-            else: tag = "Anonymous"
-            display_tag = f" {tag}" if tag else " Anonymous"
-            admin_reply_info = ""
-            if user_id == ADMIN_ID:
-                 admin_reply_info = f" [UID: <code>{user_id}</code>]"
-
-            reply_msg_txt = (
-                f"💬 {html.quote(reply_text)}\n\n"
-                f"<i>Reply #{new_reply_seq}{display_tag} | {datetime.now().strftime('%Y-%m-%d %H:%M')}{admin_reply_info}</i>"
-            )
-            reply_kbd = await build_comment_keyboard(
-                 comment_id=new_comm_id,
-                 commenter_user_id=user_id,
-                 viewer_user_id=user_id,
-                 confession_owner_id=conf_owner_id or 0
-            )
-            await bot.send_message(
-                user_id, reply_msg_txt, reply_to_message_id=msg_id_reply_to, reply_markup=reply_kbd,
-                parse_mode=ParseMode.HTML, disable_web_page_preview=True, allow_sending_without_reply=True
-            )
-            await message.answer("↪️ Reply sent!")
-
-        except TelegramBadRequest as e:
-             if "reply message not found" in str(e).lower():
-                 logging.warning(f"Native reply failed for new comment {new_comm_id} (msg {msg_id_reply_to} deleted?). Sending update via show_comments.");
-                 await message.answer("↪️ Reply sent! (Original message was deleted, reloading comment view)")
-                 await show_comments_for_confession(user_id, conf_id) # Show full view as fallback
-             else:
-                 logging.error(f"TG error sending native reply confirmation {new_comm_id} by {user_id}: {e}", exc_info=True)
-                 await message.answer(f"❌ Reply saved (ID: {new_comm_id}), but error displaying confirmation.")
-        except Exception as e:
-             logging.error(f"Unexpected error sending native reply confirmation {new_comm_id} by {user_id}: {e}", exc_info=True)
-             await message.answer(f"❌ Reply saved (ID: {new_comm_id}), but internal error displaying confirmation.")
+        # --- Send Confirmation back to the Replier (as a new message, not a Telegram reply) ---
+        await message.answer("↪️ Reply sent!") # Simple confirmation
+        # Show the updated comment list to the replier
+        await show_comments_for_confession(user_id, conf_id)
 
         # --- Notify Parent Comment Author ---
         global bot_info
@@ -1014,63 +1110,271 @@ async def receive_reply(message: types.Message, state: FSMContext):
              logging.info(f"Notifying parent author {parent_owner_id} of reply {new_comm_id} to their comment {parent_id}")
              link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
              preview = html.quote(reply_text[:150]) + ('...' if len(reply_text) > 150 else '')
-             notif = (f"↪️ Reply to your comment on confession #{conf_id}.\n\n<i>{preview}</i>\n\n<a href='{link}'>View comments.</a>");
+             # Get replier's points for the notification
+             replier_points = await get_user_points(user_id)
+             medal_str = f" 🏅{replier_points}" if replier_points > 0 else ""
+             tag = "(Author)" if user_id == conf_owner_id else "Anonymous"
+             notif = (f"↪️ Reply from {tag}{medal_str} to your comment on confession #{conf_id}.\n\n<i>{preview}</i>\n\n<a href='{link}'>View comments.</a>");
              await safe_send_message(parent_owner_id, notif, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         elif not (bot_info and bot_info.username):
               logging.warning(f"Cannot gen notif link for parent author {parent_owner_id} - bot_info missing.")
 
-    except asyncpg.exceptions.ForeignKeyViolationError: logging.warning(f"FK violation reply to comment {parent_id} by {user_id}"); await message.answer("⚠️ Cannot add reply. Original comment removed.")
-    except Exception as e: logging.error(f"Error saving reply DB transaction for {parent_id} by {user_id}: {e}", exc_info=True); await message.answer("❌ Internal error saving reply.")
-    finally: await state.clear()
+    except asyncpg.exceptions.ForeignKeyViolationError as e:
+        logging.warning(f"FK violation during reply save by {user_id} to {parent_id}: {e}")
+        await message.answer("⚠️ Cannot add reply. The original comment or confession may have been deleted.")
+    except Exception as e:
+        logging.error(f"Error saving reply DB transaction for {parent_id} by {user_id}: {e}", exc_info=True)
+        await message.answer("❌ Internal error saving reply.")
+    finally:
+        await state.clear()
 
-
-# --- Reaction Handling ---
+# --- *** MODIFIED: Reaction Handling *** ---
 @dp.callback_query(F.data.startswith("react_"))
 async def handle_reaction(callback_query: types.CallbackQuery):
-    # ... (Reaction handling remains the same) ...
     try:
         _, r_type, comm_id_str = callback_query.data.split("_", 2)
         comm_id = int(comm_id_str)
-        user_id = callback_query.from_user.id
+        user_id = callback_query.from_user.id # The user reacting
         if r_type not in ['like', 'dislike']:
             raise ValueError("Invalid reaction type")
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid react cb: {callback_query.data}"); await callback_query.answer("Invalid reaction.", show_alert=True); return
-    action = "none"; kbd = None; alert = None
+
+    action = "none"; kbd = None; alert = None; point_delta = 0
+    comm_uid = None # User ID of the person who wrote the comment
+    conf_owner_id = None
+    viewer_id = user_id
+
     async with db.acquire() as conn:
         async with conn.transaction():
             try:
+                # Fetch comment owner and confession owner
                 info = await conn.fetchrow("SELECT c.user_id as comm_uid, co.user_id as conf_owner_id FROM comments c JOIN confessions co ON c.confession_id = co.id WHERE c.id = $1", comm_id)
-                if not info: raise asyncpg.exceptions.ForeignKeyViolationError("Comment not found")
-                comm_uid = info['comm_uid']; conf_owner_id = info['conf_owner_id']; viewer_id = user_id
+                if not info:
+                    raise asyncpg.exceptions.ForeignKeyViolationError("Comment not found")
+                comm_uid = info['comm_uid']
+                conf_owner_id = info['conf_owner_id']
+
+                # Check if user is reacting to their own comment
+                if comm_uid == user_id:
+                    await callback_query.answer("You cannot react to your own comment.", show_alert=True)
+                    return # Exit early, no reaction recorded, no points change
+
+                # Get existing reaction
                 existing = await conn.fetchval("SELECT reaction_type FROM reactions WHERE comment_id = $1 AND user_id = $2 FOR UPDATE", comm_id, user_id)
+
                 if existing:
-                    if existing == r_type: await conn.execute("DELETE FROM reactions WHERE comment_id = $1 AND user_id = $2", comm_id, user_id); action = f"Removed {r_type}"; alert = f"{r_type.capitalize()} removed"
-                    else: await conn.execute("UPDATE reactions SET reaction_type = $1, created_at = CURRENT_TIMESTAMP WHERE comment_id = $2 AND user_id = $3", r_type, comm_id, user_id); action = f"Changed to {r_type}"; alert = f"Reaction changed to {r_type}"
-                else: await conn.execute("INSERT INTO reactions (comment_id, user_id, reaction_type) VALUES ($1, $2, $3)", comm_id, user_id, r_type); action = f"Added {r_type}"; alert = f"{r_type.capitalize()} added"
-                kbd = await build_comment_keyboard(comm_id, comm_uid, viewer_id, conf_owner_id); logging.info(f"User {user_id} action '{action}' on comment {comm_id}. Kbd rebuilt.")
+                    if existing == r_type: # Removing existing reaction
+                        await conn.execute("DELETE FROM reactions WHERE comment_id = $1 AND user_id = $2", comm_id, user_id)
+                        action = f"Removed {r_type}"
+                        alert = f"{r_type.capitalize()} removed"
+                        point_delta = -POINTS_PER_LIKE_RECEIVED if r_type == 'like' else -POINTS_PER_DISLIKE_RECEIVED # Revert points
+                    else: # Changing reaction
+                        await conn.execute("UPDATE reactions SET reaction_type = $1, created_at = CURRENT_TIMESTAMP WHERE comment_id = $2 AND user_id = $3", r_type, comm_id, user_id)
+                        action = f"Changed to {r_type}"
+                        alert = f"Reaction changed to {r_type}"
+                        # Calculate point delta for change: Revert old, add new
+                        old_points = -POINTS_PER_LIKE_RECEIVED if existing == 'like' else -POINTS_PER_DISLIKE_RECEIVED
+                        new_points = POINTS_PER_LIKE_RECEIVED if r_type == 'like' else POINTS_PER_DISLIKE_RECEIVED
+                        point_delta = old_points + new_points
+                else: # Adding new reaction
+                    await conn.execute("INSERT INTO reactions (comment_id, user_id, reaction_type) VALUES ($1, $2, $3)", comm_id, user_id, r_type)
+                    action = f"Added {r_type}"
+                    alert = f"{r_type.capitalize()} added"
+                    point_delta = POINTS_PER_LIKE_RECEIVED if r_type == 'like' else POINTS_PER_DISLIKE_RECEIVED
+
+                # --- *** ADDITION: Update commenter points *** ---
+                if point_delta != 0:
+                    await update_user_points(conn, comm_uid, point_delta)
+                    logging.info(f"Updated points for commenter {comm_uid} by {point_delta} due to reaction by {user_id} on comment {comm_id}")
+
+                # Rebuild keyboard after DB changes
+                kbd = await build_comment_keyboard(comm_id, comm_uid, viewer_id, conf_owner_id);
+                logging.info(f"User {user_id} action '{action}' on comment {comm_id}. Kbd rebuilt.")
+
             except asyncpg.exceptions.ForeignKeyViolationError:
                 logging.warning(f"FK viol reaction update comm {comm_id} user {user_id}")
                 await callback_query.answer("Comment not found.", show_alert=True)
                 try: await callback_query.message.edit_reply_markup(reply_markup=None)
                 except Exception: pass
-                return
-            except Exception as db_err: logging.error(f"DB error reaction proc comm {comm_id} by {user_id}: {db_err}", exc_info=True); await callback_query.answer("DB Error processing reaction.", show_alert=True); return
+                return # Exit transaction
+            except Exception as db_err:
+                logging.error(f"DB error reaction proc comm {comm_id} by {user_id}: {db_err}", exc_info=True)
+                await callback_query.answer("DB Error processing reaction.", show_alert=True)
+                return # Exit transaction (will rollback)
+
+    # Update message outside transaction
     if kbd and action != "none":
-        try: await callback_query.message.edit_reply_markup(reply_markup=kbd); await callback_query.answer(alert); logging.info(f"Updated markup comm {comm_id} after {action}")
+        try:
+            await callback_query.message.edit_reply_markup(reply_markup=kbd)
+            await callback_query.answer(alert)
+            logging.info(f"Updated markup comm {comm_id} after {action}")
         except TelegramBadRequest as e:
             err_str = str(e).lower()
             if "message is not modified" in err_str: logging.info(f"Markup {comm_id} not modified."); await callback_query.answer(alert + " (No visual change)")
             elif "message to edit not found" in err_str: logging.warning(f"Msg not found react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view not)", show_alert=False)
             elif "query is too old" in err_str: logging.warning(f"Query old react update {comm_id}."); await callback_query.answer(alert + " (Counts updated, view stale)", show_alert=False)
             else: logging.error(f"TG error update react markup {comm_id}: {e}"); await callback_query.answer("Error updating display.", show_alert=True)
-        except Exception as e: logging.error(f"Unexpected error update react markup {comm_id}: {e}", exc_info=True); await callback_query.answer("Error updating display.", show_alert=True)
-    elif action != "none": logging.error(f"Action {action} comm {comm_id} DB done, kbd build failed."); await callback_query.answer("Reaction processed (internal error).", show_alert=True)
+        except Exception as e:
+            logging.error(f"Unexpected error update react markup {comm_id}: {e}", exc_info=True);
+            await callback_query.answer("Error updating display.", show_alert=True)
+    elif action != "none":
+        # This case means DB succeeded but keyboard build failed (unlikely with current logic)
+        logging.error(f"Action {action} comm {comm_id} DB done, but kbd is unexpectedly None.")
+        await callback_query.answer(alert + " (Internal Error updating view)", show_alert=True)
 
+# --- *** ADDITION: Report Comment Handlers *** ---
+
+# 1. Confirmation Prompt
+@dp.callback_query(F.data.startswith("report_confirm_"))
+async def report_confirm_callback(callback_query: types.CallbackQuery):
+    try:
+        comment_id = int(callback_query.data.split("_", 2)[2])
+        reporter_user_id = callback_query.from_user.id
+    except (ValueError, IndexError, TypeError):
+        logging.error(f"Invalid report confirm callback data: {callback_query.data}")
+        await callback_query.answer("Invalid data format.", show_alert=True)
+        return
+
+    async with db.acquire() as conn:
+        # Check if already reported by this user
+        already_reported = await conn.fetchval("SELECT 1 FROM reports WHERE comment_id = $1 AND reporter_user_id = $2", comment_id, reporter_user_id)
+        if already_reported:
+            await callback_query.answer("You have already reported this comment.", show_alert=True)
+            return
+
+        # Get comment snippet for confirmation
+        comment_text = await conn.fetchval("SELECT text FROM comments WHERE id = $1", comment_id)
+        if not comment_text:
+            await callback_query.answer("Comment not found (it may have been deleted).", show_alert=True)
+            try: await callback_query.message.edit_reply_markup(reply_markup=None) # Clean up buttons
+            except Exception: pass
+            return
+
+    snippet = html.quote(comment_text[:100]) + ('...' if len(comment_text) > 100 else '')
+    confirm_text = f"Are you sure you want to report this comment?\n\n<i>\"{snippet}\"</i>"
+    confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Yes, Report", callback_data=f"report_execute_{comment_id}"),
+            InlineKeyboardButton(text="❌ No, Cancel", callback_data=f"report_cancel_{comment_id}") # Add comment_id for context
+        ]
+    ])
+
+    try:
+        # Send confirmation as a new message or edit? Editing might be confusing. Let's send new.
+        # await callback_query.message.edit_text(confirm_text, reply_markup=confirm_keyboard, parse_mode=ParseMode.HTML) # Edit option
+        await safe_send_message(reporter_user_id, confirm_text, reply_markup=confirm_keyboard, parse_mode=ParseMode.HTML)
+        await callback_query.answer() # Acknowledge the button press
+    except Exception as e:
+        logging.error(f"Error sending report confirmation for comment {comment_id} to user {reporter_user_id}: {e}")
+        await callback_query.answer("Could not ask for report confirmation.", show_alert=True)
+
+# 2. Execute Report
+@dp.callback_query(F.data.startswith("report_execute_"))
+async def report_execute_callback(callback_query: types.CallbackQuery):
+    try:
+        comment_id = int(callback_query.data.split("_", 2)[2])
+        reporter_user_id = callback_query.from_user.id
+    except (ValueError, IndexError, TypeError):
+        logging.error(f"Invalid report execute callback data: {callback_query.data}")
+        await callback_query.answer("Invalid data format.", show_alert=True)
+        return
+
+    reported_user_id = None
+    confession_id = None
+    comment_text = None
+    report_id = None
+
+    async with db.acquire() as conn:
+        async with conn.transaction():
+            try:
+                # Get comment details and lock row to prevent deletion during report
+                comment_data = await conn.fetchrow("SELECT user_id, confession_id, text FROM comments WHERE id = $1 FOR UPDATE", comment_id)
+                if not comment_data:
+                    await callback_query.answer("Comment not found (it may have been deleted).", show_alert=True)
+                    try: await callback_query.message.delete() # Delete the confirmation message
+                    except Exception: pass
+                    return
+
+                reported_user_id = comment_data['user_id']
+                confession_id = comment_data['confession_id']
+                comment_text = comment_data['text']
+
+                # Double-check if already reported (race condition)
+                already_reported = await conn.fetchval("SELECT 1 FROM reports WHERE comment_id = $1 AND reporter_user_id = $2", comment_id, reporter_user_id)
+                if already_reported:
+                    await callback_query.answer("You have already reported this comment.", show_alert=True)
+                    try: await callback_query.message.edit_text("Report already submitted.", reply_markup=None)
+                    except Exception: pass
+                    return # Rollback transaction
+
+                # Insert the report
+                report_id = await conn.fetchval(
+                    """INSERT INTO reports (comment_id, reporter_user_id, reported_user_id, status)
+                       VALUES ($1, $2, $3, 'pending') RETURNING id""",
+                    comment_id, reporter_user_id, reported_user_id
+                )
+                if not report_id:
+                    raise Exception("Failed to insert report or get report ID.")
+
+                logging.info(f"User {reporter_user_id} reported comment {comment_id} (author: {reported_user_id}). Report ID: {report_id}")
+
+            except asyncpg.exceptions.UniqueViolationError:
+                # Handle potential race condition where report was inserted between check and insert
+                await callback_query.answer("You have already reported this comment.", show_alert=True)
+                try: await callback_query.message.edit_text("Report already submitted.", reply_markup=None)
+                except Exception: pass
+                return # Rollback transaction
+            except Exception as e:
+                logging.error(f"Error saving report for comment {comment_id} by {reporter_user_id}: {e}", exc_info=True)
+                await callback_query.answer("Error saving report. Please try again.", show_alert=True)
+                try: await callback_query.message.delete() # Clean up confirmation message on error
+                except Exception: pass
+                return # Rollback transaction
+
+    # --- If transaction successful, notify admin and reporter ---
+    if report_id and reported_user_id and confession_id and comment_text:
+        # Notify Admin
+        snippet = html.quote(comment_text[:200]) + ('...' if len(comment_text) > 200 else '')
+        confession_link = f"https://t.me/{bot_info.username}?start=view_{confession_id}" if bot_info else f"Confession #{confession_id}"
+        admin_message = (
+            f"⚠️ <b>New Comment Report (ID: {report_id})</b> ⚠️\n\n"
+            f"<b>Confession:</b> <a href='{confession_link}'>#{confession_id}</a>\n"
+            f"<b>Comment ID:</b> <code>{comment_id}</code>\n"
+            f"<b>Comment Text Snippet:</b>\n<i>{snippet}</i>\n\n"
+            f"<b>Reported User ID:</b> <code>{reported_user_id}</code>\n"
+            f"<b>Reporter User ID:</b> <code>{reporter_user_id}</code>\n\n"
+            f"Use /id <code>{reported_user_id}</code> for user info."
+            # Future: Add admin action buttons here (e.g., Dismiss, Delete Comment, Warn User)
+        )
+        await safe_send_message(ADMIN_ID, admin_message, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+        # Notify Reporter (by editing the confirmation message)
+        try:
+            await callback_query.message.edit_text(
+                "✅ Comment reported successfully. The admin has been notified.",
+                reply_markup=None # Remove confirmation buttons
+            )
+            await callback_query.answer("Report sent.", show_alert=False)
+        except Exception as e:
+            logging.warning(f"Could not edit report confirmation message {callback_query.message.message_id} for user {reporter_user_id}: {e}")
+            # Send a new message as fallback
+            await safe_send_message(reporter_user_id, "✅ Comment reported successfully.")
+            await callback_query.answer("Report sent.", show_alert=False)
+
+# 3. Cancel Report
+@dp.callback_query(F.data.startswith("report_cancel_"))
+async def report_cancel_callback(callback_query: types.CallbackQuery):
+    try:
+        # comment_id = int(callback_query.data.split("_", 2)[2]) # We don't strictly need the ID here
+        await callback_query.message.edit_text("Report cancelled.", reply_markup=None)
+        await callback_query.answer("Report cancelled.")
+    except Exception as e:
+        logging.warning(f"Error cancelling report (editing message {callback_query.message.message_id}): {e}")
+        await callback_query.answer("Report cancelled.") # Still acknowledge
 
 # --- Contact Request Flow Handlers ---
 @dp.callback_query(F.data.startswith("req_contact_"))
 async def handle_request_contact(callback_query: types.CallbackQuery):
-    # ... (Request contact remains the same) ...
     try: _, _, comm_id_str = callback_query.data.split("_", 2); comm_id = int(comm_id_str); req_uid = callback_query.from_user.id
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid req contact cb: {callback_query.data}"); await callback_query.answer("Invalid request data.", show_alert=True); return
     async with db.acquire() as conn:
@@ -1082,28 +1386,35 @@ async def handle_request_contact(callback_query: types.CallbackQuery):
             if req_uid == comm_uid: await callback_query.answer("Cannot request contact self.", show_alert=True); return
             comm_chat = None; comm_username = None
             try:
-                comm_chat = await bot.get_chat(comm_uid)
-                comm_username = comm_chat.username
-                if not comm_username: await callback_query.answer("User has no public username.", show_alert=True); logging.info(f"Author {req_uid} req comm {comm_id} aborted: commenter {comm_uid} no username."); return
-            except TelegramBadRequest as e: logging.warning(f"Could not fetch {comm_uid} chat: {e}."); await callback_query.answer(f"Could not get commenter info: {e}.", show_alert=True); return
-            except Exception as e: logging.error(f"Unexpected err fetching {comm_uid} chat: {e}", exc_info=True); await callback_query.answer("Could not get commenter info.", show_alert=True); return
+                # No need to fetch chat info here, we only need it if they approve
+                pass
+            except Exception as e: # Keep potential future fetching errors handled
+                logging.error(f"Unexpected err related to commenter {comm_uid} info: {e}", exc_info=True); await callback_query.answer("Could not process request due to commenter info.", show_alert=True); return
             existing = await conn.fetchval("SELECT status FROM contact_requests WHERE comment_id = $1 AND requester_user_id = $2 AND status IN ('pending', 'approved', 'approved_no_username')", comm_id, req_uid)
             if existing: await callback_query.answer(f"Request already {existing}.", show_alert=True); return
             request_id = None
             try:
                 request_id = await conn.fetchval("INSERT INTO contact_requests (confession_id, comment_id, requester_user_id, requested_user_id, status) VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT (comment_id, requester_user_id) DO UPDATE SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE contact_requests.status = 'denied' RETURNING id", conf_id, comm_id, req_uid, comm_uid)
-                if not request_id: existing_s = await conn.fetchval("SELECT status FROM contact_requests WHERE comment_id = $1 AND requester_user_id = $2", comm_id, req_uid); logging.warning(f"Contact request insert for comm {comm_id} by {req_uid} returned no ID (ON CONFLICT?). Existing status: {existing_s}"); await callback_query.answer(f"Request already exists (Status: {existing_s or 'Unknown'}).", show_alert=True); return
-            except Exception as insert_err: logging.error(f"Failed insert contact req {req_uid} to {comm_uid} for comm {comm_id}: {insert_err}", exc_info=True); await callback_query.answer("Failed save request.", show_alert=True); return
-            notification_text = (f"🤝 Author of Confession #{conf_id} wants to contact you re your comment:\n\n<i>{preview}</i>\n\nDo you approve sharing @{html.quote(comm_username)}?"); approval_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_contact_{request_id}")], [InlineKeyboardButton(text="❌ Deny", callback_data=f"deny_contact_{request_id}")]]); sent = await safe_send_message(comm_uid, notification_text, reply_markup=approval_keyboard, parse_mode=ParseMode.HTML)
+                if not request_id:
+                    # If ON CONFLICT didn't return ID, it means it existed and wasn't 'denied'
+                    existing_s = await conn.fetchval("SELECT status FROM contact_requests WHERE comment_id = $1 AND requester_user_id = $2", comm_id, req_uid)
+                    logging.warning(f"Contact request insert for comm {comm_id} by {req_uid} returned no ID (ON CONFLICT?). Existing status: {existing_s}")
+                    await callback_query.answer(f"Request already exists (Status: {existing_s or 'Unknown'}).", show_alert=True)
+                    return # Rollback not needed, nothing changed
+            except Exception as insert_err: logging.error(f"Failed insert contact req {req_uid} to {comm_uid} for comm {comm_id}: {insert_err}", exc_info=True); await callback_query.answer("Failed save request.", show_alert=True); return # Rollback needed
+            # --- Modified Notification Text ---
+            # Don't show username yet, ask for permission first
+            notification_text = (f"🤝 Author of Confession #{conf_id} wants to contact you regarding your comment:\n\n<i>{preview}</i>\n\nDo you approve sharing your Telegram profile contact details (username, if set) with them?");
+            approval_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_contact_{request_id}")], [InlineKeyboardButton(text="❌ Deny", callback_data=f"deny_contact_{request_id}")]]);
+            sent = await safe_send_message(comm_uid, notification_text, reply_markup=approval_keyboard, parse_mode=ParseMode.HTML)
             if sent: await callback_query.answer("✅ Contact request sent.", show_alert=False); logging.info(f"Contact req {request_id} (comm {comm_id}) sent from {req_uid} to {comm_uid}.")
-            else: logging.warning(f"Failed send contact req {request_id} notification to {comm_uid}. Rolling back."); await callback_query.answer("⚠️ Could not send request (user blocked?).", show_alert=True); raise Exception(f"Failed notify commenter {comm_uid}, rolling back req {request_id}")
+            else: logging.warning(f"Failed send contact req {request_id} notification to {comm_uid}. Rolling back."); await callback_query.answer("⚠️ Could not send request (user blocked?).", show_alert=True); raise Exception(f"Failed notify commenter {comm_uid}, rolling back req {request_id}") # Trigger rollback
 
 def is_contact_response_callback(data: str) -> bool:
     if not isinstance(data, str): return False; parts = data.split("_"); return len(parts) == 3 and parts[0] in ('approve', 'deny') and parts[1] == 'contact' and parts[2].isdigit()
 
 @dp.callback_query(lambda c: is_contact_response_callback(c.data))
 async def handle_contact_response(callback_query: types.CallbackQuery):
-    # ... (Contact response handling remains the same) ...
     try: action, _, req_id_str = callback_query.data.split("_"); req_id = int(req_id_str); resp_uid = callback_query.from_user.id
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid contact resp cb: {callback_query.data}"); await callback_query.answer("Invalid request data.", show_alert=True); return
     db_status = 'approved' if action == 'approve' else 'denied'; edit_status = ""
@@ -1126,19 +1437,51 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
                 return
             author_notif = ""; req_uid = req_data['requester_user_id']; conf_id = req_data['confession_id']; comm_id = req_data['comment_id']
             if db_status == 'approved':
-                comm_uname = callback_query.from_user.username
-                if comm_uname: await conn.execute("UPDATE contact_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id); author_notif = (f"✅ Contact Approved!\n\nReq Confession #{conf_id} (Comment ~{comm_id}) APPROVED.\n\nContact: @{html.quote(comm_uname)}"); await callback_query.answer("Approved. Username shared."); logging.info(f"Req {req_id} approved by {resp_uid}. Uname @{comm_uname} sent to {req_uid}."); edit_status = 'Approved (Username Shared)'
-                else: db_status = 'approved_no_username'; await conn.execute("UPDATE contact_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", db_status, req_id); author_notif = (f"⚠️ Contact Approved (No Username)\n\nReq Confession #{conf_id} (Comment ~{comm_id}) APPROVED, but user lacks public username."); await callback_query.answer("Approved, but no public username.", show_alert=True); logging.info(f"Req {req_id} approved by {resp_uid}, no username. Notified {req_uid}."); edit_status = 'Approved (No Username)'
-            else: await conn.execute("UPDATE contact_requests SET status = 'denied', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id); author_notif = (f"❌ Contact Denied\n\nReq Confession #{conf_id} (Comment ~{comm_id}) DENIED."); await callback_query.answer("Denied. Username not shared."); logging.info(f"Req {req_id} denied by {resp_uid}. Notified {req_uid}."); edit_status = 'Denied'
+                # Fetch username *after* approval
+                comm_uname = None
+                try:
+                    resp_user_chat = await bot.get_chat(resp_uid)
+                    comm_uname = resp_user_chat.username
+                except Exception as e:
+                    logging.warning(f"Could not fetch chat info for user {resp_uid} during contact approval: {e}")
+                    # Proceed as approved_no_username even if error occurs fetching username
+
+                if comm_uname:
+                    await conn.execute("UPDATE contact_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
+                    author_notif = (f"✅ Contact Approved!\n\nReq Confession #{conf_id} (Comment ~{comm_id}) APPROVED.\n\nContact: @{html.quote(comm_uname)}")
+                    await callback_query.answer("Approved. Your username has been shared.")
+                    logging.info(f"Req {req_id} approved by {resp_uid}. Uname @{comm_uname} sent to {req_uid}.")
+                    edit_status = 'Approved (Username Shared)'
+                else: # No username or failed to fetch
+                    db_status = 'approved_no_username'
+                    await conn.execute("UPDATE contact_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", db_status, req_id)
+                    author_notif = (f"⚠️ Contact Approved (No Public Username)\n\nReq Confession #{conf_id} (Comment ~{comm_id}) APPROVED, but user has no public username or it could not be retrieved.")
+                    await callback_query.answer("Approved, but you don't have a public username set.", show_alert=True)
+                    logging.info(f"Req {req_id} approved by {resp_uid}, no username/fetch error. Notified {req_uid}.")
+                    edit_status = 'Approved (No Username)'
+            else: # Denied
+                await conn.execute("UPDATE contact_requests SET status = 'denied', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
+                author_notif = (f"❌ Contact Denied\n\nReq Confession #{conf_id} (Comment ~{comm_id}) DENIED by the commenter.")
+                await callback_query.answer("Denied. Your contact details were not shared.")
+                logging.info(f"Req {req_id} denied by {resp_uid}. Notified {req_uid}.")
+                edit_status = 'Denied'
+
+            # Send notification to the author outside the user interaction flow
             await safe_send_message(req_uid, author_notif, parse_mode=ParseMode.HTML)
-            try: orig_txt = callback_query.message.html_text; final_txt = f"{orig_txt}\n\n<b>Status: {edit_status}</b>"; await callback_query.message.edit_text(final_txt, reply_markup=None, parse_mode=ParseMode.HTML)
+
+            # Edit the commenter's original notification message
+            try:
+                orig_txt = callback_query.message.html_text
+                # Ensure we don't double-append status if user clicks fast
+                if "Status:" not in orig_txt:
+                    final_txt = f"{orig_txt}\n\n<b>Status: {edit_status}</b>"
+                    await callback_query.message.edit_text(final_txt, reply_markup=None, parse_mode=ParseMode.HTML)
             except TelegramBadRequest as e:
                  if "message is not modified" not in str(e).lower() and "message to edit not found" not in str(e).lower(): logging.warning(f"Could not edit commenter's ({resp_uid}) notif msg {callback_query.message.message_id} req {req_id}: {e}")
             except Exception as e: logging.warning(f"Could not edit commenter's ({resp_uid}) notif msg {callback_query.message.message_id} req {req_id}: {e}")
 
 @dp.callback_query(F.data.startswith("view_reqs_"))
 async def view_contact_requests(callback_query: types.CallbackQuery):
-    # ... (View contact requests remains the same) ...
     try: _, _, conf_id_str = callback_query.data.split("_", 2); conf_id = int(conf_id_str); viewer_uid = callback_query.from_user.id
     except (ValueError, IndexError, TypeError): logging.error(f"Invalid view reqs cb: {callback_query.data}"); await callback_query.answer("Invalid data.", show_alert=True); return
     async with db.acquire() as conn:
@@ -1157,19 +1500,25 @@ async def view_contact_requests(callback_query: types.CallbackQuery):
         status_emoji = {"pending": "❓", "approved": "✅", "denied": "❌", "approved_no_username": "⚠️"}.get(req['status'], "❓")
         resp_parts.append(f"🔹 <b>To Commenter ID:</b> <code>{req_uid}</code>\n   <i>Comment: \"{preview}\"</i>\n   <b>Status:</b> {status_emoji} {status}\n   <b>Last Update:</b> {updated}")
         if req['status'] == 'approved':
-            try: req_user_chat = await bot.get_chat(req_uid); resp_parts.append(f"   <b>Username:</b> @{html.quote(req_user_chat.username)}" if req_user_chat and req_user_chat.username else "   <b>Username:</b> (Not Available)")
-            except Exception: resp_parts.append(f"   <b>Username:</b> (Error fetching)")
+            try:
+                # Fetch username only when displaying approved status
+                req_user_chat = await bot.get_chat(req_uid)
+                resp_parts.append(f"   <b>Username:</b> @{html.quote(req_user_chat.username)}" if req_user_chat and req_user_chat.username else "   <b>Username:</b> (Approved, No Public Username)")
+            except Exception as e:
+                logging.warning(f"Error fetching username for approved contact request {req['comment_id']} -> {req_uid}: {e}")
+                resp_parts.append(f"   <b>Username:</b> (Error fetching username)")
+        elif req['status'] == 'approved_no_username':
+             resp_parts.append(f"   <b>Username:</b> (Approved, No Public Username)")
+
     resp_txt = "\n\n".join(resp_parts);
     if len(resp_txt) > 4096: resp_txt = resp_txt[:4090] + "\n\n...(truncated)"
     await safe_send_message(viewer_uid, resp_txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True); await callback_query.answer()
-
 
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
 async def handle_text_without_state(message: types.Message):
     logging.debug(f"Received non-command text from user {message.from_user.id} outside of any state: '{message.text[:50]}...'")
     await message.reply("Hi there! 👋\nUse /confess to share something anonymously.\nUse /help to see all available commands.")
-
 
 # --- Main Execution ---
 async def main():
@@ -1178,14 +1527,13 @@ async def main():
         if db and bot_info:
             commands_list = [
                 types.BotCommand(command="start", description="Start the bot / View confession"),
-                types.BotCommand(command="confess", description="Submit an anonymous confession"),
+                types.BotCommand(command="confess", description="Submit an anonymous confession (+1🏅)"),
                 types.BotCommand(command="help", description="Show help and commands"),
                 types.BotCommand(command="privacy", description="View privacy information"),
                 types.BotCommand(command="cancel", description="Cancel current action"),
             ]
             admin_commands_list = commands_list + [
-                types.BotCommand(command="id", description="ADMIN: Get user info by ID"),
-                # No specific command needed for rejection reason, it's part of the flow
+                types.BotCommand(command="id", description="ADMIN: Get user info by ID (incl. 🏅)"),
             ]
             await bot.set_my_commands(commands_list) # Set default commands for everyone
             try: # Attempt setting admin-specific commands
@@ -1193,14 +1541,19 @@ async def main():
                  logging.info(f"Admin-specific commands set for ADMIN_ID {ADMIN_ID}.")
             except Exception as e: logging.warning(f"Could not set admin-specific commands: {e}")
 
-            logging.info("Starting bot polling...")
-            # --- *** ADDITION: Register new handlers *** ---
-            # Ensure the new state handler is registered BEFORE the generic text handler
+            logging.info("Registering handlers...")
+            # --- Register new handlers ---
+            # Rejection reason handler
             dp.message.register(receive_rejection_reason, AdminActions.waiting_for_rejection_reason, F.text)
-            # Re-register fallback handler to ensure it's last for text messages without state
+            # Report handlers
+            dp.callback_query.register(report_confirm_callback, F.data.startswith("report_confirm_"))
+            dp.callback_query.register(report_execute_callback, F.data.startswith("report_execute_"))
+            dp.callback_query.register(report_cancel_callback, F.data.startswith("report_cancel_"))
+            # Fallback handler (ensure it remains last for non-command text)
             dp.message.register(handle_text_without_state, StateFilter(None), F.text & ~F.text.startswith('/'))
-            # --- *** END ADDITION *** ---
+            # --- END Register new handlers ---
 
+            logging.info("Starting bot polling...")
             await dp.start_polling(bot, skip_updates=True) # skip_updates might miss things if bot offline long
         else: logging.critical("FATAL: DB connection or bot info missing. Cannot start.")
     except Exception as e: logging.critical(f"Fatal error setup/polling: {e}", exc_info=True)
@@ -1216,5 +1569,3 @@ if __name__ == "__main__":
     except Exception as main_err: logging.critical(f"Critical error in main loop: {main_err}", exc_info=True); print(f"Critical error: {main_err}")
 
 # --- END OF FILE main.py ---
-
-# --- END OF FILE main[V2.0.1.8] - Stable.py ---
