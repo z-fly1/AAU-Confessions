@@ -235,7 +235,7 @@ async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer
     builder.button(text=f"👎 {dislikes}", callback_data=f"react_dislike_{comment_id}")
     builder.button(text="↪️ Reply", callback_data=f"reply_{comment_id}")
     # --- *** ADDITION: Report Button *** ---
-    builder.button(text="⚠️ Report", callback_data=f"report_confirm_{comment_id}")
+    builder.button(text="⚠️", callback_data=f"report_confirm_{comment_id}")
 
     # Determine layout based on whether the contact button is needed
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
