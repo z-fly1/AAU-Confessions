@@ -335,7 +335,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             ts = c_data['created_at'].strftime("%Y-%m-%d %H:%M")
             # --- *** ADDITION: Get medal points *** ---
             commenter_points = c_data['user_points'] # Already fetched
-            medal_str = f" 🏅{commenter_points}" if commenter_points > 0 else ""
+            medal_str = f" 🏅{commenter_points}" if commenter_points > -1000 else ""
 
             reply_prefix = ""
             if c_data['parent_comment_id'] and c_data['parent_comment_id'] in comment_id_to_seq:
