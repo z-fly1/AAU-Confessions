@@ -501,7 +501,7 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
 @dp.message(Command("privacy"), StateFilter(None))
 async def show_privacy(message: types.Message):
     # Added mention of points and reports
-    privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confession-Bot-04-16" # Replace with your actual URL
+    privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-04-27" # Replace with your actual URL
     privacy_text = (
         "<b>Privacy Information</b>\n\n"
         "Your privacy is important:\n"
