@@ -489,10 +489,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         # Send the final "Add Comment" prompt as a new message
          await safe_send_message(user_id, end_txt, reply_markup=add_comm_btn, parse_mode=ParseMode.HTML)
          # Clean up the original "Loading..." message if it wasn't edited earlier
-         if message_to_edit and first_comment_message:
-             try:
-                 await message_to_edit.edit_text(f"Finished loading comments for Confession #{confession_id}.", reply_markup=None)
-             except Exception: pass # Ignore if editing fails
 
     except Exception as e:
         logging.warning(f"Could not send final 'Add Comment' prompt to {user_id} for {confession_id}: {e}")
