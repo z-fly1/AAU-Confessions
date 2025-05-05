@@ -922,7 +922,7 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext):
         if not conf_status:
             logging.warning(f"Admin {callback_query.from_user.id} action on non-existent Conf ID {conf_id}")
             await callback_query.answer("Confession not found.", show_alert=True)
-            try: await callback_query.message.delete()
+            try: print("Test")
             except Exception as e: logging.warning(f"Could not delete admin review msg for non-existent conf {conf_id}: {e}")
             return
 
@@ -1496,7 +1496,7 @@ async def report_execute_callback(callback_query: types.CallbackQuery):
                 )
                 if not comment_data:
                     await callback_query.answer("Comment not found.", show_alert=True)
-                    try: await callback_query.message.delete()
+                    try: pass
                     except Exception: pass
                     return
 
