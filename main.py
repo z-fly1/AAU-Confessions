@@ -384,17 +384,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         else:
             await safe_send_message(user_id, comments_html, parse_mode=ParseMode.HTML)
     else:
-        # If editing, replace "Loading..." first
-        if message_to_edit:
-            try:
-                await message_to_edit.edit_text(f"--- Comments for Confession #{confession_id} ---", reply_markup=None)
-                first_comment_message = False # No longer need to edit the original message
-            except Exception as e:
-                logging.warning(f"Could not edit initial 'Loading...' msg for {user_id} conf {confession_id}: {e}")
-                # Proceed sending comments as new messages
+               
 
-        #comments_html = f"--- Comments for Confession #{confession_id} ---\n\n"
-        #await safe_send_message(user_id, comments_html, parse_mode=ParseMode.HTML) # Send header separately
 
         temp_map = {}
         for i, c_data in enumerate(comment_data_list):
