@@ -117,6 +117,10 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'confessions' table.")
+        await conn.execute("""
+            ALTER TABLE confessions 
+            ADD COLUMN IF NOT EXISTS categories TEXT[];
+        """)
         # --- Add GIN index for categories array ---
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_confessions_categories ON confessions USING gin(categories);")
         logging.info("Checked/Created GIN index on 'confessions.categories'.")
