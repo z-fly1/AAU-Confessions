@@ -409,7 +409,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw else "Unknown time"
 
             commenter_points = c_data['user_points']
-            medal_str = f" 🏅{commenter_points}" if commenter_points > -1000 else "" # Threshold for display?
+            medal_str = f" 🏅{commenter_points} Aura" if commenter_points > -1000 else "" # Threshold for display?
 
             reply_prefix = ""
             if c_data['parent_comment_id'] and c_data['parent_comment_id'] in comment_id_to_seq:
@@ -439,7 +439,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 
             try:
                 # --- *** SEPARATE HANDLING FOR STICKER/GIF vs TEXT *** ---
-                metadata_text = f"<i>#{seq_num}{display_tag} | {ts}{admin_info}</i>"
+                metadata_text = f"<i>#{seq_num}{display_tag}{admin_info}</i>"
 
                 if sticker_id:
                     await bot.send_sticker(user_id, sticker=sticker_id)
