@@ -1,6 +1,3 @@
-
-# --- START OF FILE main_beta_vNext.py ---
-
 import logging
 import asyncpg
 import os
@@ -1982,4 +1979,3 @@ if __name__ == "__main__":
         logging.critical(f"Critical error in asyncio.run(main()): {main_err}", exc_info=True)
         print(f"Critical error: {main_err}")
 # --- END OF FILE main_beta_vNext.py ---
-```
