@@ -19,9 +19,8 @@ from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from typing import Optional, Tuple, Dict, Any, List # Added List
 
-# --- Dummy HTTP Server Imports ---
+
 from aiohttp import web
-# --- End Dummy HTTP Server Imports ---
 
 
 # --- Constants ---
@@ -436,12 +435,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                  logging.warning(f"Could not edit 'no comments' msg for conf {confession_id} to {user_id}: {e}")
         else:
             await safe_send_message(user_id, comments_html, parse_mode=ParseMode.HTML)
-    else:
-        if message_to_edit: # Delete the "Loading..." message as we will send new messages
-            try:
-                await message_to_edit.delete()
-            except Exception as e:
-                logging.warning(f"Could not delete 'loading...' message for conf {confession_id}, user {user_id}: {e}")
 
         temp_map = {}
         for i, c_data in enumerate(comment_data_list):
