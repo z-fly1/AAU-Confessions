@@ -38,7 +38,7 @@ COMMENTS_PER_PAGE = 14 # New constant for comment pagination
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKE")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -891,7 +891,11 @@ async def add_comment_prompt(cb: types.CallbackQuery, state: FSMContext):
     except: await cb.answer("Invalid data.", show_alert=True); return
     async with db.acquire() as conn:
         exists = await conn.fetchval("SELECT 1 FROM confessions WHERE id=$1 AND status='approved'", conf_id)
-    if not exists: await cb.answer("Conf not available.", show_alert=True); try: await cb.message.edit_reply_markup(reply_markup=None); except: pass; return
+    if not exists: 
+        await cb.answer("Conf not available.", show_alert=True)
+        try: 
+            await cb.message.edit_reply_markup(reply_markup=None) 
+        except: pass; return
     await state.update_data(confession_id=conf_id, parent_comment_id=None)
     await state.set_state(CommentForm.waiting_for_comment)
     try: await safe_send_message(cb.from_user.id, f"📝 Commenting Conf #{conf_id}.\nSend text, sticker, or GIF. /cancel to abort."); await cb.answer()
