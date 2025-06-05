@@ -443,13 +443,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     else:
         # If message_to_edit exists, it was likely a "Loading comments..." message.
         # We can delete it now as we are sending new messages for each comment.
-        if message_to_edit:
-            try:
-                await message_to_edit.delete()
-            except Exception as e:
-                logging.warning(f"Could not delete 'loading' message {message_to_edit.message_id} for user {user_id} on conf {confession_id}: {e}")
-
-
         temp_map = {}
         for i, c_data in enumerate(comment_data_list):
             counter = i + 1
