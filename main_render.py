@@ -37,7 +37,7 @@ MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
