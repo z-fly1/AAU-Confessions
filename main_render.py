@@ -25,9 +25,8 @@ from aiohttp import web
 # --- Constants ---
 # --- *** MODIFIED: Updated Categories *** ---
 CATEGORIES = [
-    "Relationship", "Education", "Family", "School", "Friendship",
-    "Religion", "Mental", "Addiction", "Harassment", "Crush",
-    "Exams", "Dorm", "Health", "Trauma", "Sexual Assault",
+    "Kiremt🆕️", "Relationship", "Family", "School", "Friendship",
+    "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual Assault",
     "Other"
 ]
 POINTS_PER_CONFESSION = 1
