@@ -14,7 +14,7 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <!-- Logo placeholder -->
+  <img src = "Logo_Transparent.png">
   <h3 align="center">AAU Confessions Bot</h3>
 
   <p align="center">
