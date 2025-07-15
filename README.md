@@ -7,7 +7,7 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <img src = "Logo_Red.png">
+  <img src = "Logo_Transparent.png">
   <h3 align="center">AAU Confessions Bot</h3>
 
   <p align="center">
