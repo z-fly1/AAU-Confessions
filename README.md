@@ -3,11 +3,11 @@
 <a id="readme-top"></a>
 
 <!-- PROJECT SHIELDS -->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
+[![Contributors][contributors-shield]][https://github.com/addisuderrese/AAU-Confessions/graphs/contributors]
+[![Forks][forks-shield]][https://github.com/addisuderrese/AAU-Confessions/network/members]
 [![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![Unlicense License][license-shield]][license-url]
+[![Issues][issues-shield]][https://github.com/addisuderrese/AAU-Confessions/issues]
+[![Unlicense License][license-shield]][https://github.com/addisuderrese/AAU-Confessions/blob/main/LICENSE]
 
 
 
