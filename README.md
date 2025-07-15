@@ -2,20 +2,6 @@
 <!-- Improved compatibility of back to top link -->
 <a id="readme-top"></a>
 
-<!-- PROJECT SHIELDS -->
-[![Contributors][contributors-shield]][https://github.com/addisuderrese/AAU-Confessions/graphs/contributors]
-[![Forks][forks-shield]][https://github.com/addisuderrese/AAU-Confessions/network/members]
-[![Stargazers][stars-shield]][https://github.com/addisuderrese/AAU-Confessions]
-[![Issues][issues-shield]][https://github.com/addisuderrese/AAU-Confessions/issues]
-[![Unlicense License][license-shield]][https://github.com/addisuderrese/AAU-Confessions/blob/main/LICENSE]
-
-<!-- SHIELDS URLS -->
-[contributors-shield]: https://img.shields.io/github/contributors/addisuderrese/AAU-Confessions?style=flat-square
-[forks-shield]: https://img.shields.io/github/forks/addisuderrese/AAU-Confessions?style=flat-square
-[stars-shield]: https://img.shields.io/github/stars/addisuderrese/AAU-Confessions?style=flat-square
-[issues-shield]: https://img.shields.io/github/issues/addisuderrese/AAU-Confessions?style=flat-square
-[license-shield]: https://img.shields.io/github/license/addisuderrese/AAU-Confessions?style=flat-square
-
 
 
 <!-- PROJECT LOGO -->
