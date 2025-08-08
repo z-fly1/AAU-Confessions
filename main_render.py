@@ -1975,7 +1975,7 @@ async def _process_contact_response(callback_query: types.CallbackQuery, action:
     try:
         await safe_send_message(author_to_notify_uid, notification_to_author, parse_mode=ParseMode.HTML)
     except Exception as e_notify:
-        logging.warning(f\"Failed to notify author {author_to_notify_uid} about contact request {req_id}: {e_notify}\")
+                        logging.exception(f"Failed to notify author {author_to_notify_uid} about contact request {req_id}: {e_notify}")
 
     # Update the responder's message to reflect their choice (remove buttons to avoid double-click)
     try:
