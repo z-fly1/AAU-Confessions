@@ -39,6 +39,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+PAGE_SIZE = int(os.getenv("PAGE_SIZE", "14"))  # Number of comments per page for pagination
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 # PORT for dummy HTTP server, Render sets this for Web Services
 HTTP_PORT_STR = os.getenv("PORT")
@@ -388,10 +390,11 @@ async def update_channel_post_button(confession_id: int):
     except Exception as e: logging.error(f"Unexpected err updating btn for conf {confession_id}: {e}", exc_info=True)
 
 # --- *** MODIFIED: show_comments_for_confession (Major changes for Sticker/GIF handling) *** ---
-async def show_comments_for_confession(user_id: int, confession_id: int, message_to_edit: Optional[types.Message] = None):
+
+async def show_comments_for_confession(user_id: int, confession_id: int, message_to_edit: Optional[types.Message] = None, page: int = 1):
     """
-    Displays comments for a given confession. Includes commenter's User ID for admin,
-    medal points, and handles text, stickers, and GIFs separately.
+    Displays comments for a given confession with pagination.
+    page: 1-based page number. PAGE_SIZE comments per page.
     """
     confession_owner_id: Optional[int] = None
     comment_data_list: list[Dict[str, Any]] = []
@@ -403,13 +406,44 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             logging.warning(err_txt + f" (Requested by {user_id})")
             try:
                 if message_to_edit:
-                	print("Delete")
-                else: await safe_send_message(user_id, err_txt)
-            except Exception as e: logging.warning(f"Could not send/edit 'conf not found' to {user_id}: {e}")
+                    try:
+                        await message_to_edit.edit_text(err_txt, parse_mode=ParseMode.HTML, reply_markup=None)
+                    except Exception:
+                        await safe_send_message(user_id, err_txt)
+                else:
+                    await safe_send_message(user_id, err_txt)
+            except Exception as e:
+                logging.warning(f"Could not send/edit 'conf not found' to {user_id}: {e}")
             return
         confession_owner_id = conf_data['user_id']
 
-        # Fetch comments including new content types
+        # Get total comments count for pagination
+        total_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", confession_id) or 0
+        if total_count == 0:
+            comments_html = "<i>No comments yet. Be the first!</i>\n"
+            if message_to_edit:
+                try:
+                    await message_to_edit.edit_text(comments_html, parse_mode=ParseMode.HTML, reply_markup=None)
+                except Exception as e:
+                    logging.warning(f"Could not edit 'no comments' to {user_id} for {confession_id}: {e}")
+            else:
+                await safe_send_message(user_id, comments_html, parse_mode=ParseMode.HTML)
+            nav = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"➕ Add Comment", callback_data=f"add_{confession_id}")]
+            ])
+            await safe_send_message(user_id, "\nYou can add your own comment below:", reply_markup=nav, parse_mode=ParseMode.HTML)
+            return
+
+        # Compute pagination
+        total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE
+        if page < 1:
+            page = 1
+        if page > total_pages:
+            page = total_pages
+
+        offset = (page - 1) * PAGE_SIZE
+
+        # Fetch only this page of comments
         comments_raw = await conn.fetch(
             """
             SELECT
@@ -419,100 +453,81 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             LEFT JOIN user_points up ON c.user_id = up.user_id
             WHERE c.confession_id = $1
             ORDER BY c.created_at ASC
+            LIMIT $2 OFFSET $3
             """,
-            confession_id
+            confession_id, PAGE_SIZE, offset
         )
         comment_data_list = [dict(row) for row in comments_raw]
 
-    sent_msg_ids = {}; comment_id_to_seq = {}; counter = 0
-    # first_comment_message = True # Flag to handle initial edit # Not used in current logic
+    # Map comment DB ids to global sequence number (for reply references)
+    comment_id_to_seq = {}
+    for i, c in enumerate(comment_data_list):
+        comment_id_to_seq[c['id']] = offset + i + 1
 
+    # Send comments in this page
     if not comment_data_list:
-        comments_html = "<i>No comments yet. Be the first!</i>\n"
-        if message_to_edit:
-             try:
-                  await message_to_edit.edit_text(comments_html, parse_mode=ParseMode.HTML, reply_markup=None)
-             except TelegramBadRequest as e:
-                 if "message to edit not found" not in str(e).lower(): # Ignore if original message gone
-                     logging.warning(f"Could not edit 'no comments' to {user_id} for {confession_id}: {e}")
-             except Exception as e:
-                 logging.warning(f"Could not edit 'no comments' to {user_id} for {confession_id}: {e}")
-        else:
-            await safe_send_message(user_id, comments_html, parse_mode=ParseMode.HTML)
+        await safe_send_message(user_id, f"<i>No comments on page {page}.</i>", parse_mode=ParseMode.HTML)
     else:
-
-        temp_map = {}
         for i, c_data in enumerate(comment_data_list):
-            counter = i + 1
-            db_id = c_data['id']
-            comment_id_to_seq[db_id] = counter
-            temp_map[db_id] = c_data
-
-        for c_data in comment_data_list:
+            seq_num = offset + i + 1
             comm_id = c_data['id']
-            seq_num = comment_id_to_seq[comm_id]
             commenter_uid = c_data['user_id']
-            comm_text = c_data['text'] # Might be None
-            sticker_id = c_data['sticker_file_id'] # Might be None
-            animation_id = c_data['animation_file_id'] # Might be None
-            ts_raw: datetime = c_data['created_at']
+            comm_text = c_data['text']
+            sticker_id = c_data['sticker_file_id']
+            animation_id = c_data['animation_file_id']
+            ts_raw = c_data['created_at']
             ts = ts_raw.strftime("%Y-%m-%d %H:%M") if ts_raw else "Unknown time"
 
-            commenter_points = c_data['user_points']
-            medal_str = f" 🏅{commenter_points} Aura" if commenter_points > -1000 else "" # Threshold for display?
+            commenter_points = c_data.get('user_points', 0)
+            medal_str = f" 🏅{commenter_points} Aura" if commenter_points > -1000 else ""
 
             reply_prefix = ""
             if c_data['parent_comment_id'] and c_data['parent_comment_id'] in comment_id_to_seq:
                 reply_prefix = f"↪️ <i>Replying to #{comment_id_to_seq[c_data['parent_comment_id']]}</i>\n"
             elif c_data['parent_comment_id']:
-                reply_prefix = f"↪️ <i>Replying to deleted comment</i>\n"
+                reply_prefix = f"↪️ <i>Replying to another comment</i>\n"
 
             tag = ""
             if confession_owner_id is not None:
                 if commenter_uid == confession_owner_id: tag = "(Author)"
                 elif commenter_uid == user_id: tag = "(You)"
                 else: tag = "Anonymous"
-            else: tag = "Anonymous"
+            else:
+                tag = "Anonymous"
             display_tag = f" {tag}{medal_str}" if tag else f" Anonymous{medal_str}"
 
             admin_info = ""
             if user_id == ADMIN_ID:
                 admin_info = f" [UID: <code>{commenter_uid}</code>]"
 
-            # Build keyboard (needed for both text and sticker/gif metadata messages)
+            # Build keyboard for comment
             keyboard = await build_comment_keyboard(
                 comment_id=comm_id,
                 commenter_user_id=commenter_uid,
                 viewer_user_id=user_id,
-                confession_owner_id=confession_owner_id or 0 # Ensure not None
+                confession_owner_id=confession_owner_id or 0
             )
 
             try:
-                # --- *** SEPARATE HANDLING FOR STICKER/GIF vs TEXT *** ---
-                metadata_text = f"<i>#{seq_num}{display_tag}{admin_info} {ts}</i>" # Added timestamp
+                metadata_text = f"<i>#{seq_num}{display_tag}{admin_info} {ts}</i>"
 
                 if sticker_id:
                     await bot.send_sticker(user_id, sticker=sticker_id)
-                    # Send metadata and keyboard separately
                     sent_meta_msg = await bot.send_message(
                         user_id,
-                        f"{reply_prefix}{metadata_text}", # Include reply prefix with metadata
+                        f"{reply_prefix}{metadata_text}",
                         reply_markup=keyboard,
                         parse_mode=ParseMode.HTML
                     )
-                    sent_msg_ids[comm_id] = sent_meta_msg.message_id # Store ID of the metadata message
                 elif animation_id:
                     await bot.send_animation(user_id, animation=animation_id)
-                    # Send metadata and keyboard separately
                     sent_meta_msg = await bot.send_message(
                         user_id,
-                        f"{reply_prefix}{metadata_text}", # Include reply prefix with metadata
+                        f"{reply_prefix}{metadata_text}",
                         reply_markup=keyboard,
                         parse_mode=ParseMode.HTML
                     )
-                    sent_msg_ids[comm_id] = sent_meta_msg.message_id
                 elif comm_text:
-                    # Original behavior: text + metadata + keyboard in one message
                     full_text = f"{reply_prefix}💬 {html.quote(comm_text)}\n\n{metadata_text}"
                     sent_msg = await bot.send_message(
                         user_id,
@@ -521,32 +536,35 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                         parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
-                    sent_msg_ids[comm_id] = sent_msg.message_id
                 else:
-                     # Should not happen due to DB constraint, but handle defensively
-                     logging.error(f"Comment {comm_id} has no text, sticker, or animation!")
-                     await bot.send_message(user_id, f"⚠️ Error displaying comment #{seq_num} (DB ID: {comm_id}) - Content Missing")
+                    logging.error(f"Comment {comm_id} has no text/sticker/animation!")
+                    await bot.send_message(user_id, f"⚠️ Error displaying comment #{seq_num} (DB ID: {comm_id}) - Content Missing")
 
             except Exception as e:
                 logging.warning(f"Could not send comment #{seq_num} (DB ID: {comm_id}) to {user_id}: {e}")
                 await safe_send_message(user_id, f"⚠️ Error displaying comment #{seq_num}.")
-            await asyncio.sleep(0.1) # Small delay to avoid hitting rate limits when sending many msgs
+            await asyncio.sleep(0.1)
 
-    # --- Add Comment Button ---
-    add_comm_btn = InlineKeyboardMarkup(inline_keyboard=[
+    # --- Navigation and Add Comment row ---
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"comments_page_{confession_id}_{page-1}"))
+    nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data=f"comments_page_{confession_id}_{page}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"comments_page_{confession_id}_{page+1}"))
+
+    nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        nav_row,
         [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]
     ])
 
-    end_txt = f"--- End of comments for Confession #{confession_id} ---\n" if comment_data_list else ""
-    end_txt += "\nYou can add your own comment below:"
+    end_txt = f"--- Showing comments {offset+1} to {min(offset+PAGE_SIZE, total_count)} of {total_count} for Confession #{confession_id} ---\n"
+    end_txt += "Use the buttons to navigate pages. You can add your own comment below:"
 
     try:
-        # Send the final "Add Comment" prompt as a new message
-         await safe_send_message(user_id, end_txt, reply_markup=add_comm_btn, parse_mode=ParseMode.HTML)
+        await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logging.warning(f"Could not send final 'Add Comment' prompt to {user_id} for {confession_id}: {e}")
-
-
+        logging.warning(f"Could not send final 'Add Comment' + nav prompt to {user_id} for {confession_id}: {e}")
 # --- Handlers ---
 
 @dp.message(Command("start"))
@@ -1183,6 +1201,21 @@ async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMCont
         await callback_query.answer("Could not start commenting process. Please try again.", show_alert=True); await state.clear()
 
 # --- *** MODIFIED: receive_comment - Handle Text, Sticker, GIF *** ---
+
+@dp.callback_query(F.data.startswith("comments_page_"))
+async def comments_page_callback(callback_query: types.CallbackQuery):
+    # Expected format: comments_page_{conf_id}_{page}
+    try:
+        parts = callback_query.data.split("_")
+        conf_id = int(parts[2])
+        page = int(parts[3])
+    except (ValueError, IndexError):
+        await callback_query.answer("Invalid page request.", show_alert=True)
+        return
+
+    await callback_query.answer("Loading comments...")
+    # Reuse show_comments_for_confession; pass the current message so the function can edit if needed
+    await show_comments_for_confession(callback_query.from_user.id, conf_id, callback_query.message, page=page)
 @dp.message(CommentForm.waiting_for_comment, F.text | F.sticker | F.animation)
 async def receive_comment(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
