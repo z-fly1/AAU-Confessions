@@ -1981,7 +1981,7 @@ async def _process_contact_response(callback_query: types.CallbackQuery, action:
     try:
         orig_text = callback_query.message.html_text or ""
         if edit_status_for_ui and f"Status: {edit_status_for_ui}" not in orig_text:
-            final_responder_message_text = f"{orig_text}\\n\\n<b>Status: {edit_status_for_ui}</b>\"
+            final_responder_message_text = f"{orig_text}\\n\\n<b>Status: {edit_status_for_ui}</b>"
             await callback_query.message.edit_text(final_responder_message_text, reply_markup=None, parse_mode=ParseMode.HTML)
     except Exception as e_edit:
         logging.warning(f"Could not edit responder message ({getattr(callback_query.message, 'message_id', 'unknown')}) for request {req_id}: {e_edit}\")
