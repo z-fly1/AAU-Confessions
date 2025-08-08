@@ -1986,13 +1986,13 @@ async def _process_contact_response(callback_query: types.CallbackQuery, action:
     except Exception as e_edit:
         logging.warning(f"Could not edit responder message ({getattr(callback_query.message, 'message_id', 'unknown')}) for request {req_id}: {e_edit}")
 
-@dp.callback_query(F.data.startswith(\"approve_contact_\"))
+@dp.callback_query(F.data.startswith("approve_contact_"))
 async def approve_contact_callback(callback_query: types.CallbackQuery):
-    await _process_contact_response(callback_query, \"approve\")
+    await _process_contact_response(callback_query, "approve")
 
-@dp.callback_query(F.data.startswith(\"deny_contact_\"))
+@dp.callback_query(F.data.startswith("deny_contact_"))
 async def deny_contact_callback(callback_query: types.CallbackQuery):
-    await _process_contact_response(callback_query, \"deny\")
+    await _process_contact_response(callback_query, "deny")
 @dp.callback_query(F.data.startswith("view_reqs_"))
 async def view_contact_requests(callback_query: types.CallbackQuery):
     try: _, _, conf_id_str = callback_query.data.split("_", 2); conf_id = int(conf_id_str); viewer_uid = callback_query.from_user.id
