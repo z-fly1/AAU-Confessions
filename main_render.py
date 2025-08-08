@@ -1984,7 +1984,7 @@ async def _process_contact_response(callback_query: types.CallbackQuery, action:
             final_responder_message_text = f"{orig_text}\\n\\n<b>Status: {edit_status_for_ui}</b>"
             await callback_query.message.edit_text(final_responder_message_text, reply_markup=None, parse_mode=ParseMode.HTML)
     except Exception as e_edit:
-        logging.warning(f"Could not edit responder message ({getattr(callback_query.message, 'message_id', 'unknown')}) for request {req_id}: {e_edit}\")
+        logging.warning(f"Could not edit responder message ({getattr(callback_query.message, 'message_id', 'unknown')}) for request {req_id}: {e_edit}")
 
 @dp.callback_query(F.data.startswith(\"approve_contact_\"))
 async def approve_contact_callback(callback_query: types.CallbackQuery):
