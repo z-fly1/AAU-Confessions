@@ -1851,106 +1851,148 @@ async def handle_request_contact(callback_query: types.CallbackQuery):
                 # No explicit rollback here, but status update reflects issue.
 
 # --- Contact Response Handler (Unchanged logic) ---
+
 def is_contact_response_callback(data: str) -> bool:
-    if not isinstance(data, str): return False; parts = data.split("_"); return len(parts) == 3 and parts[0] in ('approve', 'deny') and parts[1] == 'contact' and parts[2].isdigit()
+    """Simple validator kept for compatibility; not used by new explicit handlers."""
+    if not isinstance(data, str):
+        return False
+    parts = data.split("_")
+    return len(parts) == 3 and parts[0] in ("approve", "deny") and parts[1] == "contact" and parts[2].isdigit()
 
-@dp.callback_query(lambda c: is_contact_response_callback(c.data))
-async def handle_contact_response(callback_query: types.CallbackQuery):
-    try: action, _, req_id_str = callback_query.data.split("_"); req_id = int(req_id_str); responder_uid = callback_query.from_user.id
-    except (ValueError, IndexError, TypeError): logging.error(f"Invalid contact resp cb: {callback_query.data}"); await callback_query.answer("Invalid request data.", show_alert=True); return
+async def _process_contact_response(callback_query: types.CallbackQuery, action: str):
+    """
+    Handle a contact response action ('approve' or 'deny') in a single place.
+    This mirrors the original transactional logic but is bound to explicit handlers
+    so aiogram routing is deterministic.
+    """
+    try:
+        # callback_data expected: "<action>_contact_<request_id>"
+        parts = callback_query.data.split("_")
+        if len(parts) != 3:
+            await callback_query.answer("Invalid request data.", show_alert=True)
+            return
+        _, _, req_id_str = parts
+        req_id = int(req_id_str)
+    except Exception:
+        await callback_query.answer("Invalid request data.", show_alert=True)
+        return
 
-    new_db_status = 'approved' if action == 'approve' else 'denied';
-    edit_status_for_ui = "" # For updating the responder's message
+    responder_uid = callback_query.from_user.id
+    new_db_status = "approved" if action == "approve" else "denied"
+    edit_status_for_ui = ""
 
-    async with db.acquire() as conn:
-        async with conn.transaction(): # Ensure atomic update and notification
-            # Fetch request and lock it
-            req_data = await conn.fetchrow(
-                "SELECT id, requester_user_id, requested_user_id, status, confession_id, comment_id FROM contact_requests WHERE id = $1 FOR UPDATE",
-                 req_id
-            )
+    try:
+        async with db.acquire() as conn:
+            async with conn.transaction():
+                # Lock the specific request row to avoid race conditions
+                req_data = await conn.fetchrow(
+                    "SELECT id, requester_user_id, requested_user_id, status, confession_id, comment_id FROM contact_requests WHERE id = $1 FOR UPDATE",
+                    req_id
+                )
+                if not req_data:
+                    await callback_query.answer("This contact request was not found. It may have been removed.", show_alert=True)
+                    try:
+                        await callback_query.message.delete()
+                    except Exception:
+                        pass
+                    return
 
-            if not req_data:
-                await callback_query.answer("This contact request was not found. It might have been withdrawn or deleted.", show_alert=True)
-                try: await callback_query.message.delete() # Clean up the responder's message
-                except Exception: pass
-                return
+                # Only the requested_user_id (commenter) may respond
+                if responder_uid != req_data["requested_user_id"]:
+                    logging.warning(f"User {responder_uid} tried to respond to contact request {req_id} intended for {req_data['requested_user_id']}.")
+                    await callback_query.answer("This contact request is not for you.", show_alert=True)
+                    return
 
-            # Verify the responder is the correct user
-            if responder_uid != req_data['requested_user_id']:
-                logging.warning(f"User {responder_uid} (not the requested user {req_data['requested_user_id']}) tried to respond to contact request {req_id}.");
-                await callback_query.answer("This contact request is not for you.", show_alert=True);
-                return
+                # If already processed (and not 'failed_to_notify'), do not allow re-processing
+                if req_data["status"] not in ("pending", "failed_to_notify"):
+                    current_status_display = req_data["status"].replace("_", " ").capitalize()
+                    await callback_query.answer(f"This contact request has already been {current_status_display}.", show_alert=True)
+                    # Try to edit the responder's message to show the final state if possible
+                    try:
+                        orig_txt = callback_query.message.html_text or ""
+                        if f"Status: {current_status_display}" not in orig_txt:
+                            final_txt = f"{orig_txt}\n\n<b>Status: {current_status_display}</b>"
+                            await callback_query.message.edit_text(final_txt, reply_markup=None, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
+                    return
 
-            # Check if already processed
-            if req_data['status'] != 'pending' and req_data['status'] != 'failed_to_notify': # Allow responding if failed_to_notify
-                current_status_display = req_data['status'].replace('_', ' ').capitalize()
-                await callback_query.answer(f"This contact request has already been '{current_status_display}'.", show_alert=True)
-                try:
-                    orig_txt = callback_query.message.html_text
-                    # Append status if not already there (to avoid multiple status lines)
-                    if f"Status: {current_status_display}" not in orig_txt:
-                         final_txt = f"{orig_txt}\n\n<b>Status: {current_status_display}</b>"
-                         await callback_query.message.edit_text(final_txt, reply_markup=None, parse_mode=ParseMode.HTML)
-                except Exception: pass
-                return
+                author_to_notify_uid = req_data["requester_user_id"]
+                conf_id_for_notif = req_data["confession_id"]
+                comm_id_for_notif = req_data["comment_id"]
 
-            author_to_notify_uid = req_data['requester_user_id'];
-            conf_id_for_notif = req_data['confession_id'];
-            comm_id_for_notif = req_data['comment_id'] # For context in notification
-            notification_to_author = ""
+                notification_to_author = ""
+                if new_db_status == "approved":
+                    commenter_username = None
+                    try:
+                        responder_chat_info = await bot.get_chat(responder_uid)
+                        commenter_username = getattr(responder_chat_info, "username", None)
+                    except Exception as e_chat:
+                        logging.warning(f"Could not fetch chat info for user {responder_uid} during contact approval for request {req_id}: {e_chat}")
 
-            if new_db_status == 'approved':
-                commenter_username = None
-                try:
-                    # Fetch responder's (commenter's) current chat info to get username
-                    responder_chat_info = await bot.get_chat(responder_uid)
-                    commenter_username = responder_chat_info.username
-                except Exception as e_chat:
-                    logging.warning(f"Could not fetch chat info for user {responder_uid} during contact approval for request {req_id}: {e_chat}")
-                    # Proceed without username if fetch fails
+                    if commenter_username:
+                        await conn.execute("UPDATE contact_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
+                        notification_to_author = (
+                            f"✅ Contact Approved! The commenter has shared their contact.\n\n"
+                            f"For your request regarding Confession #{conf_id_for_notif} (Comment approx. ID {comm_id_for_notif}), "
+                            f"you can contact the commenter at: @{html.quote(commenter_username)}"
+                        )
+                        await callback_query.answer("Approved — your username has been shared with the author.")
+                        logging.info(f"Contact request {req_id} approved by commenter {responder_uid}. Username @{commenter_username} sent to author {author_to_notify_uid}.")
+                        edit_status_for_ui = "Approved (Username Shared)"
+                    else:
+                        # No public username available
+                        await conn.execute("UPDATE contact_requests SET status = 'approved_no_username', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
+                        notification_to_author = (
+                            f"⚠️ Contact Approved (No Public Username).\n\n"
+                            f"For your request regarding Confession #{conf_id_for_notif} (Comment approx. ID {comm_id_for_notif}), "
+                            f"the commenter approved sharing contact but does not have a public Telegram username set. "
+                            f"Unfortunately, direct contact via username is not possible."
+                        )
+                        await callback_query.answer("Approved — but you don't have a public username, so the author cannot contact you via username.", show_alert=True)
+                        logging.info(f"Contact request {req_id} approved by commenter {responder_uid}, but no username available. Notified author {author_to_notify_uid}.")
+                        edit_status_for_ui = "Approved (No Public Username)"
+                else:
+                    await conn.execute("UPDATE contact_requests SET status = 'denied', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
+                    notification_to_author = (
+                        f"❌ Contact Denied. The commenter has declined your request.\n\n"
+                        f"For your request regarding Confession #{conf_id_for_notif} (Comment approx. ID {comm_id_for_notif}), "
+                        f"the commenter declined to share their contact details."
+                    )
+                    await callback_query.answer("Denied. The author will not receive your contact details.", show_alert=False)
+                    logging.info(f"Contact request {req_id} denied by commenter {responder_uid}. Author {author_to_notify_uid} notified.")
+                    edit_status_for_ui = "Denied"
 
-                if commenter_username:
-                    await conn.execute("UPDATE contact_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
-                    notification_to_author = (f"✅ Contact Approved! The commenter has shared their contact.\n\n"
-                                              f"For your request regarding Confession #{conf_id_for_notif} (Comment ID approx. {comm_id_for_notif}), "
-                                              f"you can now contact the commenter at: @{html.quote(commenter_username)}")
-                    await callback_query.answer("Approved! Your username has been shared with the confession author.")
-                    logging.info(f"Contact request {req_id} approved by commenter {responder_uid}. Username @{commenter_username} sent to author {author_to_notify_uid}.")
-                    edit_status_for_ui = 'Approved (Username Shared)'
-                else: # Approved, but no public username
-                    new_db_status = 'approved_no_username' # Update the status to reflect this
-                    await conn.execute("UPDATE contact_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", new_db_status, req_id)
-                    notification_to_author = (f"⚠️ Contact Approved (No Public Username).\n\n"
-                                              f"For your request regarding Confession #{conf_id_for_notif} (Comment ID approx. {comm_id_for_notif}), "
-                                              f"the commenter approved contact, but they do not have a public Telegram username set. "
-                                              f"Unfortunately, direct contact via username is not possible.")
-                    await callback_query.answer("Approved! However, you don't have a public username, so the author cannot contact you directly via username.", show_alert=True)
-                    logging.info(f"Contact request {req_id} approved by commenter {responder_uid}, but no username. Author {author_to_notify_uid} notified.")
-                    edit_status_for_ui = 'Approved (No Public Username)'
-            else: # Denied
-                await conn.execute("UPDATE contact_requests SET status = 'denied', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
-                notification_to_author = (f"❌ Contact Denied. The commenter has declined your request.\n\n"
-                                          f"For your request regarding Confession #{conf_id_for_notif} (Comment ID approx. {comm_id_for_notif}), "
-                                          f"the commenter chose not to share their contact details.")
-                await callback_query.answer("Denied. Your contact details will not be shared.")
-                logging.info(f"Contact request {req_id} denied by commenter {responder_uid}. Author {author_to_notify_uid} notified.")
-                edit_status_for_ui = 'Denied'
+    except Exception as e:
+        logging.exception(f"Error processing contact response for request {locals().get('req_id', 'unknown')}: {e}")
+        try:
+            await callback_query.answer("An internal error occurred while processing the request.", show_alert=True)
+        except Exception:
+            pass
+        return
 
-            # Send notification to the original requester (confession author)
-            await safe_send_message(author_to_notify_uid, notification_to_author, parse_mode=ParseMode.HTML)
+    # Send notification to the original requester (confession author)
+    try:
+        await safe_send_message(author_to_notify_uid, notification_to_author, parse_mode=ParseMode.HTML)
+    except Exception as e_notify:
+        logging.warning(f\"Failed to notify author {author_to_notify_uid} about contact request {req_id}: {e_notify}\")
 
-            # Update the responder's message to reflect their choice
-            try:
-                original_responder_message_text = callback_query.message.html_text
-                # Append status if not already there (to avoid multiple status lines)
-                if f"Status: {edit_status_for_ui}" not in original_responder_message_text:
-                    final_responder_message_text = f"{original_responder_message_text}\n\n<b>Status: {edit_status_for_ui}</b>"
-                    await callback_query.message.edit_text(final_responder_message_text, reply_markup=None, parse_mode=ParseMode.HTML)
-            except Exception as e_edit_responder:
-                logging.warning(f"Could not edit responder's ({responder_uid}) notification message {callback_query.message.message_id} for request {req_id}: {e_edit_responder}")
+    # Update the responder's message to reflect their choice (remove buttons to avoid double-click)
+    try:
+        orig_text = callback_query.message.html_text or ""
+        if edit_status_for_ui and f"Status: {edit_status_for_ui}" not in orig_text:
+            final_responder_message_text = f\"{orig_text}\\n\\n<b>Status: {edit_status_for_ui}</b>\"
+            await callback_query.message.edit_text(final_responder_message_text, reply_markup=None, parse_mode=ParseMode.HTML)
+    except Exception as e_edit:
+        logging.warning(f\"Could not edit responder message ({getattr(callback_query.message, 'message_id', 'unknown')}) for request {req_id}: {e_edit}\")
 
-# --- View Contact Requests Handler (Modified for comment content preview) ---
+@dp.callback_query(F.data.startswith(\"approve_contact_\"))
+async def approve_contact_callback(callback_query: types.CallbackQuery):
+    await _process_contact_response(callback_query, \"approve\")
+
+@dp.callback_query(F.data.startswith(\"deny_contact_\"))
+async def deny_contact_callback(callback_query: types.CallbackQuery):
+    await _process_contact_response(callback_query, \"deny\")
 @dp.callback_query(F.data.startswith("view_reqs_"))
 async def view_contact_requests(callback_query: types.CallbackQuery):
     try: _, _, conf_id_str = callback_query.data.split("_", 2); conf_id = int(conf_id_str); viewer_uid = callback_query.from_user.id
