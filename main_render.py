@@ -39,7 +39,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-PAGE_SIZE = int(os.getenv("PAGE_SIZE", "10"))  # Number of items per page for pagination
+PAGE_SIZE = int(os.getenv("PAGE_SIZE", "25"))  # Number of items per page for pagination
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 # PORT for dummy HTTP server, Render sets this for Web Services
