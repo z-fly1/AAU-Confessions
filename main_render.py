@@ -25,7 +25,7 @@ from aiohttp import web
 
 # --- Constants ---
 CATEGORIES = [
-    "2🌼18", "Kiremt🆕️", "Relationship", "Family", "School", "Friendship",
+    "Kiremt🆕️", "Relationship", "Family", "School", "Friendship",
     "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual Assault",
     "Other"
 ]
