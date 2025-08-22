@@ -39,7 +39,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKENS", "8171868139:AAFgo67XCzizAiwrJmKsDtcZ0EkR9pfhRSE")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@paradoxHQ")
-PAGE_SIZE = int(os.getenv("PAGE_SIZE", "25"))  # Number of items per page for pagination
+PAGE_SIZE = int(os.getenv("PAGE_SIZE", "5"))  # Number of items per page for pagination
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
 # PORT for dummy HTTP server, Render sets this for Web Services
@@ -344,7 +344,25 @@ async def update_channel_post_button(confession_id: int):
         else: logging.error(f"Failed edit channel post {ch_msg_id} for conf {confession_id}: {e}")
     except Exception as e: logging.error(f"Unexpected err updating btn for conf {confession_id}: {e}", exc_info=True)
 
-# --- *** MODIFIED: Reworked show_comments_for_confession to support native replies *** ---
+# --- NEW: Helper function to get a comment's sequential number ---
+async def get_comment_sequence_number(conn: asyncpg.Connection, comment_id: int, confession_id: int) -> Optional[int]:
+    """Fetches the sequential number of a specific comment within its confession."""
+    query = """
+        WITH ranked_comments AS (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC) as rn
+            FROM comments
+            WHERE confession_id = $1
+        )
+        SELECT rn FROM ranked_comments WHERE id = $2;
+    """
+    try:
+        seq_num = await conn.fetchval(query, confession_id, comment_id)
+        return seq_num
+    except Exception as e:
+        logging.error(f"Could not fetch sequence number for comment {comment_id}: {e}")
+        return None
+
+# --- MODIFIED: Reworked show_comments_for_confession to be more specific about cross-page replies ---
 async def show_comments_for_confession(user_id: int, confession_id: int, message_to_edit: Optional[types.Message] = None, page: int = 1):
     async with db.acquire() as conn:
         conf_data = await conn.fetchrow("SELECT status, user_id FROM confessions WHERE id = $1", confession_id)
@@ -366,7 +384,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE; page = max(1, min(page, total_pages)); offset = (page - 1) * PAGE_SIZE
         comments_raw = await conn.fetch("SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.parent_comment_id, c.created_at, COALESCE(up.points, 0) as user_points FROM comments c LEFT JOIN user_points up ON c.user_id = up.user_id WHERE c.confession_id = $1 ORDER BY c.created_at ASC LIMIT $2 OFFSET $3", confession_id, PAGE_SIZE, offset)
 
-    # NEW: Dictionary to map database comment ID to the Telegram message ID of the sent message
     db_id_to_message_id: Dict[int, int] = {}
 
     if not comments_raw:
@@ -381,35 +398,40 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID else ""
             display_tag = f" {tag}{medal_str}"
 
-            # NEW: Determine the reply_to_message_id for native replies
             reply_to_msg_id = None
             text_reply_prefix = ""
             parent_db_id = c_data.get('parent_comment_id')
             if parent_db_id:
                 if parent_db_id in db_id_to_message_id:
-                    # Parent comment is on the same page, we can use its message_id for a native reply
                     reply_to_msg_id = db_id_to_message_id[parent_db_id]
                 else: 
-                    # Parent comment is on another page, so we fall back to a text indicator
-                    text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
+                    # --- MODIFICATION START ---
+                    # Parent comment is on another page, so we fetch its sequence number
+                    async with db.acquire() as conn_for_seq: # Use a new connection from the pool
+                        parent_seq_num = await get_comment_sequence_number(conn_for_seq, parent_db_id, confession_id)
+                    
+                    if parent_seq_num:
+                        text_reply_prefix = f"↪️ <i>Replying to comment #{parent_seq_num}...</i>\n"
+                    else:
+                        # Fallback if the parent comment was deleted or an error occurred
+                        text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
+                    # --- MODIFICATION END ---
 
             metadata_text = f"<i>#{seq_num}{display_tag}{admin_info}</i>"
             keyboard = await build_comment_keyboard(db_id, commenter_uid, user_id, confession_owner_id)
             
             sent_message = None
             try:
-                # MODIFIED: All send calls now include the 'reply_to_message_id' parameter
                 if c_data['sticker_file_id']:
                     sent_message = await bot.send_sticker(user_id, sticker=c_data['sticker_file_id'], reply_to_message_id=reply_to_msg_id)
-                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard) # Metadata is separate
+                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard)
                 elif c_data['animation_file_id']:
                     sent_message = await bot.send_animation(user_id, animation=c_data['animation_file_id'], reply_to_message_id=reply_to_msg_id)
-                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard) # Metadata is separate
+                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard)
                 elif c_data['text']:
                     full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
                     sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
                 
-                # NEW: If a message was successfully sent, we store its ID for potential future replies on this page
                 if sent_message:
                     db_id_to_message_id[db_id] = sent_message.message_id
 
@@ -418,7 +440,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 await safe_send_message(user_id, f"⚠️ Error displaying comment #{seq_num}.")
             await asyncio.sleep(0.1)
 
-    # ... (Navigation button logic remains the same) ...
     nav_row = []
     if page > 1: nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"comments_page_{confession_id}_{page-1}"))
     if total_pages > 1: nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
