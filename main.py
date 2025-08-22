@@ -493,13 +493,13 @@ class BlockUserMiddleware(BaseMiddleware):
 async def show_rules(message: types.Message):
     rules_text = (
         "<b>📜 Bot Rules & Regulations</b>\n\n"
-        "<b>To keep the community safe, respectful, and meaningful, please follow these guidelines when using the bot:</b>\n"
-        "1.  <b>Stay Relevant:</b> This space is mainly for sharing confessions, experiences, and thoughts.\n - Avoid using it just to ask random questions you could easily Google or ask in the right place.\n - Some student-related questions may be approved if they benefit the community.\n"
-        "2.  <b>Respectful Communication:</b> Sensitive topics (political, religious, cultural, etc.) are allowed but must be discussed with respect.\n"
-        "3.  <b>No Harmful Content:</b> You may mention names, but at your own risk.\n - The bot and admins are not responsible for any consequences.\n - If someone mentioned requests removal, their name will be taken down.\n"
-        "4.  <b>Names & Responsibility:</b> Do not share personal identifying information about yourself or others.\n"
+        "<b>To keep the community safe, respectful, and meaningful, please follow these guidelines when using the bot:</b>\n\n"
+        "1.  <b>Stay Relevant:</b> This space is mainly for sharing confessions, experiences, and thoughts.\n\n - Avoid using it just to ask random questions you could easily Google or ask in the right place.\n\n - Some student-related questions may be approved if they benefit the community.\n\n"
+        "2.  <b>Respectful Communication:</b> Sensitive topics (political, religious, cultural, etc.) are allowed but must be discussed with respect.\n\n"
+        "3.  <b>No Harmful Content:</b> You may mention names, but at your own risk.\n\n - The bot and admins are not responsible for any consequences.\n\n - If someone mentioned requests removal, their name will be taken down.\n\n"
+        "4.  <b>Names & Responsibility:</b> Do not share personal identifying information about yourself or others.\n\n"
         "5.  <b>Anonymity & Privacy:</b> don’t reveal private details of others (contacts, adress, etc.) without consent.\n\n"
-        "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n - Respect moderators’ decisions on approvals, edits, or removals.\n"
+        "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
         "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
     await message.answer(rules_text)
