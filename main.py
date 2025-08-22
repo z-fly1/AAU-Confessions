@@ -1,4 +1,3 @@
-
 import logging
 import asyncpg
 import os
@@ -13,12 +12,13 @@ from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup,
-    KeyboardButton, ReplyKeyboardRemove
+    KeyboardButton, ReplyKeyboardRemove, ForceReply
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from typing import Optional, Tuple, Dict, Any, List
+from aiogram.dispatcher.middlewares.base import BaseMiddleware
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -36,12 +36,12 @@ MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS")
-ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+BOT_TOKEN = os.getenv("BOT_TOKENS", "8171868139:AAFgo67XCzizAiwrJmKsDtcZ0EkR9pfhRSE")
+ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@paradoxHQ")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "25"))  # Number of items per page for pagination
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
 # PORT for dummy HTTP server, Render sets this for Web Services
 HTTP_PORT_STR = os.getenv("PORT")
 
@@ -194,13 +194,26 @@ async def setup():
                 confession_id INTEGER NOT NULL REFERENCES confessions(id) ON DELETE CASCADE,
                 user_id BIGINT NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, approved, rejected
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP WITH TIME ZONE,
                 reviewed_at TIMESTAMP WITH TIME ZONE,
                 UNIQUE (confession_id, user_id) -- User can only request deletion for their confession once
             );
             COMMENT ON TABLE deletion_requests IS 'Stores user requests to delete their own confessions.';
         """)
         logging.info("Checked/Created 'deletion_requests' table.")
+
+        # --- NEW: User Status Table (for rules acceptance and blocking) ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_status (
+                user_id BIGINT PRIMARY KEY,
+                has_accepted_rules BOOLEAN NOT NULL DEFAULT FALSE,
+                is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+                blocked_until TIMESTAMP WITH TIME ZONE NULL,
+                block_reason TEXT NULL
+            );
+        """)
+        logging.info("Checked/Created 'user_status' table.")
+
 
         logging.info("Database tables setup complete.")
 
@@ -321,7 +334,7 @@ async def update_channel_post_button(confession_id: int):
     async with db.acquire() as conn:
         conf_data = await conn.fetchrow("SELECT message_id FROM confessions WHERE id = $1 AND status = 'approved'", confession_id)
         count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", confession_id) or 0
-    if not conf_data or not conf_data['message_id']: logging.debug(f"No approved conf/msg_id for {confession_id} button."); return
+    if not conf_data or not conf_data['message_id']: logging.debug(f"No approved conf/msg_id for {conf_id} button."); return
     ch_msg_id = conf_data['message_id']; link = f"https://t.me/{bot_info.username}?start=view_{confession_id}"
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"💬 View / Add Comments ({count})", url=link)]])
     try: await bot.edit_message_reply_markup(chat_id=CHANNEL_ID, message_id=ch_msg_id, reply_markup=markup)
@@ -414,11 +427,85 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     end_txt = f"--- Showing comments {offset+1} to {min(offset+PAGE_SIZE, total_count)} of {total_count} for Confession #{confession_id} ---"
     await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard)
 
+
+# --- NEW: Middleware to check for blocked users ---
+class BlockUserMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: types.TelegramObject, data: Dict[str, Any]) -> Any:
+        user = data.get('event_from_user')
+        if not user:
+            return await handler(event, data)
+
+        user_id = user.id
+        # Admins cannot be blocked
+        if user_id == ADMIN_ID:
+            return await handler(event, data)
+
+        async with db.acquire() as conn:
+            status = await conn.fetchrow("SELECT is_blocked, blocked_until, block_reason FROM user_status WHERE user_id = $1", user_id)
+        
+        if status and status['is_blocked']:
+            now = datetime.now(datetime.utcnow().astimezone().tzinfo)
+            if status['blocked_until'] and status['blocked_until'] < now:
+                # Unblock expired temporary blocks
+                async with db.acquire() as conn:
+                    await conn.execute("UPDATE user_status SET is_blocked = FALSE, blocked_until = NULL, block_reason = NULL WHERE user_id = $1", user_id)
+                return await handler(event, data)
+            else:
+                # User is currently blocked
+                expiry_info = f"until {status['blocked_until'].strftime('%Y-%m-%d %H:%M %Z')}" if status['blocked_until'] else "permanently"
+                reason_info = f"\nReason: <i>{html.quote(status['block_reason'])}</i>" if status['block_reason'] else ""
+                
+                block_message = f"❌ <b>You are blocked from using this bot {expiry_info}.</b>{reason_info}"
+
+                if isinstance(event, types.CallbackQuery):
+                    await event.answer(f"You are blocked {expiry_info}.", show_alert=True)
+                elif isinstance(event, types.Message):
+                    await event.answer(block_message)
+                return  # Stop processing the event
+
+        return await handler(event, data)
+
 # --- Handlers ---
+
+# --- NEW: Rules and Regulations Handler ---
+@dp.message(Command("rules"))
+async def show_rules(message: types.Message):
+    rules_text = (
+        "<b>📜 Bot Rules & Regulations</b>\n\n"
+        "1.  <b>Be Respectful:</b> Do not use hate speech, harassment, or personal attacks in confessions or comments.\n"
+        "2.  <b>No Spam:</b> Unsolicited advertisements or repetitive content are not allowed.\n"
+        "3.  <b>Keep it Legal:</b> Do not post content that is illegal or promotes illegal activities.\n"
+        "4.  <b>Protect Privacy:</b> Do not share personal identifying information about yourself or others.\n"
+        "5.  <b>Use the Report System:</b> If you see a comment that violates these rules, please use the '⚠️' report button.\n\n"
+        "<i>Violation of these rules may result in a warning or a temporary/permanent ban from using the bot.</i>"
+    )
+    await message.answer(rules_text)
 
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
     await state.clear()
+    user_id = message.from_user.id
+
+    # --- NEW: Rules acceptance check ---
+    async with db.acquire() as conn:
+        has_accepted = await conn.fetchval("SELECT has_accepted_rules FROM user_status WHERE user_id = $1", user_id)
+
+    if not has_accepted:
+        rules_text = (
+            "<b>Welcome! Before you begin, please read and accept our rules.</b>\n\n"
+            "1.  <b>Be Respectful:</b> Do not use hate speech, harassment, or personal attacks in confessions or comments.\n"
+            "2.  <b>No Spam:</b> Unsolicited advertisements or repetitive content are not allowed.\n"
+            "3.  <b>Keep it Legal:</b> Do not post content that is illegal or promotes illegal activities.\n"
+            "4.  <b>Protect Privacy:</b> Do not share personal identifying information about yourself or others.\n"
+            "5.  <b>Use the Report System:</b> If you see a comment that violates these rules, please use the '⚠️' report button.\n\n"
+            "<i>By clicking 'I Accept', you agree to abide by these rules. Violations may lead to a ban.</i>"
+        )
+        accept_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ I Accept the Rules", callback_data="accept_rules")]
+        ])
+        await message.answer(rules_text, reply_markup=accept_keyboard)
+        return
+
     deep_link_args = command.args if command else None
     if deep_link_args and deep_link_args.startswith("view_"):
         try:
@@ -439,6 +526,21 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
         except Exception as e: logging.error(f"Err handling deep link '{deep_link_args}': {e}", exc_info=True); await message.answer("Error processing link.")
     else: await message.answer("Welcome! Use /confess to share anonymously, /profile to see your history, or /help for more info.", reply_markup=ReplyKeyboardRemove())
 
+@dp.callback_query(F.data == "accept_rules")
+async def handle_accept_rules(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_status (user_id, has_accepted_rules) VALUES ($1, TRUE)
+               ON CONFLICT (user_id) DO UPDATE SET has_accepted_rules = TRUE""",
+            user_id
+        )
+    await callback_query.message.edit_text("Thank you for accepting the rules! You can now use the bot.\n\n"
+                                          "Use /confess to share anonymously, /profile to see your history, or /help for more info.",
+                                          reply_markup=None)
+    await callback_query.answer("Rules accepted!")
+
+
 @dp.message(Command("help"), StateFilter(None))
 async def show_help(message: types.Message):
     help_text = (
@@ -454,12 +556,28 @@ async def show_help(message: types.Message):
         "↪️ Reply: Reply to a comment (Text, Sticker, or GIF).\n"
         "⚠️ Report: Report a comment to the admin.\n"
         "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
-        "Need to reach the admin directly?"
+        "Need more info or want to reach the admin directly?"
     )
-    contact_admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✉️ Contact Admin", callback_data="contact_admin_start")]])
+    # --- MODIFIED: Added Rules button ---
+    action_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📜 Rules & Regulations", callback_data="show_rules_help")],
+        [InlineKeyboardButton(text="✉️ Contact Admin", callback_data="contact_admin_start")]
+    ])
     if message.from_user and message.from_user.id == ADMIN_ID:
-        help_text += "\n\n<b>Admin Commands:</b>\n🔹 /id &lt;user_id&gt; - Get info about a user."
-    await message.answer(help_text, reply_markup=contact_admin_keyboard)
+        help_text += ("\n\n<b>Admin Commands:</b>\n"
+                      "🔹 /id &lt;user_id&gt; - Get user info.\n"
+                      "🔹 /warn &lt;user_id&gt; &lt;reason&gt; - Send a warning.\n"
+                      "🔹 /block &lt;user_id&gt; &lt;duration&gt; [reason] - Temp block (e.g., 7d, 2w).\n"
+                      "🔹 /pblock &lt;user_id&gt; [reason] - Permanently block.\n"
+                      "🔹 /unblock &lt;user_id&gt; - Unblock a user.")
+
+    await message.answer(help_text, reply_markup=action_keyboard)
+
+@dp.callback_query(F.data == "show_rules_help")
+async def show_rules_from_help(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await show_rules(callback_query.message)
+
 
 @dp.callback_query(F.data == "contact_admin_start", StateFilter(None))
 async def start_contact_admin_callback(callback_query: types.CallbackQuery, state: FSMContext):
@@ -543,7 +661,14 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
             user_points = await get_user_points(target_user_id)
             conf_count = await conn.fetchval("SELECT COUNT(*) FROM confessions WHERE user_id = $1", target_user_id)
             comm_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", target_user_id)
+            status_data = await conn.fetchrow("SELECT is_blocked, blocked_until, has_accepted_rules FROM user_status WHERE user_id = $1", target_user_id)
+            
             info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Medal Points:</b> 🏅 {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
+            if status_data:
+                info_parts.append(f"  - <b>Accepted Rules:</b> {'Yes' if status_data['has_accepted_rules'] else 'No'}")
+                if status_data['is_blocked']:
+                    expiry = f"until {status_data['blocked_until'].strftime('%Y-%m-%d')}" if status_data['blocked_until'] else "Permanently"
+                    info_parts.append(f"  - <b>Status:</b> ❌ Blocked ({expiry})")
     except Exception as e: info_parts.append(f"\n❌ <b>Bot Interaction:</b> Error fetching database info: {e}")
     await message.reply("\n".join(info_parts));
 
@@ -860,6 +985,108 @@ async def admin_handle_deletion_request(callback_query: types.CallbackQuery):
     await callback_query.answer(f"Request {final_status}.")
 
 
+# --- NEW: Admin User Management Handlers (Warn, Block, Unblock) ---
+@dp.message(Command("warn"))
+async def admin_warn_user(message: types.Message, command: CommandObject):
+    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    
+    if not command.args:
+        await message.reply("Usage: /warn &lt;user_id&gt; &lt;reason&gt;"); return
+    
+    parts = command.args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.reply("Usage: /warn &lt;user_id&gt; &lt;reason&gt;"); return
+
+    try:
+        target_user_id = int(parts[0])
+        reason = parts[1]
+    except ValueError:
+        await message.reply("Invalid User ID."); return
+    
+    warning_text = f"⚠️ <b>You have received a warning from the admin.</b>\n\n<b>Reason:</b> <i>{html.quote(reason)}</i>\n\nPlease adhere to the bot's rules to avoid further action."
+    
+    sent = await safe_send_message(target_user_id, warning_text)
+    if sent:
+        await message.reply(f"✅ Warning sent to User ID <code>{target_user_id}</code>.")
+    else:
+        await message.reply(f"⚠️ Failed to send warning to User ID <code>{target_user_id}</code>. They may have blocked the bot.")
+
+async def apply_block(message: types.Message, user_id: int, reason: Optional[str], is_permanent: bool, duration_str: Optional[str] = None):
+    blocked_until = None
+    if not is_permanent:
+        if not duration_str: return await message.reply("Duration is required for temporary blocks.")
+        try:
+            val = int(duration_str[:-1])
+            unit = duration_str[-1].lower()
+            if unit == 'd': blocked_until = datetime.now(datetime.utcnow().astimezone().tzinfo) + timedelta(days=val)
+            elif unit == 'w': blocked_until = datetime.now(datetime.utcnow().astimezone().tzinfo) + timedelta(weeks=val)
+            else: raise ValueError("Invalid time unit")
+        except (ValueError, IndexError):
+            return await message.reply("Invalid duration format. Use 'd' for days or 'w' for weeks (e.g., 7d, 2w).")
+
+    async with db.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO user_status (user_id, is_blocked, blocked_until, block_reason) 
+            VALUES ($1, TRUE, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET
+            is_blocked = TRUE, blocked_until = $2, block_reason = $3
+        """, user_id, blocked_until, reason)
+    
+    expiry_info = "permanently" if is_permanent else f"until {blocked_until.strftime('%Y-%m-%d %H:%M %Z')}"
+    reason_info = f"\nReason: <i>{html.quote(reason)}</i>" if reason else ""
+    notification_text = f"❌ <b>You have been blocked from using this bot {expiry_info}.</b>{reason_info}"
+    
+    await safe_send_message(user_id, notification_text)
+    await message.reply(f"✅ User ID <code>{user_id}</code> has been blocked {expiry_info}.")
+
+@dp.message(Command("block"))
+async def admin_block_user(message: types.Message, command: CommandObject):
+    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not command.args: return await message.reply("Usage: /block &lt;user_id&gt; &lt;duration&gt; [reason]")
+    
+    parts = command.args.split(maxsplit=2)
+    if len(parts) < 2: return await message.reply("Usage: /block &lt;user_id&gt; &lt;duration&gt; [reason]")
+    
+    try: target_user_id = int(parts[0])
+    except ValueError: return await message.reply("Invalid User ID.")
+    
+    duration = parts[1]
+    reason = parts[2] if len(parts) > 2 else None
+    await apply_block(message, target_user_id, reason, is_permanent=False, duration_str=duration)
+
+@dp.message(Command("pblock"))
+async def admin_pblock_user(message: types.Message, command: CommandObject):
+    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not command.args: return await message.reply("Usage: /pblock &lt;user_id&gt; [reason]")
+    
+    parts = command.args.split(maxsplit=1)
+    try: target_user_id = int(parts[0])
+    except ValueError: return await message.reply("Invalid User ID.")
+    
+    reason = parts[1] if len(parts) > 1 else None
+    await apply_block(message, target_user_id, reason, is_permanent=True)
+
+@dp.message(Command("unblock"))
+async def admin_unblock_user(message: types.Message, command: CommandObject):
+    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not command.args: return await message.reply("Usage: /unblock &lt;user_id&gt;")
+    
+    try: target_user_id = int(command.args.strip())
+    except ValueError: return await message.reply("Invalid User ID.")
+    
+    async with db.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE user_status SET is_blocked = FALSE, blocked_until = NULL, block_reason = NULL 
+            WHERE user_id = $1 AND is_blocked = TRUE
+        """, target_user_id)
+    
+    if result == "UPDATE 1":
+        await safe_send_message(target_user_id, "✅ You have been unblocked by the admin and can now use the bot again.")
+        await message.reply(f"✅ User ID <code>{target_user_id}</code> has been unblocked.")
+    else:
+        await message.reply(f"ℹ️ User ID <code>{target_user_id}</code> was not blocked.")
+
+
 # --- Commenting Flow Handlers ---
 @dp.callback_query(F.data.startswith("browse_"))
 async def browse_comments_action(callback_query: types.CallbackQuery):
@@ -909,9 +1136,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
     finally: await state.clear()
 
 
-# --- *** MODIFIED: Reworked Reply Flow for Native Replies *** ---
-
-# --- MODIFIED: Reworked Reply Flow for Native Replies with bug fix and better error handling ---
+# --- MODIFIED: Reworked Reply Flow for Force Reply ---
 @dp.callback_query(F.data.startswith("reply_"))
 async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMContext):
     parent_id = int(callback_query.data.split("_", 1)[1])
@@ -921,37 +1146,30 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
     if callback_query.from_user.id == comm_data['user_id']: await callback_query.answer("You cannot reply to yourself.", show_alert=True); return
 
     try:
-        prompt_message = None
-        # This call now correctly returns a Message object or None
+        # First send the original message content to provide context
         if comm_data['text']:
-            prompt_message = await safe_send_message(callback_query.from_user.id, f"<i>Replying to:</i>\n\n{html.quote(comm_data['text'])}")
-        # NEW: Added error handling for sticker and animation sending
+            await safe_send_message(callback_query.from_user.id, f"<i>Replying to:</i>\n\n{html.quote(comm_data['text'])}")
         elif comm_data['sticker_file_id']:
-            try:
-                prompt_message = await bot.send_sticker(callback_query.from_user.id, sticker=comm_data['sticker_file_id'])
-            except Exception as e:
-                logging.error(f"Failed to send sticker for reply prompt: {e}")
+            await bot.send_sticker(callback_query.from_user.id, sticker=comm_data['sticker_file_id'])
         elif comm_data['animation_file_id']:
-            try:
-                prompt_message = await bot.send_animation(callback_query.from_user.id, animation=comm_data['animation_file_id'])
-            except Exception as e:
-                logging.error(f"Failed to send animation for reply prompt: {e}")
-
-        # This check now correctly handles the None return on failure
-        if not prompt_message:
-            await callback_query.answer("Could not display the comment to reply to.", show_alert=True)
-            return
-
+            await bot.send_animation(callback_query.from_user.id, animation=comm_data['animation_file_id'])
+        
+        # Now send the prompt with ForceReply
+        prompt_message = await bot.send_message(
+            callback_query.from_user.id,
+            "⬆️ Please send your reply now (text, sticker, or GIF). Or type /cancel.",
+            reply_markup=ForceReply(input_field_placeholder="Your reply...")
+        )
+        
         await state.update_data(
             confession_id=comm_data['confession_id'],
             parent_comment_id=parent_id,
-            # This line will no longer crash
-            message_id_to_reply_to=prompt_message.message_id
+            # We need to know which message triggered the force_reply
+            message_id_to_reply_to=prompt_message.message_id 
         )
         await state.set_state(CommentForm.waiting_for_reply)
-        
-        await bot.send_message(callback_query.from_user.id, "⬆️  Swipe to the left and Reply to this message to add a reply to comment. (text, sticker, or GIF). Or type /cancel.")
         await callback_query.answer()
+        
     except Exception as e:
         logging.error(f"Error starting reply prompt for parent comment {parent_id}: {e}", exc_info=True)
         await callback_query.answer("Could not start reply process.", show_alert=True)
@@ -969,7 +1187,8 @@ async def receive_reply(message: types.Message, state: FSMContext):
     if not all([conf_id, parent_id, prompt_message_id]):
         await message.answer("⚠️ Error: Reply context lost. Your session may have expired. Please try again or type /cancel."); return
     if not message.reply_to_message or message.reply_to_message.message_id != prompt_message_id:
-        await message.answer("⚠️ Please reply directly to the comment prompt I sent you, or type /cancel."); return
+        # This handles cases where user might reply to a different message
+        await message.answer("⚠️ Please reply directly to the prompt I sent you ('Please send your reply now...'), or type /cancel."); return
 
     reply_text, sticker_id, animation_id, log_type = None, None, None, "Unknown"
     # ... (logic for extracting text/sticker/gif remains the same) ...
@@ -991,7 +1210,7 @@ async def receive_reply(message: types.Message, state: FSMContext):
                     conf_id, user_id, reply_text, sticker_id, animation_id, parent_id
                 )
         
-        await message.answer("↪️ Your reply has been sent!")
+        await message.answer("↪️ Your reply has been sent!", reply_markup=ReplyKeyboardRemove())
         await update_channel_post_button(conf_id)
         
         if parent_data['user_id'] != user_id:
@@ -1166,15 +1385,26 @@ async def main():
             logging.critical("FATAL: Database or bot info missing after setup. Cannot start.")
             return
 
+        # --- NEW: Register middleware ---
+        dp.message.middleware(BlockUserMiddleware())
+        dp.callback_query.middleware(BlockUserMiddleware())
+
         commands = [
             types.BotCommand(command="start", description="Start/View confession"),
             types.BotCommand(command="confess", description="Submit anonymous confession"),
             types.BotCommand(command="profile", description="View your profile and history"),
             types.BotCommand(command="help", description="Show help and commands"),
+            types.BotCommand(command="rules", description="View the bot's rules"),
             types.BotCommand(command="privacy", description="View privacy information"),
             types.BotCommand(command="cancel", description="Cancel current action"),
         ]
-        admin_commands = commands + [types.BotCommand(command="id", description="ADMIN: Get user info")]
+        admin_commands = commands + [
+            types.BotCommand(command="id", description="ADMIN: Get user info"),
+            types.BotCommand(command="warn", description="ADMIN: Warn a user"),
+            types.BotCommand(command="block", description="ADMIN: Temporarily block a user"),
+            types.BotCommand(command="pblock", description="ADMIN: Permanently block a user"),
+            types.BotCommand(command="unblock", description="ADMIN: Unblock a user"),
+        ]
         await bot.set_my_commands(commands)
         await bot.set_my_commands(admin_commands, scope=types.BotCommandScopeChat(chat_id=ADMIN_ID))
 
