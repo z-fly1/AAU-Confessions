@@ -515,13 +515,15 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
     if not has_accepted:
         rules_text = (
-            "<b>Welcome! Before you begin, please read and accept our rules.</b>\n\n"
-            "1.  <b>Be Respectful:</b> Do not use hate speech, harassment, or personal attacks in confessions or comments.\n"
-            "2.  <b>No Spam:</b> Unsolicited advertisements or repetitive content are not allowed.\n"
-            "3.  <b>Keep it Legal:</b> Do not post content that is illegal or promotes illegal activities.\n"
-            "4.  <b>Protect Privacy:</b> Do not share personal identifying information about yourself or others.\n"
-            "5.  <b>Use the Report System:</b> If you see a comment that violates these rules, please use the '⚠️' report button.\n\n"
-            "<i>By clicking 'I Accept', you agree to abide by these rules. Violations may lead to a ban.</i>"
+                    "<b>📜 Bot Rules & Regulations</b>\n\n"
+        "<b>To keep the community safe, respectful, and meaningful, please follow these guidelines when using the bot:</b>\n\n"
+        "1.  <b>Stay Relevant:</b> This space is mainly for sharing confessions, experiences, and thoughts.\n\n - Avoid using it just to ask random questions you could easily Google or ask in the right place.\n\n - Some student-related questions may be approved if they benefit the community.\n\n"
+        "2.  <b>Respectful Communication:</b> Sensitive topics (political, religious, cultural, etc.) are allowed but must be discussed with respect.\n\n"
+        "3.  <b>No Harmful Content:</b> You may mention names, but at your own risk.\n\n - The bot and admins are not responsible for any consequences.\n\n - If someone mentioned requests removal, their name will be taken down.\n\n"
+        "4.  <b>Names & Responsibility:</b> Do not share personal identifying information about yourself or others.\n\n"
+        "5.  <b>Anonymity & Privacy:</b> don’t reveal private details of others (contacts, adress, etc.) without consent.\n\n"
+        "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
+        "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
         )
         accept_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ I Accept the Rules", callback_data="accept_rules")]
