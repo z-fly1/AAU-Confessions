@@ -1753,7 +1753,7 @@ def create_new_year_image(text: str) -> io.BytesIO:
 # --- NEW YEAR: Handlers for New Year's Submission ---
 
 @dp.message(Command("newyear"), StateFilter(None))
-@dp.message(F.text == "🎉 Submit New Year's Message", StateFilter(None))
+@dp.message(F.text == "🌻 Submit New Year's Message", StateFilter(None))
 async def start_new_year_submission(message: types.Message, state: FSMContext):
     await state.set_state(NewYearSubmission.waiting_for_text)
     await message.answer(
