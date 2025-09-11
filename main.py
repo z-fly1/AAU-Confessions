@@ -45,9 +45,9 @@ PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴",
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS", "8495318571:AAHmKfHVgNTGriqw-q8VP36SMpxQj68yHRw")
+BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@paradoxHQ")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
 DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
 HTTP_PORT_STR = os.getenv("PORT")
