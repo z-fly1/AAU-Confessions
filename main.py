@@ -12,13 +12,19 @@ from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup,
-    KeyboardButton, ReplyKeyboardRemove
+    KeyboardButton, ReplyKeyboardRemove, BufferedInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime, timedelta, timezone
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from typing import Optional, Tuple, Dict, Any, List, Set
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
+
+# --- Image Manipulation Imports ---
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
+import io
+
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -39,7 +45,7 @@ PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴",
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS", "8171868139:AAGQhQPa1ORHPlzp9HhwAPbCi3vkweD0w2k")
+BOT_TOKEN = os.getenv("BOT_TOKENS", "8495318571:AAHmKfHVgNTGriqw-q8VP36SMpxQj68yHRw")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@paradoxHQ")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
@@ -77,6 +83,7 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
+        [KeyboardButton(text="🎉 Submit New Year's Message")], # --- NEW YEAR ---
         [KeyboardButton(text="👤 Profile"), KeyboardButton(text="📜 Rules"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
@@ -104,6 +111,10 @@ class AdminActions(StatesGroup):
 
 class SettingsForm(StatesGroup):
     waiting_for_nickname = State()
+
+# --- NEW YEAR: FSM State for New Year's Submission ---
+class NewYearSubmission(StatesGroup):
+    waiting_for_text = State()
 
 
 # --- Database ---
@@ -620,6 +631,7 @@ async def show_help(message: types.Message):
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
         "🔹 /confess - Submit a new anonymous confession.\n"
+        "🔹 /newyear - Submit a New Year's message.\n"
         "🔹 /profile - View your medal points, history, and settings.\n"
         "🔹 /start - Show the welcome message.\n"
         "🔹 /help - Display this help message.\n"
@@ -1652,6 +1664,204 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
             
             await safe_send_message(author_uid, notification_to_author)
             await callback_query.answer("Response recorded.")
+            
+# --- NEW YEAR: Image Generation Function ---
+# --- NEW YEAR: Image Generation Function (Optimized) ---
+# --- NEW YEAR: Image Generation Function (Optimized and Corrected) ---
+# --- NEW YEAR: Image Generation Function (with Dynamic Font Sizing) ---
+def create_new_year_image(text: str) -> io.BytesIO:
+    try:
+        # Load the background image
+        background = Image.open("background.png")
+
+        # Convert the image to RGB mode immediately to avoid palette issues
+        if background.mode != 'RGB':
+            background = background.convert('RGB')
+
+        width, height = background.size
+        draw = ImageDraw.Draw(background)
+
+        # --- DYNAMIC FONT SIZE PARAMETERS (You can tweak these) ---
+        PADDING = 150  # The space (in pixels) to leave around the edges of the image
+        MAX_FONT_SIZE = 70
+        MIN_FONT_SIZE = 25
+        FONT_FILE = "Arial.ttf" # Make sure this font file is in your directory
+
+        # Define the 'safe area' for the text (the image size minus the padding)
+        safe_width = width - (2 * PADDING)
+        safe_height = height - (2 * PADDING)
+
+        # --- Find the best font size iteratively ---
+        font_size = MAX_FONT_SIZE
+        font = ImageFont.load_default() # Fallback font
+
+        while font_size >= MIN_FONT_SIZE:
+            try:
+                font = ImageFont.truetype(FONT_FILE, size=font_size)
+            except IOError:
+                # If the font file is not found, we'll stick with the default
+                logging.warning(f"{FONT_FILE} not found. Using default font.")
+                break # Exit the loop if font is unavailable
+
+            # Calculate how many characters can fit on one line with the current font size
+            # We use the width of an average character 'A' as a rough guide
+            avg_char_width = font.getlength("A")
+            wrap_width = int(safe_width / avg_char_width) if avg_char_width > 0 else 20
+            
+            # Wrap the text
+            wrapped_text = textwrap.fill(text, width=wrap_width)
+
+            # Measure the dimensions of the wrapped text block
+            text_bbox = draw.textbbox((0, 0), wrapped_text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+
+            # Check if the wrapped text fits within our safe area
+            if text_width <= safe_width and text_height <= safe_height:
+                # Perfect fit! We can stop searching.
+                break
+            
+            # If it doesn't fit, reduce the font size and try again
+            font_size -= 2 # Decrease by 2 for faster searching
+
+        # --- Draw the final text ---
+        # Calculate the final position to center the text block
+        final_position = (
+            (width - text_width) / 2,
+            (height - text_height) / 2
+        )
+
+        # Draw the text on the image with the calculated best-fit font
+        draw.text(final_position, wrapped_text, font=font, fill=(255, 255, 255), align="center")
+
+        # Save the image to a bytes buffer
+        img_byte_arr = io.BytesIO()
+        background.save(img_byte_arr, format='JPEG', quality=90)
+        img_byte_arr.seek(0)
+        return img_byte_arr
+
+    except FileNotFoundError:
+        logging.error("background.png not found. Please place it in the same directory as the script.")
+        return None
+    except Exception as e:
+        logging.error(f"Error creating New Year image: {e}", exc_info=True) # Added exc_info for better debugging
+        return None
+
+### How to Control the Text Size Yourself
+
+
+# --- NEW YEAR: Handlers for New Year's Submission ---
+
+@dp.message(Command("newyear"), StateFilter(None))
+@dp.message(F.text == "🎉 Submit New Year's Message", StateFilter(None))
+async def start_new_year_submission(message: types.Message, state: FSMContext):
+    await state.set_state(NewYearSubmission.waiting_for_text)
+    await message.answer(
+        "Happy New Year! 🎉\n\nPlease send your New Year's message. It will be added to a special image and, if approved, posted on our channel.",
+        reply_markup=cancel_keyboard
+    )
+
+@dp.message(NewYearSubmission.waiting_for_text, F.text)
+async def receive_new_year_text(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    new_year_text = message.text
+
+    if len(new_year_text) < 10 or len(new_year_text) > 500:
+        await message.answer("Please provide a message between 10 and 500 characters.")
+        return
+
+    # Generate the image
+    image_bytes = create_new_year_image(new_year_text)
+    if not image_bytes:
+        await message.answer("Sorry, there was an error creating the image. Please try again later.", reply_markup=main_menu_keyboard)
+        await state.clear()
+        return
+
+    # Send to admin for approval
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Approve", callback_data=f"ny_approve_{user_id}")],
+        [InlineKeyboardButton(text="❌ Reject", callback_data=f"ny_reject_{user_id}")]
+    ])
+    
+    try:
+        await bot.send_photo(
+            ADMIN_ID,
+            BufferedInputFile(image_bytes.read(), filename="new_year_submission.jpeg"), # Changed to jpeg
+            caption=f"New Year's submission from user <code>{user_id}</code>.\n\n<b>Text:</b> {html.quote(new_year_text)}",
+            reply_markup=keyboard,
+            request_timeout=60  # --- FIX: Increased timeout to 60 seconds ---
+        )
+        
+        await message.answer("Thank you! Your New Year's message has been submitted for review.", reply_markup=main_menu_keyboard)
+
+    except TelegramNetworkError:
+        logging.error(f"Network error while uploading New Year's photo for user {user_id}.")
+        await message.answer("A network error occurred while trying to upload your image. Please try again in a moment.", reply_markup=main_menu_keyboard)
+    except Exception as e:
+        logging.error(f"Failed to send new year photo to admin: {e}")
+        await message.answer("An unexpected error occurred. The admin has been notified.", reply_markup=main_menu_keyboard)
+    finally:
+        await state.clear()
+
+@dp.callback_query(F.data.startswith("ny_"))
+@dp.callback_query(F.data.startswith("ny_"))
+async def handle_new_year_approval(callback_query: types.CallbackQuery): # Removed 'state' as it's not used
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("This action is for admins only.", show_alert=True)
+        return
+
+    # --- FIX: Use split() instead of partition() to correctly parse the data ---
+    try:
+        # "ny_approve_7388700051" becomes ["ny", "approve", "7388700051"]
+        _, action, user_id_str = callback_query.data.split("_")
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        logging.error(f"Could not parse new year callback data: {callback_query.data}")
+        await callback_query.answer("Error: Invalid callback data.", show_alert=True)
+        return
+
+    original_caption = callback_query.message.caption or ""
+    
+    # Check if the action has already been processed
+    if "--- ✅ Approved ---" in original_caption or "--- ❌ Rejected ---" in original_caption:
+        await callback_query.answer("This action has already been processed.", show_alert=True)
+        return
+
+    if action == "approve":
+        # Extract the text from the original message caption sent to the admin
+        text_start = original_caption.find("Text:")
+        if text_start != -1:
+            # Move past "Text: "
+            submission_text = original_caption[text_start + len("Text:"):].strip()
+            
+            # Regenerate the image to ensure it's fresh
+            image_bytes = create_new_year_image(submission_text)
+            
+            if image_bytes:
+                await bot.send_photo(
+                    CHANNEL_ID,
+                    BufferedInputFile(image_bytes.read(), filename="new_year_post.jpeg"),
+                    caption="#NewYearResolution"
+                )
+                await safe_send_message(user_id, "🎉 Your New Year's submission has been approved and posted!")
+                await callback_query.message.edit_caption(
+                    caption=original_caption + "\n\n--- ✅ Approved ---",
+                    reply_markup=None
+                )
+                await callback_query.answer("Approved and posted.")
+            else:
+                await callback_query.answer("Error regenerating image.", show_alert=True)
+        else:
+            await callback_query.answer("Could not extract text from the message.", show_alert=True)
+
+    elif action == "reject":
+        await safe_send_message(user_id, "We're sorry, but your New Year's submission was not approved.")
+        await callback_query.message.edit_caption(
+            caption=original_caption + "\n\n--- ❌ Rejected ---",
+            reply_markup=None
+        )
+        await callback_query.answer("Submission rejected.")
+
 
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
@@ -1675,6 +1885,7 @@ async def main():
         commands = [
             types.BotCommand(command="start", description="Start/View confession"),
             types.BotCommand(command="confess", description="Submit anonymous confession"),
+            types.BotCommand(command="newyear", description="Submit a New Year's message"),
             types.BotCommand(command="profile", description="View your profile and history"),
             types.BotCommand(command="help", description="Show help and commands"),
             types.BotCommand(command="rules", description="View the bot's rules"),
