@@ -1682,7 +1682,7 @@ def create_new_year_image(text: str) -> io.BytesIO:
         draw = ImageDraw.Draw(background)
 
         # --- DYNAMIC FONT SIZE PARAMETERS (You can tweak these) ---
-        PADDING = 150  # The space (in pixels) to leave around the edges of the image
+        PADDING = 100  # The space (in pixels) to leave around the edges of the image
         MAX_FONT_SIZE = 70
         MIN_FONT_SIZE = 25
         FONT_FILE = "Arial.ttf" # Make sure this font file is in your directory
@@ -1766,8 +1766,8 @@ async def receive_new_year_text(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     new_year_text = message.text
 
-    if len(new_year_text) < 10 or len(new_year_text) > 500:
-        await message.answer("Please provide a message between 10 and 500 characters.")
+    if len(new_year_text) < 10 or len(new_year_text) > 700:
+        await message.answer("Please provide a message between 10 and 700 characters.")
         return
 
     # Generate the image
