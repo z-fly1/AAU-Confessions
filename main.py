@@ -29,6 +29,8 @@ import io
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
 
+from emoji import is_emoji
+
 # --- Constants --
 CATEGORIES = [
     "2🌼18", "Kiremt", "Relationship", "Family", "School", "Friendship",
@@ -1665,86 +1667,102 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
             await safe_send_message(author_uid, notification_to_author)
             await callback_query.answer("Response recorded.")
             
-# --- NEW YEAR: Image Generation Function ---
-# --- NEW YEAR: Image Generation Function (Optimized) ---
-# --- NEW YEAR: Image Generation Function (Optimized and Corrected) ---
-# --- NEW YEAR: Image Generation Function (with Dynamic Font Sizing) ---
+
+
+# --- NEW YEAR: Image Generation Function (with Emoji Support) ---
 def create_new_year_image(text: str) -> io.BytesIO:
     try:
-        # Load the background image
         background = Image.open("background.png")
-
-        # Convert the image to RGB mode immediately to avoid palette issues
         if background.mode != 'RGB':
             background = background.convert('RGB')
 
         width, height = background.size
         draw = ImageDraw.Draw(background)
 
-        # --- DYNAMIC FONT SIZE PARAMETERS (You can tweak these) ---
-        PADDING = 100  # The space (in pixels) to leave around the edges of the image
+        # --- Font Parameters (tweak these) ---
+        PADDING = 100
         MAX_FONT_SIZE = 70
         MIN_FONT_SIZE = 25
-        FONT_FILE = "Arial.ttf" # Make sure this font file is in your directory
+        TEXT_FONT_FILE = "Arial.ttf"  # Your regular font for letters
+        EMOJI_FONT_FILE = "NotoColorEmoji.ttf"  # The emoji font you downloaded
 
-        # Define the 'safe area' for the text (the image size minus the padding)
         safe_width = width - (2 * PADDING)
         safe_height = height - (2 * PADDING)
 
         # --- Find the best font size iteratively ---
         font_size = MAX_FONT_SIZE
-        font = ImageFont.load_default() # Fallback font
+        text_font, emoji_font = None, None
 
         while font_size >= MIN_FONT_SIZE:
             try:
-                font = ImageFont.truetype(FONT_FILE, size=font_size)
-            except IOError:
-                # If the font file is not found, we'll stick with the default
-                logging.warning(f"{FONT_FILE} not found. Using default font.")
-                break # Exit the loop if font is unavailable
+                text_font = ImageFont.truetype(TEXT_FONT_FILE, size=font_size)
+                # Use the same size for the emoji font
+                emoji_font = ImageFont.truetype(EMOJI_FONT_FILE, size=font_size)
+            except IOError as e:
+                logging.error(f"Font file not found: {e}. Falling back to default.")
+                text_font = ImageFont.load_default()
+                emoji_font = ImageFont.load_default()
+                break
 
-            # Calculate how many characters can fit on one line with the current font size
-            # We use the width of an average character 'A' as a rough guide
-            avg_char_width = font.getlength("A")
+            avg_char_width = text_font.getlength("A")
             wrap_width = int(safe_width / avg_char_width) if avg_char_width > 0 else 20
-            
-            # Wrap the text
             wrapped_text = textwrap.fill(text, width=wrap_width)
 
-            # Measure the dimensions of the wrapped text block
-            text_bbox = draw.textbbox((0, 0), wrapped_text, font=font)
-            text_width = text_bbox[2] - text_bbox[0]
-            text_height = text_bbox[3] - text_bbox[1]
+            # Measure dimensions using a mix of both fonts
+            total_height = 0
+            max_line_width = 0
+            line_height = max(text_font.getbbox('A')[3], emoji_font.getbbox('A')[3]) + 5
 
-            # Check if the wrapped text fits within our safe area
-            if text_width <= safe_width and text_height <= safe_height:
-                # Perfect fit! We can stop searching.
+            for line in wrapped_text.split('\n'):
+                current_line_width = sum(
+                    emoji_font.getlength(char) if is_emoji(char) else text_font.getlength(char)
+                    for char in line
+                )
+                if current_line_width > max_line_width:
+                    max_line_width = current_line_width
+                total_height += line_height
+
+            if max_line_width <= safe_width and total_height <= safe_height:
                 break
+            font_size -= 2
+
+        # --- Draw the final text, character by character ---
+        lines = wrapped_text.split('\n')
+        total_text_height = (len(lines) - 1) * line_height
+        
+        # Calculate starting y position to vertically center the whole block
+        current_y = (height - total_text_height) / 2
+
+        for line in lines:
+            # Calculate starting x position to horizontally center this specific line
+            line_width = sum(
+                emoji_font.getlength(char) if is_emoji(char) else text_font.getlength(char)
+                for char in line
+            )
+            current_x = (width - line_width) / 2
+
+            for char in line:
+                font_to_use = emoji_font if is_emoji(char) else text_font
+                
+                # Draw the character with its specific font
+                draw.text((current_x, current_y), char, font=font_to_use, embedded_color=True, fill=(255, 255, 255))
+                
+                # Move the "cursor" to the right for the next character
+                current_x += font_to_use.getlength(char)
             
-            # If it doesn't fit, reduce the font size and try again
-            font_size -= 2 # Decrease by 2 for faster searching
+            # Move the "cursor" down for the next line
+            current_y += line_height
 
-        # --- Draw the final text ---
-        # Calculate the final position to center the text block
-        final_position = (
-            (width - text_width) / 2,
-            (height - text_height) / 2
-        )
-
-        # Draw the text on the image with the calculated best-fit font
-        draw.text(final_position, wrapped_text, font=font, fill=(255, 255, 255), align="center")
-
-        # Save the image to a bytes buffer
         img_byte_arr = io.BytesIO()
         background.save(img_byte_arr, format='JPEG', quality=90)
         img_byte_arr.seek(0)
         return img_byte_arr
 
-    except FileNotFoundError:
-        logging.error("background.png not found. Please place it in the same directory as the script.")
+    except FileNotFoundError as e:
+        logging.error(f"{e}. Please place background.png and font files in the script directory.")
         return None
     except Exception as e:
-        logging.error(f"Error creating New Year image: {e}", exc_info=True) # Added exc_info for better debugging
+        logging.error(f"Error creating New Year image: {e}", exc_info=True)
         return None
 
 ### How to Control the Text Size Yourself
