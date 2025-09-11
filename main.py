@@ -83,7 +83,7 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="🎉 Submit New Year's Message")], # --- NEW YEAR ---
+        [KeyboardButton(text="🌻 Submit New Year's Resolution")], # --- NEW YEAR ---
         [KeyboardButton(text="👤 Profile"), KeyboardButton(text="📜 Rules"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
