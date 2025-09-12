@@ -29,9 +29,9 @@ CATEGORIES = [
     "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual Assault",
     "Other"
 ]
-POINTS_PER_CONFESSION = 1
-POINTS_PER_LIKE_RECEIVED = 3
-POINTS_PER_DISLIKE_RECEIVED = -3 # Note: This is negative
+POINTS_PER_CONFESSION = 0
+POINTS_PER_LIKE_RECEIVED = 1
+POINTS_PER_DISLIKE_RECEIVED = -1 # Note: This is negative
 MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 NICKNAME_COOLDOWN = timedelta(days=30)
 PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
@@ -625,7 +625,7 @@ async def show_help(message: types.Message):
         "🔹 /help - Display this help message.\n"
         "🔹 /privacy - View information about data privacy.\n\n"
         "Interact with comments using the buttons:\n"
-        "👍/👎: Like/Dislike (+3🏅/-3🏅 for the commenter).\n"
+        "👍/👎: Like/Dislike (+1🏅/-1🏅 for the commenter).\n"
         "↪️ Reply: Reply to a comment (Text, Sticker, or GIF).\n"
         "⚠️ Report: Report a comment to the admin.\n"
         "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
