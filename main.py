@@ -25,7 +25,7 @@ from aiohttp import web
 
 # --- Constants --
 CATEGORIES = [
-    "2🌼18", "Kiremt", "Relationship", "Family", "School", "Friendship",
+    "2🌼18", "Relationship", "Family","Exam", "School", "Friendship",
     "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual Assault",
     "Other"
 ]
@@ -33,17 +33,17 @@ POINTS_PER_CONFESSION = 1
 POINTS_PER_LIKE_RECEIVED = 3
 POINTS_PER_DISLIKE_RECEIVED = -3 # Note: This is negative
 MAX_CATEGORIES = 3 # Maximum categories allowed per confession
-NICKNAME_COOLDOWN = timedelta(days=0)
+NICKNAME_COOLDOWN = timedelta(days=30)
 PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
 
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS", "8171868139:AAGQhQPa1ORHPlzp9HhwAPbCi3vkweD0w2k")
-ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@paradoxHQ")
+BOT_TOKEN = os.getenv("BOT_TOKENS")
+ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
-DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
+DATABASE_URL = os.getenv("DATABASE_URL")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
 RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNAMES_STR.split(',')}
