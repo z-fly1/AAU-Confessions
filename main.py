@@ -8,6 +8,7 @@ from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.base import StorageKey # IMPROVEMENT: Needed for bi-directional chat
 from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
@@ -39,11 +40,11 @@ PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴",
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS")
-ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+BOT_TOKEN = os.getenv("BOT_TOKENS", "8495318571:AAHmKfHVgNTGriqw-q8VP36SMpxQj68yHRw")
+ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@drabiyahmedaliiii")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
 RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNAMES_STR.split(',')}
@@ -74,10 +75,11 @@ dp = Dispatcher(storage=MemoryStorage())
 bot_info = None
 
 # --- MODIFIED: Persistent Reply Keyboards ---
+# IMPROVEMENT: Removed "Rules" button for a cleaner menu
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="📜 Rules"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
 )
@@ -104,7 +106,10 @@ class AdminActions(StatesGroup):
 
 class SettingsForm(StatesGroup):
     waiting_for_nickname = State()
+    waiting_for_bio = State()
 
+class ChatState(StatesGroup):
+    in_chat = State()
 
 # --- Database ---
 db = None
@@ -198,7 +203,7 @@ async def setup():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
                 id SERIAL PRIMARY KEY,
-                comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+                comment_id INTEGER NULL REFERENCES comments(id) ON DELETE CASCADE,
                 reporter_user_id BIGINT NOT NULL,
                 reported_user_id BIGINT NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
@@ -207,6 +212,21 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'reports' table.")
+        # --- NEW: User to User Chat Requests Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_requests (
+                id SERIAL PRIMARY KEY,
+                requester_id BIGINT NOT NULL,
+                recipient_id BIGINT NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, accepted, declined, blocked
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(requester_id, recipient_id)
+            );
+            COMMENT ON TABLE chat_requests IS 'Stores user-to-user anonymous chat requests.';
+        """)
+        logging.info("Checked/Created 'chat_requests' table.")
+
 
         # --- Deletion Requests Table ---
         await conn.execute("""
@@ -244,6 +264,11 @@ async def setup():
         logging.info("Ensured 'nickname_last_changed_at' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS profile_emoji VARCHAR(8) NULL;")
         logging.info("Ensured 'profile_emoji' column exists in 'user_status'.")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS bio TEXT NULL;")
+        logging.info("Ensured 'bio' column exists in 'user_status'.")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS allow_contact BOOLEAN NOT NULL DEFAULT TRUE;")
+        logging.info("Ensured 'allow_contact' column exists in 'user_status'.")
+
 
         logging.info("Database tables setup complete.")
 
@@ -397,7 +422,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             return
 
         user_page_size = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", user_id)
-        page_size_to_use = user_page_size or PAGE_SIZE
+        page_size_to_use = user_page_size if user_page_size is not None else PAGE_SIZE
+        use_pagination = page_size_to_use > 0
+
 
         confession_owner_id = conf_data['user_id']
         total_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", confession_id) or 0
@@ -409,11 +436,12 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             await safe_send_message(user_id, "You can add your own comment below:", reply_markup=nav)
             return
 
-        total_pages = (total_count + page_size_to_use - 1) // page_size_to_use
+        total_pages = (total_count + page_size_to_use - 1) // page_size_to_use if use_pagination else 1
         page = max(1, min(page, total_pages))
-        offset = (page - 1) * page_size_to_use
+        offset = (page - 1) * page_size_to_use if use_pagination else 0
+        limit = page_size_to_use if use_pagination else None
 
-        comments_raw = await conn.fetch("""
+        query = """
             SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.parent_comment_id, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
@@ -423,8 +451,12 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             LEFT JOIN user_status us ON c.user_id = us.user_id
             WHERE c.confession_id = $1
             ORDER BY c.created_at ASC
-            LIMIT $2 OFFSET $3
-        """, confession_id, page_size_to_use, offset)
+        """
+        if use_pagination:
+            query += " LIMIT $2 OFFSET $3"
+            comments_raw = await conn.fetch(query, confession_id, limit, offset)
+        else:
+            comments_raw = await conn.fetch(query, confession_id)
 
 
     db_id_to_message_id: Dict[int, int] = {}
@@ -438,8 +470,15 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             medal_str = f" 🏅{c_data.get('user_points', 0)} Aura"
 
             nickname = c_data.get('nickname') or "Anonymous"
-            tag = "(Author)" if commenter_uid == confession_owner_id else "(You)" if commenter_uid == user_id else nickname
+            profile_url = f"https://t.me/{bot_info.username}?start=profile_{commenter_uid}"
             
+            if commenter_uid == confession_owner_id:
+                tag = f"<a href='{profile_url}'>(Author)</a>"
+            elif commenter_uid == user_id:
+                tag = f"<a href='{profile_url}'>(You)</a>"
+            else:
+                tag = f"<a href='{profile_url}'>{html.quote(nickname)}</a>"
+
             profile_emoji = c_data.get('profile_emoji') or '👤'
             
             admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID else ""
@@ -484,12 +523,67 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             await asyncio.sleep(0.1)
 
     nav_row = []
-    if page > 1: nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"comments_page_{confession_id}_{page-1}"))
-    if total_pages > 1: nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
-    if page < total_pages: nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"comments_page_{confession_id}_{page+1}"))
+    if use_pagination:
+        if page > 1: nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"comments_page_{confession_id}_{page-1}"))
+        if total_pages > 1: nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages: nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"comments_page_{confession_id}_{page+1}"))
+    
     nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
-    end_txt = f"--- Showing comments {offset+1} to {min(offset+page_size_to_use, total_count)} of {total_count} for Confession #{confession_id} ---"
+    
+    if use_pagination:
+        end_txt = f"--- Showing comments {offset+1} to {min(offset+page_size_to_use, total_count)} of {total_count} for Confession #{confession_id} ---"
+    else:
+        end_txt = f"--- Showing all {total_count} comments for Confession #{confession_id} ---"
+
     await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard)
+
+# --- Public Profile Viewer ---
+async def show_public_profile(viewer_user_id: int, profile_user_id: int):
+    async with db.acquire() as conn:
+        await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", profile_user_id)
+        
+        profile_data = await conn.fetchrow("""
+            SELECT us.nickname, us.profile_emoji, us.bio, us.allow_contact, COALESCE(up.points, 0) as points
+            FROM user_status us
+            LEFT JOIN user_points up ON us.user_id = up.user_id
+            WHERE us.user_id = $1
+        """, profile_user_id)
+
+    if not profile_data:
+        await safe_send_message(viewer_user_id, "This user's profile could not be found.")
+        return
+
+    nickname = html.quote(profile_data.get('nickname') or "Anonymous")
+    emoji = profile_data.get('profile_emoji') or '👤'
+    points = profile_data.get('points', 0)
+    bio = html.quote(profile_data.get('bio') or "This user has not set a bio yet.")
+    allow_contact = profile_data.get('allow_contact', False)
+
+    profile_text = (
+        f"{emoji} <b>{nickname}'s Public Profile</b>\n\n"
+        f"🏅 <b>Aura Points:</b> {points}\n\n"
+        f"📝 <b>Bio:</b>\n<i>{bio}</i>"
+    )
+
+    builder = InlineKeyboardBuilder()
+    if viewer_user_id != profile_user_id:
+        builder.button(text="⚠️ Report User", callback_data=f"report_user_{profile_user_id}")
+        
+        async with db.acquire() as conn:
+            chat_status = await conn.fetchval(
+                "SELECT status FROM chat_requests WHERE (requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1)",
+                viewer_user_id, profile_user_id
+            )
+
+        if chat_status == 'accepted':
+             builder.button(text="💬 Send Message", callback_data=f"start_chat_{profile_user_id}")
+        elif chat_status == 'pending':
+            builder.button(text="⏳ Chat Request Sent", callback_data="noop")
+        elif allow_contact:
+            builder.button(text="🤝 Request to Chat", callback_data=f"request_chat_{profile_user_id}")
+    
+    builder.adjust(1)
+    await safe_send_message(viewer_user_id, profile_text, reply_markup=builder.as_markup())
 
 
 class BlockUserMiddleware(BaseMiddleware):
@@ -527,8 +621,8 @@ class BlockUserMiddleware(BaseMiddleware):
 
 # --- Handlers ---
 
+# IMPROVEMENT: Removed F.text handler as button is gone
 @dp.message(Command("rules"))
-@dp.message(F.text == "📜 Rules")
 async def show_rules(message: types.Message):
     rules_text = (
         "<b>📜 Bot Rules & Regulations</b>\n\n"
@@ -551,6 +645,12 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
     async with db.acquire() as conn:
         has_accepted = await conn.fetchval("SELECT has_accepted_rules FROM user_status WHERE user_id = $1", user_id)
 
+    if has_accepted is None:
+        async with db.acquire() as conn:
+            await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+        has_accepted = False
+
+
     if not has_accepted:
         rules_text = (
             "<b>📜 Bot Rules & Regulations</b>\n\n"
@@ -570,32 +670,42 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
         return
 
     deep_link_args = command.args if command else None
-    if deep_link_args and deep_link_args.startswith("view_"):
+    if deep_link_args:
         try:
-            parts = deep_link_args.split("_")
-            conf_id = int(parts[1])
-            
-            if len(parts) == 4 and parts[2] == "page":
-                page_num = int(parts[3])
-                logging.info(f"User {user_id} deep linked to conf {conf_id}, page {page_num}")
-                await show_comments_for_confession(user_id, conf_id, page=page_num)
-                return
+            if deep_link_args.startswith("view_"):
+                parts = deep_link_args.split("_")
+                conf_id = int(parts[1])
+                
+                if len(parts) == 4 and parts[2] == "page":
+                    page_num = int(parts[3])
+                    logging.info(f"User {user_id} deep linked to conf {conf_id}, page {page_num}")
+                    await show_comments_for_confession(user_id, conf_id, page=page_num)
+                    return
 
-            logging.info(f"User {message.from_user.id} started via deep link for conf {conf_id}")
-            async with db.acquire() as conn:
-                conf_data = await conn.fetchrow("SELECT c.text, c.categories, c.status, c.user_id, COUNT(com.id) as comment_count FROM confessions c LEFT JOIN comments com ON c.id = com.confession_id WHERE c.id = $1 GROUP BY c.id", conf_id)
-            if not conf_data or conf_data['status'] != 'approved':
-                await message.answer(f"Confession #{conf_id} not found or not approved."); return
-            comm_count = conf_data['comment_count']; categories = conf_data['categories'] or []; category_tags = " ".join([f"#{html.quote(cat)}" for cat in categories]) if categories else "#Unknown"
-            txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}\n---"
-            builder = InlineKeyboardBuilder()
-            builder.button(text="➕ Add Comment", callback_data=f"add_{conf_id}")
-            builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
-            builder.adjust(1, 1)
-            await message.answer(txt, reply_markup=builder.as_markup())
+                logging.info(f"User {message.from_user.id} started via deep link for conf {conf_id}")
+                async with db.acquire() as conn:
+                    conf_data = await conn.fetchrow("SELECT c.text, c.categories, c.status, c.user_id, COUNT(com.id) as comment_count FROM confessions c LEFT JOIN comments com ON c.id = com.confession_id WHERE c.id = $1 GROUP BY c.id", conf_id)
+                if not conf_data or conf_data['status'] != 'approved':
+                    await message.answer(f"Confession #{conf_id} not found or not approved."); return
+                comm_count = conf_data['comment_count']; categories = conf_data['categories'] or []; category_tags = " ".join([f"#{html.quote(cat)}" for cat in categories]) if categories else "#Unknown"
+                txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}\n---"
+                builder = InlineKeyboardBuilder()
+                builder.button(text="➕ Add Comment", callback_data=f"add_{conf_id}")
+                builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
+                builder.adjust(1, 1)
+                await message.answer(txt, reply_markup=builder.as_markup())
+            
+            elif deep_link_args.startswith("profile_"):
+                profile_user_id = int(deep_link_args.split("_")[1])
+                logging.info(f"User {user_id} deep linked to profile of {profile_user_id}")
+                await show_public_profile(user_id, profile_user_id)
+
+            else:
+                await message.answer("Invalid link.", reply_markup=main_menu_keyboard)
+
         except (ValueError, IndexError): await message.answer("Invalid link.")
         except Exception as e: logging.error(f"Err handling deep link '{deep_link_args}': {e}", exc_info=True); await message.answer("Error processing link.")
-    else: await message.answer("Welcome! Use Confess to sumbit confessions", reply_markup=main_menu_keyboard)
+    else: await message.answer("Welcome! Use Confess to submit confessions", reply_markup=main_menu_keyboard)
 
 @dp.callback_query(F.data == "accept_rules")
 async def handle_accept_rules(callback_query: types.CallbackQuery):
@@ -620,7 +730,7 @@ async def show_help(message: types.Message):
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
         "🔹 /confess - Submit a new anonymous confession.\n"
-        "🔹 /profile - View your medal points, history, and settings.\n"
+        "🔹 /profile - View your profile and history.\n"
         "🔹 /start - Show the welcome message.\n"
         "🔹 /help - Display this help message.\n"
         "🔹 /privacy - View information about data privacy.\n\n"
@@ -647,15 +757,21 @@ async def show_help(message: types.Message):
 
 @dp.callback_query(F.data == "show_rules_help")
 async def show_rules_from_help(callback_query: types.CallbackQuery):
+    # FIX: Send the rules text directly instead of using a broken dummy message
     await callback_query.answer()
-    dummy_message = types.Message(
-        message_id=0,
-        date=datetime.now(),
-        chat=callback_query.message.chat,
-        from_user=callback_query.from_user,
-        text=""
+    rules_text = (
+        "<b>📜 Bot Rules & Regulations</b>\n\n"
+        "<b>To keep the community safe, respectful, and meaningful, please follow these guidelines when using the bot:</b>\n\n"
+        "1.  <b>Stay Relevant:</b> This space is mainly for sharing confessions, experiences, and thoughts.\n\n - Avoid using it just to ask random questions you could easily Google or ask in the right place.\n\n - Some student-related questions may be approved if they benefit the community.\n\n"
+        "2.  <b>Respectful Communication:</b> Sensitive topics (political, religious, cultural, etc.) are allowed but must be discussed with respect.\n\n"
+        "3.  <b>No Harmful Content:</b> You may mention names, but at your own risk.\n\n - The bot and admins are not responsible for any consequences.\n\n - If someone mentioned requests removal, their name will be taken down.\n\n"
+        "4.  <b>Names & Responsibility:</b> Do not share personal identifying information about yourself or others.\n\n"
+        "5.  <b>Anonymity & Privacy:</b> don’t reveal private details of others (contacts, adress, etc.) without consent.\n\n"
+        "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
+        "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
-    await show_rules(dummy_message)
+    # Use the callback's message to send a new message
+    await callback_query.message.answer(rules_text, reply_markup=main_menu_keyboard)
 
 
 @dp.callback_query(F.data == "contact_admin_start", StateFilter(None))
@@ -676,6 +792,7 @@ async def show_privacy(message: types.Message):
         "▪️ Comments are posted with your chosen Nickname (default: Anonymous).\n"
         "▪️ Your medal points (🏅) are displayed next to your tag on comments.\n"
         "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
+        "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura) and request to chat anonymously.\n"
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
         f"▪️ The bot admin (User ID: <code>{ADMIN_ID}</code>) can access stored User IDs for moderation.\n\n"
         f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
@@ -714,7 +831,7 @@ async def receive_admin_message(message: types.Message, state: FSMContext):
 async def handle_admin_reply(message: types.Message, state: FSMContext):
     if await state.get_state() is not None: return
     replied_to = message.reply_to_message
-    if replied_to and replied_to.text and "⚠️ New Comment Report" in replied_to.text: return
+    if replied_to and replied_to.text and ("⚠️ New Comment Report" in replied_to.text or "⚠️ New User Report" in replied_to.text): return
     global bot_info;
     if not bot_info or not replied_to or not replied_to.from_user or replied_to.from_user.id != bot_info.id: return
     target_user_id = None;
@@ -757,6 +874,7 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
                     can_change_at = status_data['nickname_last_changed_at'] + NICKNAME_COOLDOWN
                     info_parts.append(f"  - <b>Can Change Nickname:</b> {can_change_at.strftime('%Y-%m-%d')}")
                 
+                info_parts.append(f"  - <b>Allows Contact:</b> {'Yes' if status_data['allow_contact'] else 'No'}")
                 info_parts.append(f"  - <b>Accepted Rules:</b> {'Yes' if status_data['has_accepted_rules'] else 'No'}")
                 if status_data['is_blocked']:
                     expiry = f"until {status_data['blocked_until'].strftime('%Y-%m-%d')}" if status_data['blocked_until'] else "Permanently"
@@ -766,7 +884,40 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
 
 # --- /profile Command and Handlers ---
 
-def create_profile_pagination_keyboard(base_callback: str, current_page: int, total_pages: int):
+async def _render_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Helper function to build the settings menu text and keyboard."""
+    async with db.acquire() as conn:
+        settings = await conn.fetchrow("SELECT nickname, comments_per_page, profile_emoji, bio, allow_contact FROM user_status WHERE user_id = $1", user_id)
+    
+    current_nickname = settings.get('nickname') if settings else None
+    current_page_size = settings.get('comments_per_page') if settings else None
+    current_emoji = settings.get('profile_emoji') if settings else '👤'
+    current_bio = settings.get('bio') if settings else None
+    allow_contact = settings.get('allow_contact', True) if settings else True
+
+    cpp_display = "All" if current_page_size == 0 else (current_page_size if current_page_size is not None else f'Default ({PAGE_SIZE})')
+    contact_status = "✅ On" if allow_contact else "❌ Off"
+
+    settings_text = (
+        "<b>🎨 Customization</b>\n\n"
+        f"<b>Profile Emoji:</b> {current_emoji}\n"
+        f"<b>Nickname:</b> {html.quote(current_nickname or 'Default (Anonymous)')}\n"
+        f"<b>Bio:</b> {html.quote(current_bio or 'Not set')}\n"
+        f"<b>Comments Per Page:</b> {cpp_display}\n"
+        f"<b>Allow Chat Requests:</b> {contact_status}"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎨 Change Profile Emoji", callback_data="settings_change_emoji")],
+        [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="settings_change_nickname")],
+        [InlineKeyboardButton(text="📝 Set/Update Bio", callback_data="settings_change_bio")],
+        [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
+        [InlineKeyboardButton(text=f"📬 Toggle Chat Requests ({'Off' if allow_contact else 'On'})", callback_data="settings_toggle_contact")],
+        [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
+    ])
+    return settings_text, keyboard
+
+
+def create_profile_pagination_keyboard(base_callback: str, current_page: int, total_pages: int, back_to: str):
     builder = InlineKeyboardBuilder()
     row = []
     if current_page > 1:
@@ -777,7 +928,7 @@ def create_profile_pagination_keyboard(base_callback: str, current_page: int, to
         row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"{base_callback}_{current_page + 1}"))
     if row:
         builder.row(*row)
-    builder.row(InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_to))
     return builder.as_markup()
 
 @dp.message(Command("profile"))
@@ -788,10 +939,10 @@ async def user_profile(message: types.Message, state: FSMContext):
     points = await get_user_points(user_id)
 
     profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Medal Points (Aura):</b> {points}"
+    # IMPROVEMENT: New profile menu structure
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 My Confessions", callback_data="profile_menu_confessions_1")],
-        [InlineKeyboardButton(text="💬 My Comments", callback_data="profile_menu_comments_1")],
-        [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")]
+        [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
+        [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
     ])
     await message.answer(profile_text, reply_markup=keyboard)
 
@@ -808,11 +959,20 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             points = await get_user_points(user_id)
             profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Medal Points (Aura):</b> {points}"
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📜 My Confessions", callback_data="profile_menu_confessions_1")],
-                [InlineKeyboardButton(text="💬 My Comments", callback_data="profile_menu_comments_1")],
-                [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")]
+                [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
+                [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
             ])
             await callback_query.message.edit_text(profile_text, reply_markup=keyboard)
+
+        # IMPROVEMENT: New history submenu
+        elif action == "history":
+            history_text = "📜 <b>History</b>\n\nSelect which history you would like to view."
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="My Confessions", callback_data="profile_menu_confessions_1")],
+                [InlineKeyboardButton(text="My Comments", callback_data="profile_menu_comments_1")],
+                [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
+            ])
+            await callback_query.message.edit_text(history_text, reply_markup=keyboard)
 
         elif action == "confessions":
             async with db.acquire() as conn:
@@ -835,7 +995,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
                 if conf['status'] in ['approved', 'pending']:
                     builder.row(InlineKeyboardButton(text=f"Request Deletion for #{conf['id']}", callback_data=f"req_del_conf_{conf['id']}"))
 
-            nav_keyboard = create_profile_pagination_keyboard("profile_menu_confessions", page, total_pages)
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_confessions", page, total_pages, "profile_menu_history_1")
             final_markup = builder.attach(InlineKeyboardBuilder.from_markup(nav_keyboard)).as_markup()
             await callback_query.message.edit_text(response_text, reply_markup=final_markup)
 
@@ -860,30 +1020,12 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
                 link = f"https://t.me/{bot_info.username}?start=view_{comm['confession_id']}"
                 response_text += f"On Confession <a href='{link}'>#{comm['confession_id']}</a>:\n<i>\"{snippet}\"</i>\n\n"
 
-            nav_keyboard = create_profile_pagination_keyboard("profile_menu_comments", page, total_pages)
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_comments", page, total_pages, "profile_menu_history_1")
             await callback_query.message.edit_text(response_text, reply_markup=nav_keyboard, disable_web_page_preview=True)
-
-        elif action == "settings":
-            async with db.acquire() as conn:
-                settings = await conn.fetchrow("SELECT nickname, comments_per_page, profile_emoji FROM user_status WHERE user_id = $1", user_id)
-            
-            current_nickname = settings.get('nickname') if settings else None
-            current_page_size = settings.get('comments_per_page') if settings else None
-            current_emoji = settings.get('profile_emoji') if settings else '👤'
-
-
-            settings_text = (
-                "<b>⚙️ Settings</b>\n\n"
-                f"<b>Profile Emoji:</b> {current_emoji}\n"
-                f"<b>Nickname:</b> {html.quote(current_nickname or 'Default (Anonymous)')}\n"
-                f"<b>Comments Per Page:</b> {current_page_size or f'Default ({PAGE_SIZE})'}"
-            )
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🎨 Change Profile Emoji", callback_data="settings_change_emoji")],
-                [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="settings_change_nickname")],
-                [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
-                [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
-            ])
+        
+        # IMPROVEMENT: Renamed from 'settings' to 'customization'
+        elif action == "customization":
+            settings_text, keyboard = await _render_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
     except TelegramBadRequest as e:
@@ -958,10 +1100,8 @@ async def settings_set_nickname(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(feedback, reply_markup=main_menu_keyboard)
     
-    mock_callback_message = await message.answer("...")
-    await mock_callback_message.delete()
-    mock_callback = types.CallbackQuery(id="mock", from_user=message.from_user, chat_instance="mock", message=mock_callback_message, data="profile_menu_settings_1")
-    await handle_profile_menu(mock_callback, state)
+    settings_text, keyboard = await _render_settings_menu(message.from_user.id)
+    await message.answer(settings_text, reply_markup=keyboard)
 
 
 @dp.callback_query(F.data == "settings_change_cpp")
@@ -971,8 +1111,9 @@ async def settings_change_cpp_prompt(callback_query: types.CallbackQuery):
     for opt in options:
         builder.button(text=str(opt), callback_data=f"settings_set_cpp_{opt}")
     builder.adjust(len(options))
+    builder.row(InlineKeyboardButton(text="♾️ All", callback_data="settings_set_cpp_0"))
     builder.row(InlineKeyboardButton(text=f"Reset to Default ({PAGE_SIZE})", callback_data="settings_set_cpp_default"))
-    builder.row(InlineKeyboardButton(text="⬅️ Back to Settings", callback_data="profile_menu_settings_1"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1"))
 
     await callback_query.message.edit_text(
         "Select how many comments you want to see per page.",
@@ -990,7 +1131,10 @@ async def settings_set_cpp(callback_query: types.CallbackQuery, state: FSMContex
         feedback = f"✅ Comments per page reset to default ({PAGE_SIZE})."
     else:
         cpp_to_set = int(value)
-        feedback = f"✅ Comments per page set to {cpp_to_set}."
+        if cpp_to_set == 0:
+            feedback = "✅ Comments per page set to show all."
+        else:
+            feedback = f"✅ Comments per page set to {cpp_to_set}."
 
     async with db.acquire() as conn:
         await conn.execute(
@@ -1000,8 +1144,10 @@ async def settings_set_cpp(callback_query: types.CallbackQuery, state: FSMContex
         )
     
     await callback_query.answer(feedback.split("✅ ")[1], show_alert=True)
-    callback_query.data = "profile_menu_settings_1"
-    await handle_profile_menu(callback_query, state)
+    
+    settings_text, keyboard = await _render_settings_menu(user_id)
+    await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
+
 
 @dp.callback_query(F.data == "settings_change_emoji")
 async def settings_change_emoji_prompt(callback_query: types.CallbackQuery):
@@ -1009,7 +1155,7 @@ async def settings_change_emoji_prompt(callback_query: types.CallbackQuery):
     for emoji in PROFILE_EMOJIS:
         builder.button(text=emoji, callback_data=f"settings_set_emoji_{emoji}")
     builder.adjust(5) 
-    builder.row(InlineKeyboardButton(text="⬅️ Back to Settings", callback_data="profile_menu_settings_1"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1"))
     
     await callback_query.message.edit_text(
         "Choose your new profile emoji.",
@@ -1034,8 +1180,67 @@ async def settings_set_emoji(callback_query: types.CallbackQuery, state: FSMCont
         )
     
     await callback_query.answer(f"Profile emoji set to {emoji}!", show_alert=True)
-    callback_query.data = "profile_menu_settings_1"
-    await handle_profile_menu(callback_query, state)
+    
+    settings_text, keyboard = await _render_settings_menu(user_id)
+    await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
+
+
+# --- Bio and Contact Settings Handlers ---
+@dp.callback_query(F.data == "settings_change_bio")
+async def settings_change_bio_prompt(callback_query: types.CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsForm.waiting_for_bio)
+    await callback_query.message.edit_text(
+        "Please send your new bio (max 250 characters).\n"
+        "Send 'remove' to clear your bio."
+    )
+    await callback_query.message.answer("Waiting for your bio...", reply_markup=cancel_keyboard)
+    await callback_query.answer()
+
+@dp.message(SettingsForm.waiting_for_bio, F.text)
+async def settings_set_bio(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    bio_text = message.text.strip()
+    feedback = ""
+
+    if len(bio_text) > 250:
+        await message.answer("⚠️ Your bio is too long (max 250 characters). Please try again.")
+        return
+
+    async with db.acquire() as conn:
+        if bio_text.lower() == 'remove':
+            await conn.execute(
+                "UPDATE user_status SET bio = NULL WHERE user_id = $1", user_id
+            )
+            feedback = "✅ Your bio has been removed."
+        else:
+            await conn.execute(
+                "INSERT INTO user_status (user_id, bio) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET bio = $2",
+                user_id, bio_text
+            )
+            feedback = "✅ Your bio has been updated."
+    
+    await state.clear()
+    await message.answer(feedback, reply_markup=main_menu_keyboard)
+
+    settings_text, keyboard = await _render_settings_menu(message.from_user.id)
+    await message.answer(settings_text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "settings_toggle_contact")
+async def settings_toggle_contact(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    async with db.acquire() as conn:
+        new_status = await conn.fetchval(
+            """UPDATE user_status SET allow_contact = NOT allow_contact
+               WHERE user_id = $1 RETURNING allow_contact""",
+            user_id
+        )
+    
+    status_text = "enabled" if new_status else "disabled"
+    await callback_query.answer(f"Chat requests have been {status_text}.", show_alert=True)
+    
+    settings_text, keyboard = await _render_settings_menu(user_id)
+    await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
 
 # --- Deletion Request Handlers ---
@@ -1045,7 +1250,7 @@ async def request_deletion_prompt(callback_query: types.CallbackQuery):
     conf_id = int(callback_query.data.split("_")[-1])
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Yes, Request Deletion", callback_data=f"confirm_del_conf_{conf_id}")],
-        [InlineKeyboardButton(text="❌ No, Cancel", callback_data=f"profile_menu_confessions_1")]
+        [InlineKeyboardButton(text="❌ No, Cancel", callback_data="profile_menu_confessions_1")]
     ])
     await callback_query.message.edit_text(
         f"Are you sure you want to request the deletion of Confession #{conf_id}? This action, if approved by an admin, is irreversible.",
@@ -1082,6 +1287,8 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
             ])
             await bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard)
             await callback_query.answer("✅ Deletion request sent. An admin will review it shortly.", show_alert=True)
+            
+            # Go back to the confessions list
             callback_query.data = "profile_menu_confessions_1"
             await handle_profile_menu(callback_query, state)
 
@@ -1479,12 +1686,14 @@ async def receive_reply(message: types.Message, state: FSMContext):
                     conf_id, user_id, reply_text, sticker_id, animation_id, parent_id
                 )
                 
-                user_page_size = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", parent_data['user_id'])
-                page_size_to_use = user_page_size or PAGE_SIZE
+                user_page_size_row = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", parent_data['user_id'])
+                page_size_to_use = user_page_size_row if user_page_size_row is not None else PAGE_SIZE
                 
-                seq_num = await get_comment_sequence_number(conn, new_reply_id, conf_id)
-                page_num = (seq_num - 1) // page_size_to_use + 1 if seq_num else 1
-        
+                page_num = 1
+                if page_size_to_use > 0:
+                    seq_num = await get_comment_sequence_number(conn, new_reply_id, conf_id)
+                    page_num = (seq_num - 1) // page_size_to_use + 1 if seq_num else 1
+
         await message.answer("↪️ Your reply has been sent!", reply_markup=main_menu_keyboard)
         await update_channel_post_button(conf_id)
         
@@ -1652,6 +1861,170 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
             
             await safe_send_message(author_uid, notification_to_author)
             await callback_query.answer("Response recorded.")
+
+# --- Public Profile and User-to-User Chat Handlers ---
+@dp.callback_query(F.data.startswith("report_user_"))
+async def report_user_callback(callback_query: types.CallbackQuery):
+    reported_user_id = int(callback_query.data.split("_")[-1])
+    reporter_user_id = callback_query.from_user.id
+
+    if reported_user_id == reporter_user_id:
+        await callback_query.answer("You cannot report yourself.", show_alert=True)
+        return
+
+    async with db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO reports (reporter_user_id, reported_user_id) VALUES ($1, $2)",
+            reporter_user_id, reported_user_id
+        )
+
+    admin_notification = (f"⚠️ <b>New User Report</b> ⚠️\n\n"
+                          f"<b>Reported User ID:</b> <code>{reported_user_id}</code>\n"
+                          f"<b>Reporter User ID:</b> <code>{reporter_user_id}</code>")
+    await safe_send_message(ADMIN_ID, admin_notification)
+    await callback_query.answer("✅ User reported to the admin. Thank you.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("request_chat_"))
+async def request_chat_callback(callback_query: types.CallbackQuery):
+    recipient_id = int(callback_query.data.split("_")[-1])
+    requester_id = callback_query.from_user.id
+
+    async with db.acquire() as conn:
+        requester_settings = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", requester_id)
+
+        req_id = await conn.fetchval("""
+            INSERT INTO chat_requests (requester_id, recipient_id, status) VALUES ($1, $2, 'pending')
+            ON CONFLICT (requester_id, recipient_id) DO UPDATE SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+            RETURNING id
+        """, requester_id, recipient_id)
+
+    requester_nickname = html.quote(requester_settings.get('nickname') or "An anonymous user") if requester_settings else "An anonymous user"
+    requester_emoji = requester_settings.get('profile_emoji') if requester_settings else '👤'
+
+    notification_text = f"💬 {requester_emoji} <b>{requester_nickname}</b> would like to start a chat with you."
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Accept", callback_data=f"accept_chat_{req_id}")],
+        [InlineKeyboardButton(text="❌ Decline", callback_data=f"decline_chat_{req_id}")],
+    ])
+
+    sent = await safe_send_message(recipient_id, notification_text, reply_markup=keyboard)
+    if sent:
+        await callback_query.answer("✅ Chat request sent!", show_alert=False)
+        await show_public_profile(requester_id, recipient_id)
+    else:
+        await callback_query.answer("⚠️ Could not send request. User may have blocked the bot.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith(("accept_chat_", "decline_chat_")))
+async def handle_chat_response(callback_query: types.CallbackQuery):
+    parts = callback_query.data.split("_")
+    action = parts[0]
+    req_id = int(parts[2])
+    responder_id = callback_query.from_user.id
+
+    async with db.acquire() as conn:
+        req_data = await conn.fetchrow("SELECT * FROM chat_requests WHERE id = $1", req_id)
+        if not req_data or req_data['recipient_id'] != responder_id or req_data['status'] != 'pending':
+            await callback_query.answer("This request is invalid or has expired.", show_alert=True)
+            return
+
+        requester_id = req_data['requester_id']
+        new_status = 'accepted' if action == 'accept' else 'declined'
+        await conn.execute("UPDATE chat_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", new_status, req_id)
+
+        responder_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", responder_id)
+        responder_nickname = html.quote(responder_nickname_row['nickname'] or "The user") if responder_nickname_row else "The user"
+        
+        if new_status == 'accepted':
+            await safe_send_message(requester_id, f"✅ <b>{responder_nickname}</b> has accepted your chat request! You can now send messages from their profile.")
+            await callback_query.message.edit_text("✅ Chat request accepted. You can now chat with this user.")
+        else: # declined
+            await safe_send_message(requester_id, f"❌ <b>{responder_nickname}</b> has declined your chat request.")
+            await callback_query.message.edit_text("❌ You have declined the chat request.")
+
+    await callback_query.answer()
+
+
+@dp.callback_query(F.data.startswith("start_chat_"))
+async def start_chat_callback(callback_query: types.CallbackQuery, state: FSMContext):
+    recipient_id = int(callback_query.data.split("_")[-1])
+    await state.set_state(ChatState.in_chat)
+    await state.update_data(chat_partner_id=recipient_id)
+
+    async with db.acquire() as conn:
+        partner_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", recipient_id)
+        partner_nickname = html.quote(partner_nickname_row['nickname'] or "Anonymous") if partner_nickname_row else "Anonymous"
+    
+    chat_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/leavechat")]], resize_keyboard=True)
+    await callback_query.message.answer(
+        f"You are now in a chat with <b>{partner_nickname}</b>. "
+        "Any message you send here will be forwarded to them. Use /leavechat to exit.",
+        reply_markup=chat_keyboard
+    )
+    await callback_query.answer()
+
+
+@dp.message(Command("leavechat"), StateFilter(ChatState.in_chat))
+async def leave_chat_command(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    data = await state.get_data()
+    partner_id = data.get("chat_partner_id")
+    
+    await state.clear()
+    await message.answer("You have left the chat.", reply_markup=main_menu_keyboard)
+    
+    if partner_id:
+        # IMPROVEMENT: Also clear the partner's state to end the session for both
+        partner_key = StorageKey(bot_id=bot.id, chat_id=partner_id, user_id=partner_id)
+        partner_context = FSMContext(storage=dp.storage, key=partner_key)
+        await partner_context.clear()
+        await safe_send_message(partner_id, "ℹ️ The other user has left the chat. The session has ended.", reply_markup=main_menu_keyboard)
+
+@dp.message(ChatState.in_chat)
+async def forward_chat_message(message: types.Message, state: FSMContext):
+    sender_id = message.from_user.id
+    data = await state.get_data()
+    recipient_id = data.get("chat_partner_id")
+    
+    if not recipient_id:
+        await state.clear()
+        await message.answer("Chat session expired. Please start again.", reply_markup=main_menu_keyboard)
+        return
+
+    # IMPROVEMENT: Logic for bi-directional chat
+    # Create a context for the recipient to check/update their state
+    recipient_key = StorageKey(bot_id=bot.id, chat_id=recipient_id, user_id=recipient_id)
+    recipient_context = FSMContext(storage=dp.storage, key=recipient_key)
+    recipient_state = await recipient_context.get_state()
+
+    # If the recipient is not yet in the chat, bring them in
+    if recipient_state != ChatState.in_chat:
+        await recipient_context.set_state(ChatState.in_chat)
+        await recipient_context.update_data(chat_partner_id=sender_id)
+        chat_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/leavechat")]], resize_keyboard=True)
+        await safe_send_message(recipient_id, "You have received a message. You are now in a chat. Send messages here to reply. Use /leavechat to exit.", reply_markup=chat_keyboard)
+
+    async with db.acquire() as conn:
+        sender_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", sender_id)
+        sender_nickname = html.quote(sender_nickname_row['nickname'] or "Anonymous") if sender_nickname_row else "Anonymous"
+
+    prefix = f"💬 <b>Message from {sender_nickname}:</b>\n\n"
+    
+    if message.text:
+        await safe_send_message(recipient_id, prefix + html.quote(message.text))
+    elif message.sticker:
+        await safe_send_message(recipient_id, prefix)
+        await bot.send_sticker(recipient_id, message.sticker.file_id)
+    elif message.animation:
+        await safe_send_message(recipient_id, prefix)
+        await bot.send_animation(recipient_id, message.animation.file_id)
+    
+    try:
+      await message.react([types.ReactionTypeEmoji(emoji="✅")])
+    except TelegramBadRequest:
+      pass
+
 
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
