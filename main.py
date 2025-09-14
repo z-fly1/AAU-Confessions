@@ -40,11 +40,11 @@ PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴",
 
 # Load environment variables at the top level
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKENS", "8495318571:AAHmKfHVgNTGriqw-q8VP36SMpxQj68yHRw")
-ADMIN_ID_STR = os.getenv("ADMIN_ID", "7388700051") # Load as string first for validation
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@drabiyahmedaliiii")
+BOT_TOKEN = os.getenv("BOT_TOKENS")
+ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
-DATABASE_URL = os.getenv("DATABASE_URL", "postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require")
+DATABASE_URL = os.getenv("DATABASE_URL")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
 RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNAMES_STR.split(',')}
