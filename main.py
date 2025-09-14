@@ -350,8 +350,7 @@ async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer
     builder = InlineKeyboardBuilder()
     builder.button(text=f"👍 {likes}", callback_data=f"react_like_{comment_id}")
     builder.button(text=f"👎 {dislikes}", callback_data=f"react_dislike_{comment_id}")
-    builder.button(text="↪️ Reply", callback_data=f"reply_{comment_id}")
-    builder.button(text="⚠️", callback_data=f"report_confirm_{comment_id}")
+    builder.button(text="Reply", callback_data=f"reply_{comment_id}")
 
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
         builder.button(text="🤝 Request Contact", callback_data=f"req_contact_{comment_id}")
