@@ -354,9 +354,9 @@ async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer
 
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
         builder.button(text="🤝 Request Contact", callback_data=f"req_contact_{comment_id}")
-        builder.adjust(4, 1)
+        builder.adjust(3, 1)
     else:
-        builder.adjust(4)
+        builder.adjust(3)
     return builder.as_markup()
 
 
@@ -472,7 +472,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             profile_url = f"https://t.me/{bot_info.username}?start=profile_{commenter_uid}"
             
             if commenter_uid == confession_owner_id:
-                tag = f"<a href='{profile_url}'>(Author)</a>"
+                tag = f"<a href='{profile_url}'>✅ Confession Author</a>"
             elif commenter_uid == user_id:
                 tag = f"<a href='{profile_url}'>(You)</a>"
             else:
@@ -530,9 +530,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
     
     if use_pagination:
-        end_txt = f"--- Showing comments {offset+1} to {min(offset+page_size_to_use, total_count)} of {total_count} for Confession #{confession_id} ---"
+        end_txt = f"Comments #{offset+1} - #{min(offset+page_size_to_use, total_count)}. Total {total_count} Comments"
     else:
-        end_txt = f"--- Showing all {total_count} comments for Confession #{confession_id} ---"
+        end_txt = f"Showing all {total_count} comments"
 
     await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard)
 
@@ -687,7 +687,7 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 if not conf_data or conf_data['status'] != 'approved':
                     await message.answer(f"Confession #{conf_id} not found or not approved."); return
                 comm_count = conf_data['comment_count']; categories = conf_data['categories'] or []; category_tags = " ".join([f"#{html.quote(cat)}" for cat in categories]) if categories else "#Unknown"
-                txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}\n---"
+                txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}"
                 builder = InlineKeyboardBuilder()
                 builder.button(text="➕ Add Comment", callback_data=f"add_{conf_id}")
                 builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
@@ -728,15 +728,14 @@ async def show_help(message: types.Message):
     help_text = (
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
-        "🔹 /confess - Submit a new anonymous confession.\n"
-        "🔹 /profile - View your profile and history.\n"
-        "🔹 /start - Show the welcome message.\n"
-        "🔹 /help - Display this help message.\n"
-        "🔹 /privacy - View information about data privacy.\n\n"
-        "Interact with comments using the buttons:\n"
+        "/confess - Submit a new anonymous confession.\n"
+        "/profile - View your profile and history.\n"
+        "/start - Show the welcome message.\n"
+        "/help - Display this help message.\n"
+        "/privacy - View information about data privacy.\n\n"
+        "<b>Interact with comments using the buttons:</b>\n"
         "👍/👎: Like/Dislike (+1🏅/-1🏅 for the commenter).\n"
         "↪️ Reply: Reply to a comment (Text, Sticker, or GIF).\n"
-        "⚠️ Report: Report a comment to the admin.\n"
         "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
         "Need more info or want to reach the admin directly?"
     )
@@ -778,7 +777,7 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
     await state.set_state(ContactAdminForm.waiting_for_message)
     await callback_query.answer("Please send your message to the admin.")
     await callback_query.message.answer(
-        "Please send the message you want to forward to the admin. The admin will see your message but not your direct profile initially.",
+        "Please send the message you want to forward to the admin.",
         reply_markup=cancel_keyboard
     )
 
@@ -789,7 +788,7 @@ async def show_privacy(message: types.Message):
         "<b>Privacy Information</b>\n\n"
         "▪️ Your Telegram User ID is stored but never shown to other users.\n"
         "▪️ Comments are posted with your chosen Nickname (default: Anonymous).\n"
-        "▪️ Your medal points (🏅) are displayed next to your tag on comments.\n"
+        "▪️ Your Aura points (🏅) are displayed next to your tag on comments.\n"
         "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
         "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura) and request to chat anonymously.\n"
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
@@ -866,7 +865,7 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
             comm_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", target_user_id)
             status_data = await conn.fetchrow("SELECT * FROM user_status WHERE user_id = $1", target_user_id)
             
-            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Medal Points:</b> 🏅 {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
+            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Aura Points:</b> 🏅 {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
             if status_data:
                 info_parts.append(f"  - <b>Nickname:</b> {html.quote(status_data['nickname'] or 'Default')} {status_data['profile_emoji'] or ''}")
                 if status_data['nickname_last_changed_at']:
@@ -937,7 +936,7 @@ async def user_profile(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     points = await get_user_points(user_id)
 
-    profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Medal Points (Aura):</b> {points}"
+    profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Aura Points:</b> {points}"
     # IMPROVEMENT: New profile menu structure
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
@@ -1577,7 +1576,7 @@ async def add_comment_prompt(callback_query: types.CallbackQuery, state: FSMCont
     await state.set_state(CommentForm.waiting_for_comment)
     await safe_send_message(
         callback_query.from_user.id,
-        f"📝 You are adding a comment to Confession #{conf_id}.\nPlease send your comment as text, a sticker, or a GIF.",
+        f"📝 Please send your comment as text, a sticker, or a GIF.",
         reply_markup=cancel_keyboard
     )
     await callback_query.answer()
