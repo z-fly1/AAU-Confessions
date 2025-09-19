@@ -530,9 +530,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
     
     if use_pagination:
-        end_txt = f"--- Showing comments {offset+1} to {min(offset+page_size_to_use, total_count)} of {total_count} for Confession #{confession_id} ---"
+        end_txt = f"Comments #{offset+1} - #{min(offset+page_size_to_use, total_count)}. Total {total_count} Comments"
     else:
-        end_txt = f"--- Showing all {total_count} comments for Confession #{confession_id} ---"
+        end_txt = f"Showing all {total_count} comments"
 
     await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard)
 
@@ -687,7 +687,7 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 if not conf_data or conf_data['status'] != 'approved':
                     await message.answer(f"Confession #{conf_id} not found or not approved."); return
                 comm_count = conf_data['comment_count']; categories = conf_data['categories'] or []; category_tags = " ".join([f"#{html.quote(cat)}" for cat in categories]) if categories else "#Unknown"
-                txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}\n---"
+                txt = f"<b>Confession #{conf_id}</b>\n\n{html.quote(conf_data['text'])}\n\n{category_tags}"
                 builder = InlineKeyboardBuilder()
                 builder.button(text="➕ Add Comment", callback_data=f"add_{conf_id}")
                 builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
