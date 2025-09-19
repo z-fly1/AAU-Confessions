@@ -354,9 +354,9 @@ async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer
 
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
         builder.button(text="🤝 Request Contact", callback_data=f"req_contact_{comment_id}")
-        builder.adjust(4, 1)
+        builder.adjust(3, 1)
     else:
-        builder.adjust(4)
+        builder.adjust(3)
     return builder.as_markup()
 
 
@@ -472,7 +472,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             profile_url = f"https://t.me/{bot_info.username}?start=profile_{commenter_uid}"
             
             if commenter_uid == confession_owner_id:
-                tag = f"<a href='{profile_url}'>(Author)</a>"
+                tag = f"<a href='{profile_url}'>✅ Confession Author</a>"
             elif commenter_uid == user_id:
                 tag = f"<a href='{profile_url}'>(You)</a>"
             else:
