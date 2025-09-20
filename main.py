@@ -1011,7 +1011,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
 
             response_text = f"<b>💬 Your Comments (Page {page}/{total_pages})</b>\n\n"
             for comm in comments:
-                if comm['text']: snippet = "💬 " + html.quote(comm['text'][:60]) + ('...' if len(comm['text']) > 60 else '')
+                if comm['text']: snippet = html.quote(comm['text'][:60]) + ('...' if len(comm['text']) > 60 else '')
                 elif comm['sticker_file_id']: snippet = "[Sticker]"
                 elif comm['animation_file_id']: snippet = "[GIF]"
                 else: snippet = "[Unknown Content]"
