@@ -466,7 +466,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         for i, c_data_row in enumerate(comments_raw):
             c_data = dict(c_data_row)
             seq_num, db_id, commenter_uid = offset + i + 1, c_data['id'], c_data['user_id']
-            medal_str = f" 🏅{c_data.get('user_points', 0)} Aura"
+            medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
 
             nickname = c_data.get('nickname') or "Anonymous"
             profile_url = f"https://t.me/{bot_info.username}?start=profile_{commenter_uid}"
@@ -560,7 +560,7 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
 
     profile_text = (
         f"{emoji} <b>{nickname}'s Public Profile</b>\n\n"
-        f"🏅 <b>Aura Points:</b> {points}\n\n"
+        f"⚡︎ <b>Aura Points:</b> {points}\n\n"
         f"📝 <b>Bio:</b>\n<i>{bio}</i>"
     )
 
@@ -788,7 +788,7 @@ async def show_privacy(message: types.Message):
         "<b>Privacy Information</b>\n\n"
         "▪️ Your Telegram User ID is stored but never shown to other users.\n"
         "▪️ Comments are posted with your chosen Nickname (default: Anonymous).\n"
-        "▪️ Your Aura points (🏅) are displayed next to your tag on comments.\n"
+        "▪️ Your Aura points (⚡︎) are displayed next to your tag on comments.\n"
         "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
         "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura) and request to chat anonymously.\n"
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
@@ -865,7 +865,7 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
             comm_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", target_user_id)
             status_data = await conn.fetchrow("SELECT * FROM user_status WHERE user_id = $1", target_user_id)
             
-            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Aura Points:</b> 🏅 {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
+            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Aura Points:</b> ⚡︎ {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
             if status_data:
                 info_parts.append(f"  - <b>Nickname:</b> {html.quote(status_data['nickname'] or 'Default')} {status_data['profile_emoji'] or ''}")
                 if status_data['nickname_last_changed_at']:
@@ -936,7 +936,7 @@ async def user_profile(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     points = await get_user_points(user_id)
 
-    profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Aura Points:</b> {points}"
+    profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points:</b> {points}"
     # IMPROVEMENT: New profile menu structure
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
@@ -955,7 +955,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
     try:
         if action == "main":
             points = await get_user_points(user_id)
-            profile_text = f"👤 <b>Your Profile</b>\n\n🏅 <b>Medal Points (Aura):</b> {points}"
+            profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points :</b> {points}"
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
                 [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
