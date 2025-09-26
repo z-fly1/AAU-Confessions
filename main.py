@@ -2,13 +2,14 @@ import logging
 import asyncpg
 import os
 import asyncio
+import google.generativeai as genai
 from aiogram import Bot, Dispatcher, types, F, html
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.storage.base import StorageKey # IMPROVEMENT: Needed for bi-directional chat
+from aiogram.fsm.storage.base import StorageKey
 from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
@@ -26,16 +27,27 @@ from aiohttp import web
 
 # --- Constants --
 CATEGORIES = [
-    "2🌼18", "Relationship", "Family","Exam", "School", "Friendship",
-    "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual Assault",
+    "Relationship", "Family","Exam", "School", "Friendship",
+    "Religion", "Mental", "Addiction", "Harassment", "Crush", "Health", "Trauma", "Sexual",
     "Other"
 ]
+INTERESTS = [
+    "🎨 Art", "📚 Books", "🎬 Movies", "🎵 Music", "🎮 Gaming", "💻 Tech",
+    "⚽️ Sports", "✈️ Travel", "🍔 Food", "🤔 Philosophy", "💼 Career"
+]
+GENDERS = ["Male", "Female", "Other", "Prefer not to say"]
+CAMPUSES = ["AASTU", "AAIT", "Other"]
+YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "Postgraduate", "Other"]
+DEPARTMENTS = ["Software Engineering", "Civil Engineering", "Mechanical Engineering", "Electrical Engineering", "Architecture", "Other"]
+
+MAX_INTERESTS = 5
 POINTS_PER_CONFESSION = 0
 POINTS_PER_LIKE_RECEIVED = 1
 POINTS_PER_DISLIKE_RECEIVED = -1 # Note: This is negative
 MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 NICKNAME_COOLDOWN = timedelta(days=30)
 PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
+AI_ENHANCED_MARKER = "✨" # Marker for AI-enhanced confessions
 
 
 # Load environment variables at the top level
@@ -48,6 +60,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
 RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNAMES_STR.split(',')}
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # Validate essential environment variables before proceeding
@@ -55,6 +68,7 @@ if not BOT_TOKEN: raise ValueError("FATAL: BOT_TOKEN environment variable not se
 if not ADMIN_ID_STR: raise ValueError("FATAL: ADMIN_ID environment variable not set!")
 if not CHANNEL_ID: raise ValueError("FATAL: CHANNEL_ID environment variable not set!")
 if not DATABASE_URL: raise ValueError("FATAL: DATABASE_URL environment variable not set!")
+if not GEMINI_API_KEY: raise ValueError("FATAL: GEMINI_API_KEY environment variable not set!")
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -74,8 +88,7 @@ dp = Dispatcher(storage=MemoryStorage())
 # Bot info
 bot_info = None
 
-# --- MODIFIED: Persistent Reply Keyboards ---
-# IMPROVEMENT: Removed "Rules" button for a cleaner menu
+# --- Persistent Reply Keyboards ---
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
@@ -90,9 +103,11 @@ cancel_keyboard = ReplyKeyboardMarkup(
 )
 
 # --- FSM States ---
+# --- RESTRUCTURED: Simplified confession flow ---
 class ConfessionForm(StatesGroup):
-    selecting_categories = State()
     waiting_for_text = State()
+    waiting_for_confirmation = State()
+    selecting_categories = State()
 
 class CommentForm(StatesGroup):
     waiting_for_comment = State()
@@ -107,6 +122,8 @@ class AdminActions(StatesGroup):
 class SettingsForm(StatesGroup):
     waiting_for_nickname = State()
     waiting_for_bio = State()
+    selecting_interests = State()
+
 
 class ChatState(StatesGroup):
     in_chat = State()
@@ -129,6 +146,15 @@ async def setup():
     db = await create_db_pool()
     bot_info = await bot.get_me()
     logging.info(f"Bot started: @{bot_info.username}")
+    
+    # Configure Gemini
+    if GEMINI_API_KEY:
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            logging.info("Gemini API configured successfully.")
+        except Exception as e:
+            logging.error(f"Failed to configure Gemini API: {e}")
+
 
     async with db.acquire() as conn:
         # --- Confessions Table Schema ---
@@ -185,7 +211,6 @@ async def setup():
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (comment_id, requester_user_id)
             );
-            COMMENT ON TABLE contact_requests IS 'Stores requests from confession authors to contact commenters (V2).';
         """)
         logging.info("Checked/Created 'contact_requests' table (V2).")
 
@@ -195,9 +220,8 @@ async def setup():
                 user_id BIGINT PRIMARY KEY,
                 points INTEGER NOT NULL DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS idx_user_points_user_id ON user_points(user_id);
         """)
-        logging.info("Checked/Created 'user_points' table and index.")
+        logging.info("Checked/Created 'user_points' table.")
 
         # --- Reports Table ---
         await conn.execute("""
@@ -212,7 +236,7 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'reports' table.")
-        # --- NEW: User to User Chat Requests Table ---
+        # --- User to User Chat Requests Table ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS chat_requests (
                 id SERIAL PRIMARY KEY,
@@ -223,7 +247,6 @@ async def setup():
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(requester_id, recipient_id)
             );
-            COMMENT ON TABLE chat_requests IS 'Stores user-to-user anonymous chat requests.';
         """)
         logging.info("Checked/Created 'chat_requests' table.")
 
@@ -239,7 +262,6 @@ async def setup():
                 reviewed_at TIMESTAMP WITH TIME ZONE,
                 UNIQUE (confession_id, user_id) -- User can only request deletion for their confession once
             );
-            COMMENT ON TABLE deletion_requests IS 'Stores user requests to delete their own confessions.';
         """)
         logging.info("Checked/Created 'deletion_requests' table.")
 
@@ -257,17 +279,22 @@ async def setup():
 
         # --- Add new columns to user_status if they don't exist ---
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS nickname VARCHAR(32) NULL;")
-        logging.info("Ensured 'nickname' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS comments_per_page INTEGER NULL;")
-        logging.info("Ensured 'comments_per_page' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS nickname_last_changed_at TIMESTAMP WITH TIME ZONE NULL;")
-        logging.info("Ensured 'nickname_last_changed_at' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS profile_emoji VARCHAR(8) NULL;")
-        logging.info("Ensured 'profile_emoji' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS bio TEXT NULL;")
-        logging.info("Ensured 'bio' column exists in 'user_status'.")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS allow_contact BOOLEAN NOT NULL DEFAULT TRUE;")
-        logging.info("Ensured 'allow_contact' column exists in 'user_status'.")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS gender TEXT NULL;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS campus TEXT NULL;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS year TEXT NULL;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS department TEXT NULL;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS interests TEXT[] NULL;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_gender BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_campus BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_year BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_department BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_interests BOOLEAN NOT NULL DEFAULT FALSE;")
+        logging.info("Ensured all customizable profile columns exist in 'user_status'.")
 
 
         logging.info("Database tables setup complete.")
@@ -315,14 +342,19 @@ def create_category_keyboard(selected_categories: List[str] = None):
     if selected_categories is None:
         selected_categories = []
     builder = InlineKeyboardBuilder()
-    for category in CATEGORIES:
+
+    builder.row(InlineKeyboardButton(text="🤖 Auto-select Categories with AI", callback_data="category_auto_ai"))
+    
+    for category in [c for c in CATEGORIES if c]:
         prefix = "✅ " if category in selected_categories else ""
         builder.button(text=f"{prefix}{category}", callback_data=f"category_{category}")
     builder.adjust(2)
+    
     if 1 <= len(selected_categories) <= MAX_CATEGORIES:
          builder.row(InlineKeyboardButton(text=f"➡️ Done Selecting ({len(selected_categories)}/{MAX_CATEGORIES})", callback_data="category_done"))
     elif len(selected_categories) > MAX_CATEGORIES:
          builder.row(InlineKeyboardButton(text=f"⚠️ Too Many ({len(selected_categories)}/{MAX_CATEGORIES}) - Click to Confirm", callback_data="category_done"))
+    
     builder.row(InlineKeyboardButton(text="❌ Cancel Selection", callback_data="category_cancel"))
     return builder.as_markup()
 
@@ -394,23 +426,6 @@ async def update_channel_post_button(confession_id: int):
         else: logging.error(f"Failed edit channel post {ch_msg_id} for conf {confession_id}: {e}")
     except Exception as e: logging.error(f"Unexpected err updating btn for conf {confession_id}: {e}", exc_info=True)
 
-async def get_comment_sequence_number(conn: asyncpg.Connection, comment_id: int, confession_id: int) -> Optional[int]:
-    """Fetches the sequential number of a specific comment within its confession."""
-    query = """
-        WITH ranked_comments AS (
-            SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC) as rn
-            FROM comments
-            WHERE confession_id = $1
-        )
-        SELECT rn FROM ranked_comments WHERE id = $2;
-    """
-    try:
-        seq_num = await conn.fetchval(query, confession_id, comment_id)
-        return seq_num
-    except Exception as e:
-        logging.error(f"Could not fetch sequence number for comment {comment_id}: {e}")
-        return None
-
 async def show_comments_for_confession(user_id: int, confession_id: int, message_to_edit: Optional[types.Message] = None, page: int = 1):
     async with db.acquire() as conn:
         conf_data = await conn.fetchrow("SELECT status, user_id FROM confessions WHERE id = $1", confession_id)
@@ -465,7 +480,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     else:
         for i, c_data_row in enumerate(comments_raw):
             c_data = dict(c_data_row)
-            seq_num, db_id, commenter_uid = offset + i + 1, c_data['id'], c_data['user_id']
+            db_id, commenter_uid = c_data['id'], c_data['user_id']
             medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
 
             nickname = c_data.get('nickname') or "Anonymous"
@@ -490,25 +505,36 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 if parent_db_id in db_id_to_message_id:
                     reply_to_msg_id = db_id_to_message_id[parent_db_id]
                 else: 
-                    async with db.acquire() as conn_for_seq:
-                        parent_seq_num = await get_comment_sequence_number(conn_for_seq, parent_db_id, confession_id)
-                    
-                    if parent_seq_num:
-                        text_reply_prefix = f"↪️ <i>Replying to comment #{parent_seq_num}...</i>\n"
+                    async with db.acquire() as conn_for_quote:
+                        parent_comment_data = await conn_for_quote.fetchrow(
+                            "SELECT text, sticker_file_id, animation_file_id FROM comments WHERE id = $1", parent_db_id
+                        )
+                    if parent_comment_data:
+                        if parent_comment_data['text']:
+                            quoted_text = html.quote(parent_comment_data['text'][:150]) + ('...' if len(parent_comment_data['text']) > 150 else '')
+                        elif parent_comment_data['sticker_file_id']:
+                            quoted_text = "<i>[Sticker]</i>"
+                        elif parent_comment_data['animation_file_id']:
+                             quoted_text = "<i>[GIF]</i>"
+                        else:
+                            quoted_text = "<i>[Original message]</i>"
+                        
+                        text_reply_prefix = f"<blockquote>{quoted_text}</blockquote>"
                     else:
                         text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
 
-            metadata_text = f"<i>#{seq_num}{display_tag}{admin_info}</i>"
+
+            metadata_text = f"<i>{display_tag}{admin_info}</i>"
             keyboard = await build_comment_keyboard(db_id, commenter_uid, user_id, confession_owner_id)
             
             sent_message = None
             try:
                 if c_data['sticker_file_id']:
                     sent_message = await bot.send_sticker(user_id, sticker=c_data['sticker_file_id'], reply_to_message_id=reply_to_msg_id)
-                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard)
+                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data['animation_file_id']:
                     sent_message = await bot.send_animation(user_id, animation=c_data['animation_file_id'], reply_to_message_id=reply_to_msg_id)
-                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard)
+                    await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data['text']:
                     full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
                     sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
@@ -517,8 +543,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                     db_id_to_message_id[db_id] = sent_message.message_id
 
             except Exception as e:
-                logging.warning(f"Could not send comment #{seq_num} to {user_id}: {e}")
-                await safe_send_message(user_id, f"⚠️ Error displaying comment #{seq_num}.")
+                logging.warning(f"Could not send comment to {user_id}: {e}")
+                await safe_send_message(user_id, f"⚠️ Error displaying comment.")
             await asyncio.sleep(0.1)
 
     nav_row = []
@@ -530,7 +556,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
     nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
     
     if use_pagination:
-        end_txt = f"Comments #{offset+1} - #{min(offset+page_size_to_use, total_count)}. Total {total_count} Comments"
+        end_txt = f"Displaying page {page}/{total_pages}. Total {total_count} Comments"
     else:
         end_txt = f"Showing all {total_count} comments"
 
@@ -542,7 +568,11 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
         await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", profile_user_id)
         
         profile_data = await conn.fetchrow("""
-            SELECT us.nickname, us.profile_emoji, us.bio, us.allow_contact, COALESCE(up.points, 0) as points
+            SELECT 
+                us.nickname, us.profile_emoji, us.bio, us.allow_contact, 
+                us.gender, us.campus, us.year, us.department, us.interests,
+                us.show_gender, us.show_campus, us.show_year, us.show_department, us.show_interests,
+                COALESCE(up.points, 0) as points
             FROM user_status us
             LEFT JOIN user_points up ON us.user_id = up.user_id
             WHERE us.user_id = $1
@@ -561,8 +591,25 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
     profile_text = (
         f"{emoji} <b>{nickname}'s Public Profile</b>\n\n"
         f"⚡︎ <b>Aura Points:</b> {points}\n\n"
-        f"📝 <b>Bio:</b>\n<i>{bio}</i>"
+        f"📝 <b>Bio:</b>\n<i>{bio}</i>\n"
     )
+
+    details = []
+    if profile_data.get('show_gender') and profile_data.get('gender'):
+        details.append(f"<b>Gender:</b> {html.quote(profile_data['gender'])}")
+    if profile_data.get('show_campus') and profile_data.get('campus'):
+        details.append(f"<b>Campus:</b> {html.quote(profile_data['campus'])}")
+    if profile_data.get('show_year') and profile_data.get('year'):
+        details.append(f"<b>Year:</b> {html.quote(profile_data['year'])}")
+    if profile_data.get('show_department') and profile_data.get('department'):
+        details.append(f"<b>Department:</b> {html.quote(profile_data['department'])}")
+    if profile_data.get('show_interests') and profile_data.get('interests'):
+        interests_str = ", ".join(profile_data['interests'])
+        details.append(f"<b>Interests:</b> {html.quote(interests_str)}")
+    
+    if details:
+        profile_text += "\n" + "\n".join(details)
+
 
     builder = InlineKeyboardBuilder()
     if viewer_user_id != profile_user_id:
@@ -620,7 +667,6 @@ class BlockUserMiddleware(BaseMiddleware):
 
 # --- Handlers ---
 
-# IMPROVEMENT: Removed F.text handler as button is gone
 @dp.message(Command("rules"))
 async def show_rules(message: types.Message):
     rules_text = (
@@ -755,7 +801,6 @@ async def show_help(message: types.Message):
 
 @dp.callback_query(F.data == "show_rules_help")
 async def show_rules_from_help(callback_query: types.CallbackQuery):
-    # FIX: Send the rules text directly instead of using a broken dummy message
     await callback_query.answer()
     rules_text = (
         "<b>📜 Bot Rules & Regulations</b>\n\n"
@@ -768,7 +813,6 @@ async def show_rules_from_help(callback_query: types.CallbackQuery):
         "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
         "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
-    # Use the callback's message to send a new message
     await callback_query.message.answer(rules_text, reply_markup=main_menu_keyboard)
 
 
@@ -790,7 +834,7 @@ async def show_privacy(message: types.Message):
         "▪️ Comments are posted with your chosen Nickname (default: Anonymous).\n"
         "▪️ Your Aura points (⚡︎) are displayed next to your tag on comments.\n"
         "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
-        "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura) and request to chat anonymously.\n"
+        "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura, and any other details you choose to share) and request to chat anonymously.\n"
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
         f"▪️ The bot admin (User ID: <code>{ADMIN_ID}</code>) can access stored User IDs for moderation.\n\n"
         f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
@@ -897,7 +941,7 @@ async def _render_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup
     contact_status = "✅ On" if allow_contact else "❌ Off"
 
     settings_text = (
-        "<b>🎨 Customization</b>\n\n"
+        "<b>⚙️ General Settings</b>\n\n"
         f"<b>Profile Emoji:</b> {current_emoji}\n"
         f"<b>Nickname:</b> {html.quote(current_nickname or 'Default (Anonymous)')}\n"
         f"<b>Bio:</b> {html.quote(current_bio or 'Not set')}\n"
@@ -908,6 +952,7 @@ async def _render_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup
         [InlineKeyboardButton(text="🎨 Change Profile Emoji", callback_data="settings_change_emoji")],
         [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="settings_change_nickname")],
         [InlineKeyboardButton(text="📝 Set/Update Bio", callback_data="settings_change_bio")],
+        [InlineKeyboardButton(text="ℹ️ Edit Profile Details & Visibility", callback_data="profile_details_menu")],
         [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
         [InlineKeyboardButton(text=f"📬 Toggle Chat Requests ({'Off' if allow_contact else 'On'})", callback_data="settings_toggle_contact")],
         [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
@@ -937,7 +982,6 @@ async def user_profile(message: types.Message, state: FSMContext):
     points = await get_user_points(user_id)
 
     profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points:</b> {points}"
-    # IMPROVEMENT: New profile menu structure
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
         [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
@@ -962,7 +1006,6 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             ])
             await callback_query.message.edit_text(profile_text, reply_markup=keyboard)
 
-        # IMPROVEMENT: New history submenu
         elif action == "history":
             history_text = "📜 <b>History</b>\n\nSelect which history you would like to view."
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1021,7 +1064,6 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             nav_keyboard = create_profile_pagination_keyboard("profile_menu_comments", page, total_pages, "profile_menu_history_1")
             await callback_query.message.edit_text(response_text, reply_markup=nav_keyboard, disable_web_page_preview=True)
         
-        # IMPROVEMENT: Renamed from 'settings' to 'customization'
         elif action == "customization":
             settings_text, keyboard = await _render_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
@@ -1056,7 +1098,7 @@ async def settings_change_nickname_prompt(callback_query: types.CallbackQuery, s
     await state.set_state(SettingsForm.waiting_for_nickname)
     await callback_query.message.edit_text(
         "Please send your new nickname (max 32 alphanumeric characters).\n"
-        "Send 'default' to reset to Anonymous.",
+        "Send 'default' to reset to Anonymous."
     )
     await callback_query.message.answer("Waiting for your nickname...", reply_markup=cancel_keyboard)
     await callback_query.answer()
@@ -1240,6 +1282,182 @@ async def settings_toggle_contact(callback_query: types.CallbackQuery, state: FS
     settings_text, keyboard = await _render_settings_menu(user_id)
     await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
+# --- Handlers for New Customizable Profile Details ---
+
+async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Helper to build the profile details & visibility menu."""
+    async with db.acquire() as conn:
+        settings = await conn.fetchrow("""
+            SELECT gender, campus, year, department, interests,
+                   show_gender, show_campus, show_year, show_department, show_interests
+            FROM user_status WHERE user_id = $1
+        """, user_id)
+
+    def get_status_emoji(is_shown):
+        return "✅" if is_shown else "❌"
+
+    menu_text = "<b>ℹ️ Edit Profile Details & Visibility</b>\n\nSet your details and toggle whether they appear on your public profile."
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"Gender: {settings.get('gender') or 'Not Set'}", callback_data="set_detail_gender")
+    builder.button(text=f"Campus: {settings.get('campus') or 'Not Set'}", callback_data="set_detail_campus")
+    builder.button(text=f"Year: {settings.get('year') or 'Not Set'}", callback_data="set_detail_year")
+    builder.button(text=f"Department: {settings.get('department') or 'Not Set'}", callback_data="set_detail_department")
+    builder.button(text="Select Interests", callback_data="set_detail_interests")
+    builder.adjust(1)
+
+    builder.row(
+        InlineKeyboardButton(text=f"Show Gender: {get_status_emoji(settings.get('show_gender'))}", callback_data="toggle_detail_gender"),
+        InlineKeyboardButton(text=f"Show Campus: {get_status_emoji(settings.get('show_campus'))}", callback_data="toggle_detail_campus")
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"Show Year: {get_status_emoji(settings.get('show_year'))}", callback_data="toggle_detail_year"),
+        InlineKeyboardButton(text=f"Show Department: {get_status_emoji(settings.get('show_department'))}", callback_data="toggle_detail_department")
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"Show Interests: {get_status_emoji(settings.get('show_interests'))}", callback_data="toggle_detail_interests")
+    )
+    
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1"))
+    
+    return menu_text, builder.as_markup()
+
+@dp.callback_query(F.data == "profile_details_menu")
+async def show_profile_details_menu(callback_query: types.CallbackQuery):
+    menu_text, keyboard = await _render_profile_details_menu(callback_query.from_user.id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith("set_detail_"))
+async def prompt_for_profile_detail(callback_query: types.CallbackQuery, state: FSMContext):
+    field = callback_query.data.split("_")[-1]
+    
+    options_map = {
+        "gender": GENDERS, "campus": CAMPUSES,
+        "year": YEARS, "department": DEPARTMENTS,
+    }
+
+    if field in options_map:
+        builder = InlineKeyboardBuilder()
+        for option in options_map[field]:
+            builder.button(text=option, callback_data=f"set_option_{field}_{option}")
+        builder.adjust(2)
+        builder.row(InlineKeyboardButton(text="🗑️ Clear This Field", callback_data=f"set_option_{field}_REMOVE"))
+        builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="profile_details_menu"))
+        
+        await callback_query.message.edit_text(
+            f"Select your <b>{field.capitalize()}</b>:",
+            reply_markup=builder.as_markup()
+        )
+        await callback_query.answer()
+        return
+
+    if field == "interests":
+        await state.set_state(SettingsForm.selecting_interests)
+        async with db.acquire() as conn:
+            current_interests = await conn.fetchval("SELECT interests FROM user_status WHERE user_id = $1", callback_query.from_user.id) or []
+        await state.update_data(selected_interests=current_interests)
+        
+        builder = InlineKeyboardBuilder()
+        for interest in INTERESTS:
+            prefix = "✅ " if interest in current_interests else ""
+            builder.button(text=f"{prefix}{interest}", callback_data=f"interest_{interest}")
+        builder.adjust(2)
+        builder.row(InlineKeyboardButton(text=f"➡️ Done ({len(current_interests)}/{MAX_INTERESTS})", callback_data="interest_done"))
+        builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="interest_cancel"))
+        
+        await callback_query.message.edit_text(
+            f"Select up to {MAX_INTERESTS} interests.",
+            reply_markup=builder.as_markup()
+        )
+        await callback_query.answer()
+        return
+
+@dp.callback_query(F.data.startswith("set_option_"))
+async def set_option_profile_detail(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    try:
+        _, field, value = callback_query.data.split("_", 2)
+    except ValueError:
+        logging.error(f"Invalid callback data format: {callback_query.data}")
+        await callback_query.answer("An error occurred.", show_alert=True); return
+
+    db_value = None if value == 'REMOVE' else value
+
+    async with db.acquire() as conn:
+        allowed_fields = ["gender", "campus", "year", "department"]
+        if field not in allowed_fields:
+            await callback_query.answer("Invalid field specified.", show_alert=True); return
+            
+        await conn.execute(f"UPDATE user_status SET {field} = $1 WHERE user_id = $2", db_value, user_id)
+
+    feedback = f"Your {field} has been removed." if db_value is None else f"Your {field} is now set to {value}."
+    await callback_query.answer(feedback, show_alert=False)
+
+    menu_text, keyboard = await _render_profile_details_menu(user_id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+
+
+@dp.callback_query(StateFilter(SettingsForm.selecting_interests), F.data.startswith("interest_"))
+async def handle_interest_selection(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    action = callback_query.data.split("_", 1)[1]
+    data = await state.get_data()
+    selected = data.get("selected_interests", [])
+
+    if action == "cancel":
+        await state.clear()
+        menu_text, keyboard = await _render_profile_details_menu(user_id)
+        await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+        await callback_query.answer("Cancelled.")
+        return
+
+    if action == "done":
+        async with db.acquire() as conn:
+            await conn.execute("UPDATE user_status SET interests = $1 WHERE user_id = $2", selected or None, user_id)
+        await state.clear()
+        menu_text, keyboard = await _render_profile_details_menu(user_id)
+        await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+        await callback_query.answer("Interests saved!")
+        return
+        
+    interest = action
+    if interest in selected:
+        selected.remove(interest)
+    elif len(selected) < MAX_INTERESTS:
+        selected.append(interest)
+    else:
+        await callback_query.answer(f"You can only select up to {MAX_INTERESTS} interests.", show_alert=True)
+        return
+
+    await state.update_data(selected_interests=selected)
+    
+    builder = InlineKeyboardBuilder()
+    for item in INTERESTS:
+        prefix = "✅ " if item in selected else ""
+        builder.button(text=f"{prefix}{item}", callback_data=f"interest_{item}")
+    builder.adjust(2)
+    builder.row(InlineKeyboardButton(text=f"➡️ Done ({len(selected)}/{MAX_INTERESTS})", callback_data="interest_done"))
+    builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="interest_cancel"))
+    
+    await callback_query.message.edit_reply_markup(reply_markup=builder.as_markup())
+    await callback_query.answer()
+
+
+@dp.callback_query(F.data.startswith("toggle_detail_"))
+async def toggle_profile_detail_visibility(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    field = callback_query.data.replace("toggle_detail_", "")
+    db_field = f"show_{field}"
+    
+    async with db.acquire() as conn:
+        await conn.execute(f"UPDATE user_status SET {db_field} = NOT {db_field} WHERE user_id = $1", user_id)
+    
+    menu_text, keyboard = await _render_profile_details_menu(user_id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+    await callback_query.answer(f"{field.capitalize()} visibility toggled.")
+
+
 
 # --- Deletion Request Handlers ---
 
@@ -1286,7 +1504,6 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
             await bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard)
             await callback_query.answer("✅ Deletion request sent. An admin will review it shortly.", show_alert=True)
             
-            # Go back to the confessions list
             callback_query.data = "profile_menu_confessions_1"
             await handle_profile_menu(callback_query, state)
 
@@ -1297,70 +1514,234 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
             await callback_query.answer("An error occurred while sending your request.", show_alert=True)
 
 
-# --- Confession Submission Flow ---
+# --- NEW CONFESSION SUBMISSION FLOW ---
+
 @dp.message(Command("confess"), StateFilter(None))
 @dp.message(F.text == "✍️ Confess", StateFilter(None))
 async def start_confession(message: types.Message, state: FSMContext):
-    await state.update_data(selected_categories=[])
+    await state.set_state(ConfessionForm.waiting_for_text)
     await message.answer(
-        f"Please choose 1 to {MAX_CATEGORIES} categories. Click 'Done Selecting' when finished.",
-        reply_markup=create_category_keyboard([])
+        "Please send the text of your confession. You will be able to review, edit, or enhance it with AI before submitting.",
+        reply_markup=cancel_keyboard
     )
-    await message.answer("You can cancel this process at any time.", reply_markup=cancel_keyboard)
-    await state.set_state(ConfessionForm.selecting_categories)
+
+@dp.message(ConfessionForm.waiting_for_text, F.text)
+async def receive_confession_text(message: types.Message, state: FSMContext):
+    conf_text = message.text
+    if len(conf_text) < 10:
+        await message.answer("Your confession is too short. Please provide at least 10 characters.")
+        return
+    if len(conf_text) > 3900:
+        await message.answer(f"Your confession is too long (max 3900 characters). Please try again.")
+        return
+
+    await state.update_data(confession_text=conf_text)
+    await state.set_state(ConfessionForm.waiting_for_confirmation)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Submit", callback_data="conf_submit")
+    builder.button(text="✍️ Edit", callback_data="conf_edit")
+    builder.button(text="✨ Enhance with AI", callback_data="conf_enhance_ai")
+    builder.button(text="❌ Cancel", callback_data="conf_cancel")
+    builder.adjust(1)
+
+    await message.answer(
+        "<b>Here is a preview of your confession:</b>\n\n"
+        f"<i>{html.quote(conf_text)}</i>\n\n"
+        "Please review it and choose an option below.",
+        reply_markup=builder.as_markup()
+    )
+
+async def get_ai_enhanced_text(original_text: str) -> Optional[str]:
+    """Helper function to call the Gemini API and return the enhanced text."""
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash-001')
+        prompt = (f"A user has submitted a confession. Please rephrase it to make it more articulate and clear. "
+                  f"Fix any broken English, grammar, or spelling mistakes. "
+                  f"Preserve the original meaning and tone of the confession. Do not add any new information or opinions. "
+                  f"Only send the confession back, no other text before or after it. "
+                  f"Use a very casual and simple vocabulary and tone. "
+                  f"Never use em dashes. "
+                  f"Only use emojis when necessary (maximum of 1-2). 1 is ideal, and only if the confession needs one. "
+                  f"Here is the confession:\n\n'{original_text}'")
+        
+        response = await model.generate_content_async(prompt)
+        return response.text
+    except Exception as e:
+        logging.error(f"Error during AI enhancement API call: {e}")
+        return None
+
+@dp.callback_query(StateFilter(ConfessionForm.waiting_for_confirmation), F.data.startswith("conf_"))
+async def handle_confession_confirmation(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split("_")[1]
+
+    if action == "submit":
+        await state.set_state(ConfessionForm.selecting_categories)
+        await state.update_data(selected_categories=[])
+        await callback_query.message.edit_text(
+            "Great! Now, please choose categories for your confession. You can also let the AI choose for you.",
+            reply_markup=create_category_keyboard([])
+        )
+        await callback_query.answer()
+
+    elif action == "edit":
+        await state.set_state(ConfessionForm.waiting_for_text)
+        await callback_query.message.edit_text("Okay, please send the new version of your confession.")
+        await callback_query.message.answer("Waiting for your edited confession...", reply_markup=cancel_keyboard)
+        await callback_query.answer()
+
+    elif action == "enhance":
+        await callback_query.answer("✨ Enhancing with AI... Please wait.", show_alert=False)
+        data = await state.get_data()
+        original_text = data.get("confession_text")
+
+        if not original_text:
+            await callback_query.answer("Error: Could not find original text.", show_alert=True)
+            return
+
+        enhanced_text = await get_ai_enhanced_text(original_text)
+        
+        if not enhanced_text:
+            await callback_query.answer("Sorry, the AI enhancement failed. Please try again later.", show_alert=True)
+            return
+
+        # Add AI marker and update state
+        final_text = enhanced_text.strip() + f"\n\n{AI_ENHANCED_MARKER}"
+        await state.update_data(confession_text=final_text)
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Submit This Version", callback_data="conf_submit")
+        builder.button(text="✍️ Edit", callback_data="conf_edit")
+        builder.button(text="❌ Cancel", callback_data="conf_cancel")
+        builder.adjust(1)
+        
+        await callback_query.message.edit_text(
+            "<b>Here is the AI-enhanced version:</b>\n\n"
+            f"<i>{html.quote(enhanced_text)}</i>\n\n"
+            "You can submit this, edit it further, or cancel.",
+            reply_markup=builder.as_markup()
+        )
+
+    elif action == "cancel":
+        await state.clear()
+        await callback_query.message.edit_text("Confession submission cancelled.")
+        await callback_query.message.answer("You are back at the main menu.", reply_markup=main_menu_keyboard)
+        await callback_query.answer()
+
+async def process_confession_submission(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    state_data = await state.get_data()
+    selected_categories: List[str] = state_data.get("selected_categories", [])
+    conf_text: str = state_data.get("confession_text", "")
+
+    if not selected_categories or not conf_text:
+        await message.answer("⚠️ Error: Information lost. Please start again.", reply_markup=main_menu_keyboard)
+        await state.clear(); return
+
+    try:
+        async with db.acquire() as conn:
+            async with conn.transaction():
+                conf_id = await conn.fetchval(
+                    "INSERT INTO confessions (text, user_id, categories, status) VALUES ($1, $2, $3, 'pending') RETURNING id",
+                    conf_text, user_id, selected_categories)
+                if not conf_id: raise Exception("Failed to get confession ID")
+                await update_user_points(conn, user_id, POINTS_PER_CONFESSION)
+
+        category_tags = " ".join([f"#{html.quote(cat)}" for cat in selected_categories])
+        kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{conf_id}")],
+                                                   [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{conf_id}")]])
+        admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Categories:</b> {category_tags}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
+
+        await bot.send_message(ADMIN_ID, admin_msg_text, reply_markup=kbd)
+        await message.answer("✅ Your confession has been submitted and is pending review.", reply_markup=main_menu_keyboard)
+        logging.info(f"Confession #{conf_id} (Cats: {', '.join(selected_categories)}) submitted by User ID {user_id}")
+
+    except Exception as e:
+        logging.error(f"Error processing confession from {user_id}: {e}", exc_info=True)
+        await message.answer("An internal error occurred.")
+    finally:
+        await state.clear()
+
+async def get_ai_categories(confession_text: str) -> List[str]:
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash-001')
+        valid_categories = [cat for cat in CATEGORIES if cat]
+        
+        prompt = (f"Analyze the following confession and select the most relevant categories from the provided list. "
+                  f"It may have amahric words written in latin letters so understand them too"
+                  f"You must choose a maximum of {MAX_CATEGORIES} categories. "
+                  f"Return only the category names, separated by commas. Do not add any other text, explanation, or formatting. "
+                  f"Try your best to selet atleast 2 catagories"
+                  f"If no category seems relevant, return 'Other'.\n\n"
+                  f"Available Categories: {', '.join(valid_categories)}\n\n"
+                  f"Confession:\n'{html.quote(confession_text)}'")
+        
+        response = await model.generate_content_async(prompt)
+        selected = [cat.strip() for cat in response.text.split(',') if cat.strip() in valid_categories]
+        
+        return selected[:MAX_CATEGORIES] if selected else ["Other"]
+    except Exception as e:
+        logging.error(f"Error getting AI categories: {e}")
+        return ["Other"]
+
+@dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data == "category_auto_ai")
+async def handle_auto_ai_categories(callback_query: types.CallbackQuery, state: FSMContext):
+    user_data = await state.get_data()
+    confession_text = user_data.get("confession_text")
+
+    if not confession_text:
+        await callback_query.answer("Error: Confession text not found. Please start over.", show_alert=True)
+        await state.clear(); return
+
+    await callback_query.answer("🤖 Analyzing confession to select categories...")
+    
+    ai_selected_categories = await get_ai_categories(confession_text)
+    await state.update_data(selected_categories=ai_selected_categories)
+    
+    await callback_query.message.edit_reply_markup(reply_markup=create_category_keyboard(ai_selected_categories))
+    await bot.send_message(callback_query.from_user.id, f"<b>AI Suggestion:</b> {', '.join(ai_selected_categories)}\nYou can adjust the selection or click 'Done'.")
 
 @dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data.startswith("category_"))
 async def handle_category_selection(callback_query: types.CallbackQuery, state: FSMContext):
     action = callback_query.data.split("_", 1)[1]
-    user_data = await state.get_data(); selected_categories: List[str] = user_data.get("selected_categories", [])
+    
+    if action == "auto": # This is caught by the specific handler above
+        return
+        
+    user_data = await state.get_data()
+    selected_categories: List[str] = user_data.get("selected_categories", [])
+    
     if action == "cancel":
         await state.clear()
         await callback_query.message.edit_text("Confession submission cancelled.", reply_markup=None)
         await callback_query.message.answer("You are back at the main menu.", reply_markup=main_menu_keyboard)
+        await callback_query.answer()
         return
+
     if action == "done":
-        if not selected_categories: await callback_query.answer("Please select at least 1 category.", show_alert=True); return
-        if len(selected_categories) > MAX_CATEGORIES: await callback_query.answer(f"Too many categories (max {MAX_CATEGORIES}).", show_alert=True); return
-        await state.set_state(ConfessionForm.waiting_for_text)
-        category_tags = " ".join([f"#{html.quote(cat)}" for cat in selected_categories])
-        await callback_query.message.edit_text(
-            f"Categories selected: <b>{category_tags}</b>\n\nNow, send the text of your confession.",
-            reply_markup=None
-        )
-        await callback_query.answer(); return
+        current_selected = (await state.get_data()).get("selected_categories", [])
+        if not current_selected:
+            await callback_query.answer("Please select at least 1 category.", show_alert=True); return
+        if len(current_selected) > MAX_CATEGORIES:
+            await callback_query.answer(f"Too many categories (max {MAX_CATEGORIES}). Please remove some.", show_alert=True); return
+        
+        await callback_query.message.delete()
+        await process_confession_submission(callback_query.message, state)
+        await callback_query.answer()
+        return
+
     category = action
     if category in CATEGORIES:
-        if category in selected_categories: selected_categories.remove(category)
-        elif len(selected_categories) < MAX_CATEGORIES: selected_categories.append(category)
-        else: await callback_query.answer(f"You can only select up to {MAX_CATEGORIES} categories.", show_alert=True); return
+        if category in selected_categories:
+            selected_categories.remove(category)
+        elif len(selected_categories) < MAX_CATEGORIES:
+            selected_categories.append(category)
+        else:
+            await callback_query.answer(f"You can only select up to {MAX_CATEGORIES} categories.", show_alert=True); return
+
         await state.update_data(selected_categories=selected_categories)
         await callback_query.message.edit_reply_markup(reply_markup=create_category_keyboard(selected_categories))
         await callback_query.answer(f"'{category}' {'selected' if category in selected_categories else 'deselected'}.")
-
-@dp.message(ConfessionForm.waiting_for_text, F.text)
-async def receive_confession_text(message: types.Message, state: FSMContext):
-    conf_text = message.text; user_id = message.from_user.id; state_data = await state.get_data(); selected_categories: List[str] = state_data.get("selected_categories", [])
-    if not selected_categories:
-        await message.answer("⚠️ Error: Category info lost. Please start again with /confess."); await state.clear(); return
-    if len(conf_text) < 10: await message.answer("Confession too short (min 10 chars)."); return
-    if len(conf_text) > 3900: await message.answer(f"Confession too long (max 3900 chars)."); return
-    try:
-        async with db.acquire() as conn:
-            async with conn.transaction():
-                conf_id = await conn.fetchval("INSERT INTO confessions (text, user_id, categories, status) VALUES ($1, $2, $3, 'pending') RETURNING id", conf_text, user_id, selected_categories)
-                if not conf_id: raise Exception("Failed to get confession ID")
-                await update_user_points(conn, user_id, POINTS_PER_CONFESSION)
-        category_tags = " ".join([f"#{html.quote(cat)}" for cat in selected_categories])
-        kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{conf_id}")], [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{conf_id}")]])
-        admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Categories:</b> {category_tags}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
-        await bot.send_message(ADMIN_ID, admin_msg_text, reply_markup=kbd)
-        await message.answer("✅ Your confession has been submitted and is pending review.", reply_markup=main_menu_keyboard)
-        logging.info(f"Confession #{conf_id} (Categories: {', '.join(selected_categories)}) submitted by User ID {user_id}")
-    except Exception as e:
-        logging.error(f"Error processing confession from {user_id}: {e}", exc_info=True)
-        await message.answer("An internal error occurred.")
-    finally: await state.clear()
-
 
 # --- Admin Action Handlers ---
 @dp.callback_query(F.data.startswith(("approve_", "reject_")))
@@ -1634,7 +2015,8 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
 
         await safe_send_message(
             callback_query.from_user.id,
-            reply_preview_message
+            reply_preview_message,
+            disable_web_page_preview=True
         )
         
         await bot.send_message(
@@ -1662,7 +2044,7 @@ async def receive_reply(message: types.Message, state: FSMContext):
     conf_id, parent_id = data.get("confession_id"), data.get("parent_comment_id")
 
     if not all([conf_id, parent_id]):
-        await message.answer("⚠️ Error: Reply context lost. Your session may have expired. Please try again.", reply_markup=main_menu_keyboard)
+        await message.answer("⚠️ Error: Reply context lost. Please try again.", reply_markup=main_menu_keyboard)
         await state.clear()
         return
 
@@ -1679,24 +2061,16 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 if not parent_data: await message.answer("⚠️ The comment you were replying to has been deleted."); await state.clear(); return
                 conf_data = await conn.fetchrow("SELECT user_id FROM confessions WHERE id = $1", conf_id)
                 
-                new_reply_id = await conn.fetchval(
-                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                await conn.execute(
+                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6)",
                     conf_id, user_id, reply_text, sticker_id, animation_id, parent_id
                 )
-                
-                user_page_size_row = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", parent_data['user_id'])
-                page_size_to_use = user_page_size_row if user_page_size_row is not None else PAGE_SIZE
-                
-                page_num = 1
-                if page_size_to_use > 0:
-                    seq_num = await get_comment_sequence_number(conn, new_reply_id, conf_id)
-                    page_num = (seq_num - 1) // page_size_to_use + 1 if seq_num else 1
 
         await message.answer("↪️ Your reply has been sent!", reply_markup=main_menu_keyboard)
         await update_channel_post_button(conf_id)
         
         if parent_data['user_id'] != user_id:
-            link = f"https://t.me/{bot_info.username}?start=view_{conf_id}_page_{page_num}"
+            link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
             preview = html.quote(reply_text[:150]) if reply_text else f"[{log_type.replace(' Reply', '')}]"
             
             async with db.acquire() as conn:
@@ -1708,7 +2082,14 @@ async def receive_reply(message: types.Message, state: FSMContext):
 
             await safe_send_message(parent_data['user_id'], f"↪️ Someone ({tag}) replied to your comment on Confession #{conf_id}.\n\n<i>{preview}...</i>\n\n<a href='{link}'>Click here to view the reply.</a>", disable_web_page_preview=True)
         
-        await show_comments_for_confession(user_id, conf_id, page=page_num)
+        async with db.acquire() as conn:
+             total_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", conf_id) or 0
+             user_page_size = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", user_id)
+             page_size_to_use = user_page_size if user_page_size is not None and user_page_size > 0 else PAGE_SIZE
+             last_page = (total_count + page_size_to_use - 1) // page_size_to_use if page_size_to_use > 0 else 1
+
+        await show_comments_for_confession(user_id, conf_id, page=last_page)
+
     except Exception as e:
         logging.error(f"Error saving reply for parent {parent_id} by {user_id}: {e}", exc_info=True)
         await message.answer("❌ Error saving reply.")
@@ -1831,9 +2212,13 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
     async with db.acquire() as conn:
         async with conn.transaction():
             req_data = await conn.fetchrow("SELECT * FROM contact_requests WHERE id = $1", req_id)
-            if not req_data: await callback_query.answer("Request not found.", show_alert=True); return
-            if responder_uid != req_data['requested_user_id']: await callback_query.answer("This request is not for you.", show_alert=True); return
-            if req_data['status'] != 'pending': await callback_query.answer(f"Request already '{req_data['status']}'.", show_alert=True); return
+            if not req_data:
+                await callback_query.answer("This request could not be found. It may have expired.", show_alert=True); return
+            if responder_uid != req_data['requested_user_id']:
+                logging.warning(f"Unauthorized contact response attempt. User {responder_uid} tried to respond to request {req_id} intended for {req_data['requested_user_id']}.")
+                await callback_query.answer("This request is not for you.", show_alert=True); return
+            if req_data['status'] != 'pending':
+                await callback_query.answer(f"This request has already been handled (status: {req_data['status']}).", show_alert=True); return
 
             author_uid = req_data['requester_user_id']; conf_id = req_data['confession_id']
             notification_to_author = ""
@@ -1867,8 +2252,7 @@ async def report_user_callback(callback_query: types.CallbackQuery):
     reporter_user_id = callback_query.from_user.id
 
     if reported_user_id == reporter_user_id:
-        await callback_query.answer("You cannot report yourself.", show_alert=True)
-        return
+        await callback_query.answer("You cannot report yourself.", show_alert=True); return
 
     async with db.acquire() as conn:
         await conn.execute(
@@ -1924,8 +2308,7 @@ async def handle_chat_response(callback_query: types.CallbackQuery):
     async with db.acquire() as conn:
         req_data = await conn.fetchrow("SELECT * FROM chat_requests WHERE id = $1", req_id)
         if not req_data or req_data['recipient_id'] != responder_id or req_data['status'] != 'pending':
-            await callback_query.answer("This request is invalid or has expired.", show_alert=True)
-            return
+            await callback_query.answer("This request is invalid or has expired.", show_alert=True); return
 
         requester_id = req_data['requester_id']
         new_status = 'accepted' if action == 'accept' else 'declined'
@@ -1937,7 +2320,7 @@ async def handle_chat_response(callback_query: types.CallbackQuery):
         if new_status == 'accepted':
             await safe_send_message(requester_id, f"✅ <b>{responder_nickname}</b> has accepted your chat request! You can now send messages from their profile.")
             await callback_query.message.edit_text("✅ Chat request accepted. You can now chat with this user.")
-        else: # declined
+        else:
             await safe_send_message(requester_id, f"❌ <b>{responder_nickname}</b> has declined your chat request.")
             await callback_query.message.edit_text("❌ You have declined the chat request.")
 
@@ -1973,7 +2356,6 @@ async def leave_chat_command(message: types.Message, state: FSMContext):
     await message.answer("You have left the chat.", reply_markup=main_menu_keyboard)
     
     if partner_id:
-        # IMPROVEMENT: Also clear the partner's state to end the session for both
         partner_key = StorageKey(bot_id=bot.id, chat_id=partner_id, user_id=partner_id)
         partner_context = FSMContext(storage=dp.storage, key=partner_key)
         await partner_context.clear()
@@ -1990,13 +2372,10 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
         await message.answer("Chat session expired. Please start again.", reply_markup=main_menu_keyboard)
         return
 
-    # IMPROVEMENT: Logic for bi-directional chat
-    # Create a context for the recipient to check/update their state
     recipient_key = StorageKey(bot_id=bot.id, chat_id=recipient_id, user_id=recipient_id)
     recipient_context = FSMContext(storage=dp.storage, key=recipient_key)
     recipient_state = await recipient_context.get_state()
 
-    # If the recipient is not yet in the chat, bring them in
     if recipient_state != ChatState.in_chat:
         await recipient_context.set_state(ChatState.in_chat)
         await recipient_context.update_data(chat_partner_id=sender_id)
