@@ -1751,8 +1751,11 @@ async def handle_confession_confirmation(callback_query: types.CallbackQuery, st
         await callback_query.message.answer("You are back at the main menu.", reply_markup=main_menu_keyboard)
         await callback_query.answer()
 
-async def process_confession_submission(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+# --- MODIFICATION: process_confession_submission ---
+# I've changed the function signature to accept user_id directly
+# and a message object specifically for sending replies.
+async def process_confession_submission(user_id: int, state: FSMContext, message: types.Message):
+    # The user_id is now passed directly, not inferred from message.from_user.id
     state_data = await state.get_data()
     selected_categories: List[str] = state_data.get("selected_categories", [])
     conf_text: str = state_data.get("confession_text", "")
@@ -1824,6 +1827,8 @@ async def handle_auto_ai_categories(callback_query: types.CallbackQuery, state: 
     
     await callback_query.message.edit_reply_markup(reply_markup=create_category_keyboard(ai_selected_categories))
 
+# --- MODIFICATION: handle_category_selection ---
+# This is the function that calls the one above. I've updated the call.
 @dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data.startswith("category_"))
 async def handle_category_selection(callback_query: types.CallbackQuery, state: FSMContext):
     action = callback_query.data.split("_", 1)[1]
@@ -1849,7 +1854,10 @@ async def handle_category_selection(callback_query: types.CallbackQuery, state: 
             await callback_query.answer(f"Too many categories (max {MAX_CATEGORIES}). Please remove some.", show_alert=True); return
         
         await callback_query.message.delete()
-        await process_confession_submission(callback_query.message, state)
+        # --- FIX ---
+        # Instead of passing the whole message object and inferring the ID,
+        # we now pass the user's ID directly from the callback query.
+        await process_confession_submission(callback_query.from_user.id, state, callback_query.message)
         await callback_query.answer()
         return
 
