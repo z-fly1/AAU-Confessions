@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from typing import Optional, Tuple, Dict, Any, List, Set
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
+import itertools
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -32,13 +33,58 @@ CATEGORIES = [
     "Other"
 ]
 INTERESTS = [
-    "🎨 Art", "📚 Books", "🎬 Movies", "🎵 Music", "🎮 Gaming", "💻 Tech",
-    "⚽️ Sports", "✈️ Travel", "🍔 Food", "🤔 Philosophy", "💼 Career"
+       "Anime", "Manga", "Comics", "Cartoons", "Drawing", "Painting", "Photography", "Filmmaking", "Writing", "Poetry",
+"Books", "Novels", "Short Stories", "Philosophy", "History", "Science", "Math", "Psychology", "Politics", "Economics",
+"Movies", "TV Shows", "Series", "Theatre", "Acting", "Cinematography", "Screenwriting",
+"Music", "Singing", "Instruments", "Piano", "Guitar", "Drums", "DJing", "Rap", "Dance", "Choreography",
+"Gaming", "Esports", "Chess", "Puzzles", "Board Games", "Card Games", "Strategy Games", "RPG",
+"Tech", "Coding", "AI", "Robotics", "Cybersecurity", "Electronics", "Gadgets", "Web Dev", "App Dev", "Blockchain",
+"Sports", "Football", "Basketball", "Tennis", "Running", "Cycling", "Swimming", "Martial Arts", "Boxing", "Yoga", "Gym",
+"Travel", "Adventure", "Camping", "Hiking", "Exploration", "Road Trips", "Backpacking",
+"Food", "Cooking", "Baking", "Coffee", "Tea", "Wine", "Street Food", "Nutrition", "Veganism",
+"Career", "Entrepreneurship", "Startups", "Business", "Finance", "Investing", "Marketing", "Networking",
+"Nature", "Animals", "Birdwatching", "Gardening", "Stargazing", "Astronomy",
+"Culture", "Languages", "Religion", "Traditions", "Festivals",
+"Fashion", "Style", "Makeup", "Design", "DIY",
+"Collecting", "Stamps", "Coins", "Sneakers", "Toys", "Figurines",
+"Social Media", "Blogging", "Podcasting", "Streaming", "Vlogging"
 ]
-GENDERS = ["Male", "Female", "Other", "Prefer not to say"]
-CAMPUSES = ["AASTU", "AAIT", "Other"]
-YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "Postgraduate", "Other"]
-DEPARTMENTS = ["Software Engineering", "Civil Engineering", "Mechanical Engineering", "Electrical Engineering", "Architecture", "Other"]
+GENDERS = ["Male", "Female", "Helicopter"]
+CAMPUSES = ["College of Social Sciences",
+  "College of Humanities, Language Studies, Journalism and Communication",
+  "College of Development Studies",
+  "College of Business and Economics",
+  "College of Law and Governance Studies",
+  "College of Education and Behavioral Studies",
+  "College of Natural and Computational Sciences",
+  "Skunder Boghossian College of Performing and Visual Arts",
+  "College of Veterinary Medicine and Agriculture",
+  "College of Health Sciences",
+  "College of Technology and Built Environment (CTBE)"]
+
+YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "6th Year", "Other"]
+DEPARTMENTS = [
+  "African Studies", "Archaeology and Heritage Management", "History", "Political Science",
+  "Social Anthropology", "Social Work and Social Development", "Sociology", "Philosophy",
+  "Amharic Language, Literature and Folklore", "Foreign Language and Literature",
+  "Journalism and Communication", "Linguistics", "Oromo Language, Literature and Folklore",
+  "Philology", "Teaching English as Foreign Language", "Tigrigna Language, Literature and Folklore",
+  "Centre for Development Research", "Centre for Food Security Studies", "Centre for Gender Studies",
+  "Centre for Population Studies", "Centre for Regional and Local Development Studies",
+  "Centre for Rural Development", "Centre for Environment and Development",
+  "Accounting and Finance", "Economics", "Management", "Public Administration",
+  "Business Information System", "Business Leadership", "Corporate Finance", "Development Economics",
+  "Digital Marketing", "Human Resource Management", "Logistics and Supply Chain Management",
+  "Marketing Management", "Project Management", "School of Law", "Educational Planning and Management",
+  "Psychology", "Biology", "Chemistry", "Geology", "Mathematics", "Physics", "Statistics",
+  "Design", "Fine Arts", "Multimedia Theater", "Film Production", "Yared School of Music",
+  "Yoftahe Nigussie School of Theatrical Arts", "Veterinary Clinical Medicine", "School of Medicine",
+  "School of Nursing and Midwifery", "School of Pharmacy", "School of Public Health",
+  "School of Chemical and Bio-Engineering", "School of Civil and Environmental Engineering",
+  "School of Electrical and Computer Engineering", "School of Mechanical and Industrial Engineering",
+  "Architecture and Design", "Construction Technology and Management", "Urban Planning and Environmental Studies"
+]
+
 
 MAX_INTERESTS = 5
 POINTS_PER_CONFESSION = 0
@@ -48,6 +94,7 @@ MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 NICKNAME_COOLDOWN = timedelta(days=30)
 PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
 AI_ENHANCED_MARKER = "✨" # Marker for AI-enhanced confessions
+PROFILE_OPTIONS_PAGE_SIZE = 8 # Number of items for profile selection pagination
 
 
 # Load environment variables at the top level
@@ -60,7 +107,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
 RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNAMES_STR.split(',')}
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# --- MODIFICATION: Load multiple Gemini API keys ---
+GEMINI_API_KEYS_STR = os.getenv("GEMINI_API_KEYS")
+GEMINI_API_KEYS = [key.strip() for key in (GEMINI_API_KEYS_STR or "").split(',') if key.strip()]
 
 
 # Validate essential environment variables before proceeding
@@ -68,7 +117,7 @@ if not BOT_TOKEN: raise ValueError("FATAL: BOT_TOKEN environment variable not se
 if not ADMIN_ID_STR: raise ValueError("FATAL: ADMIN_ID environment variable not set!")
 if not CHANNEL_ID: raise ValueError("FATAL: CHANNEL_ID environment variable not set!")
 if not DATABASE_URL: raise ValueError("FATAL: DATABASE_URL environment variable not set!")
-if not GEMINI_API_KEY: raise ValueError("FATAL: GEMINI_API_KEY environment variable not set!")
+if not GEMINI_API_KEYS: raise ValueError("FATAL: GEMINI_API_KEYS environment variable not set or empty!")
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -147,13 +196,11 @@ async def setup():
     bot_info = await bot.get_me()
     logging.info(f"Bot started: @{bot_info.username}")
     
-    # Configure Gemini
-    if GEMINI_API_KEY:
-        try:
-            genai.configure(api_key=GEMINI_API_KEY)
-            logging.info("Gemini API configured successfully.")
-        except Exception as e:
-            logging.error(f"Failed to configure Gemini API: {e}")
+    # --- MODIFICATION: No initial Gemini configuration needed here ---
+    if GEMINI_API_KEYS:
+        logging.info(f"Loaded {len(GEMINI_API_KEYS)} Gemini API keys.")
+    else:
+        logging.warning("Gemini API keys are not configured.")
 
 
     async with db.acquire() as conn:
@@ -343,7 +390,7 @@ def create_category_keyboard(selected_categories: List[str] = None):
         selected_categories = []
     builder = InlineKeyboardBuilder()
 
-    builder.row(InlineKeyboardButton(text="🤖 Auto-select Categories with AI", callback_data="category_auto_ai"))
+    builder.row(InlineKeyboardButton(text="🤖 Auto-select Categories", callback_data="category_auto_ai"))
     
     for category in [c for c in CATEGORIES if c]:
         prefix = "✅ " if category in selected_categories else ""
@@ -1299,11 +1346,11 @@ async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboar
     menu_text = "<b>ℹ️ Edit Profile Details & Visibility</b>\n\nSet your details and toggle whether they appear on your public profile."
     
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"Gender: {settings.get('gender') or 'Not Set'}", callback_data="set_detail_gender")
-    builder.button(text=f"Campus: {settings.get('campus') or 'Not Set'}", callback_data="set_detail_campus")
-    builder.button(text=f"Year: {settings.get('year') or 'Not Set'}", callback_data="set_detail_year")
-    builder.button(text=f"Department: {settings.get('department') or 'Not Set'}", callback_data="set_detail_department")
-    builder.button(text="Select Interests", callback_data="set_detail_interests")
+    builder.button(text=f"Gender: {settings.get('gender') or 'Not Set'}", callback_data="set_detail_gender_1")
+    builder.button(text=f"Campus: {settings.get('campus') or 'Not Set'}", callback_data="set_detail_campus_1")
+    builder.button(text=f"Year: {settings.get('year') or 'Not Set'}", callback_data="set_detail_year_1")
+    builder.button(text=f"Department: {settings.get('department') or 'Not Set'}", callback_data="set_detail_department_1")
+    builder.button(text=f"Select Interests ({len(settings.get('interests') or [])}/{MAX_INTERESTS})", callback_data="set_detail_interests_1")
     builder.adjust(1)
 
     builder.row(
@@ -1330,68 +1377,125 @@ async def show_profile_details_menu(callback_query: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("set_detail_"))
 async def prompt_for_profile_detail(callback_query: types.CallbackQuery, state: FSMContext):
-    field = callback_query.data.split("_")[-1]
-    
+    parts = callback_query.data.split("_")
+    field = parts[2]
+    page = int(parts[3])
+
     options_map = {
         "gender": GENDERS, "campus": CAMPUSES,
         "year": YEARS, "department": DEPARTMENTS,
+        "interests": INTERESTS
     }
 
     if field in options_map:
+        options = options_map[field]
         builder = InlineKeyboardBuilder()
-        for option in options_map[field]:
-            builder.button(text=option, callback_data=f"set_option_{field}_{option}")
+        
+        # --- PAGINATION LOGIC ---
+        page_size = PROFILE_OPTIONS_PAGE_SIZE
+        total_pages = (len(options) + page_size - 1) // page_size
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        options_on_page = options[start_index:end_index]
+
+        if field == "interests":
+            # For interests, we go to a stateful selection mode
+            await state.set_state(SettingsForm.selecting_interests)
+            async with db.acquire() as conn:
+                current_interests = await conn.fetchval("SELECT interests FROM user_status WHERE user_id = $1", callback_query.from_user.id) or []
+            await state.update_data(selected_interests=current_interests)
+            
+            # Use enumerate to get the index for the callback data
+            for i, interest in enumerate(options_on_page):
+                prefix = "✅ " if interest in current_interests else ""
+                builder.button(text=f"{prefix}{interest}", callback_data=f"interest_{interest}")
+        else:
+            # For other fields, selection is direct
+            # --- FIX: Use enumerate to get index for callback_data ---
+            for i, option in enumerate(options_on_page):
+                # The index passed in callback_data is the global index in the original list
+                global_index = start_index + i
+                builder.button(text=option, callback_data=f"set_option_{field}_{global_index}")
+
         builder.adjust(2)
-        builder.row(InlineKeyboardButton(text="🗑️ Clear This Field", callback_data=f"set_option_{field}_REMOVE"))
+
+        # Pagination controls
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"set_detail_{field}_{page-1}"))
+        if total_pages > 1:
+            nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"set_detail_{field}_{page+1}"))
+        if nav_row:
+            builder.row(*nav_row)
+
+        if field == "interests":
+             builder.row(InlineKeyboardButton(text="🗑️ Clear All Interests", callback_data="interest_clear"))
+             builder.row(InlineKeyboardButton(text=f"➡️ Done Selecting", callback_data="interest_done"))
+        else:
+             builder.row(InlineKeyboardButton(text="🗑️ Clear This Field", callback_data=f"set_option_{field}_REMOVE"))
+
         builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="profile_details_menu"))
         
-        await callback_query.message.edit_text(
-            f"Select your <b>{field.capitalize()}</b>:",
-            reply_markup=builder.as_markup()
-        )
+        prompt_text = f"Select up to {MAX_INTERESTS} interests." if field == "interests" else f"Select your <b>{field.capitalize()}</b>:"
+        
+        await callback_query.message.edit_text(prompt_text, reply_markup=builder.as_markup())
         await callback_query.answer()
         return
 
-    if field == "interests":
-        await state.set_state(SettingsForm.selecting_interests)
-        async with db.acquire() as conn:
-            current_interests = await conn.fetchval("SELECT interests FROM user_status WHERE user_id = $1", callback_query.from_user.id) or []
-        await state.update_data(selected_interests=current_interests)
-        
-        builder = InlineKeyboardBuilder()
-        for interest in INTERESTS:
-            prefix = "✅ " if interest in current_interests else ""
-            builder.button(text=f"{prefix}{interest}", callback_data=f"interest_{interest}")
-        builder.adjust(2)
-        builder.row(InlineKeyboardButton(text=f"➡️ Done ({len(current_interests)}/{MAX_INTERESTS})", callback_data="interest_done"))
-        builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="interest_cancel"))
-        
-        await callback_query.message.edit_text(
-            f"Select up to {MAX_INTERESTS} interests.",
-            reply_markup=builder.as_markup()
-        )
-        await callback_query.answer()
-        return
 
 @dp.callback_query(F.data.startswith("set_option_"))
 async def set_option_profile_detail(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
-    try:
-        _, field, value = callback_query.data.split("_", 2)
-    except ValueError:
-        logging.error(f"Invalid callback data format: {callback_query.data}")
-        await callback_query.answer("An error occurred.", show_alert=True); return
+    
+    prefix = "set_option_"
+    if not callback_query.data.startswith(prefix):
+        logging.error(f"Invalid callback data format in set_option_profile_detail: {callback_query.data}")
+        await callback_query.answer("An error occurred.", show_alert=True)
+        return
 
-    db_value = None if value == 'REMOVE' else value
+    rest = callback_query.data[len(prefix):]
+    try:
+        field, value_str = rest.split("_", 1)
+    except ValueError:
+        logging.error(f"Could not parse field and value from '{rest}'")
+        await callback_query.answer("An error occurred.", show_alert=True)
+        return
+
+    db_value = None
+    display_value = ""
+
+    if value_str == 'REMOVE':
+        db_value = None
+        feedback = f"Your {field} has been removed."
+    else:
+        # --- FIX: Look up the value from the list using the index ---
+        try:
+            index = int(value_str)
+            options_map = {
+                "gender": GENDERS, "campus": CAMPUSES,
+                "year": YEARS, "department": DEPARTMENTS
+            }
+            if field in options_map:
+                db_value = options_map[field][index]
+                display_value = db_value
+                feedback = f"Your {field} is now set to {display_value}."
+            else:
+                await callback_query.answer("Invalid field specified.", show_alert=True)
+                return
+        except (ValueError, IndexError):
+            await callback_query.answer("Invalid selection.", show_alert=True)
+            return
 
     async with db.acquire() as conn:
         allowed_fields = ["gender", "campus", "year", "department"]
         if field not in allowed_fields:
-            await callback_query.answer("Invalid field specified.", show_alert=True); return
+            await callback_query.answer("Invalid field specified.", show_alert=True)
+            return
             
         await conn.execute(f"UPDATE user_status SET {field} = $1 WHERE user_id = $2", db_value, user_id)
 
-    feedback = f"Your {field} has been removed." if db_value is None else f"Your {field} is now set to {value}."
     await callback_query.answer(feedback, show_alert=False)
 
     menu_text, keyboard = await _render_profile_details_menu(user_id)
@@ -1405,43 +1509,43 @@ async def handle_interest_selection(callback_query: types.CallbackQuery, state: 
     data = await state.get_data()
     selected = data.get("selected_interests", [])
 
-    if action == "cancel":
-        await state.clear()
-        menu_text, keyboard = await _render_profile_details_menu(user_id)
-        await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
-        await callback_query.answer("Cancelled.")
-        return
+    if action == "cancel" or action == "done":
+        if action == "done":
+             async with db.acquire() as conn:
+                await conn.execute("UPDATE user_status SET interests = $1 WHERE user_id = $2", selected or None, user_id)
+             await callback_query.answer("Interests saved!")
+        else: # cancel
+            await callback_query.answer("Cancelled.")
 
-    if action == "done":
-        async with db.acquire() as conn:
-            await conn.execute("UPDATE user_status SET interests = $1 WHERE user_id = $2", selected or None, user_id)
         await state.clear()
         menu_text, keyboard = await _render_profile_details_menu(user_id)
         await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
-        await callback_query.answer("Interests saved!")
         return
-        
-    interest = action
-    if interest in selected:
-        selected.remove(interest)
-    elif len(selected) < MAX_INTERESTS:
-        selected.append(interest)
+    
+    # --- NEW: Handle clearing all interests ---
+    if action == "clear":
+        selected = []
+        await callback_query.answer("All interests cleared.")
     else:
-        await callback_query.answer(f"You can only select up to {MAX_INTERESTS} interests.", show_alert=True)
-        return
+        interest = action
+        if interest in selected:
+            selected.remove(interest)
+        elif len(selected) < MAX_INTERESTS:
+            selected.append(interest)
+        else:
+            await callback_query.answer(f"You can only select up to {MAX_INTERESTS} interests.", show_alert=True)
+            return
+        
+        await callback_query.answer(f"'{interest}' {'selected' if interest in selected else 'deselected'}.")
+
 
     await state.update_data(selected_interests=selected)
     
-    builder = InlineKeyboardBuilder()
-    for item in INTERESTS:
-        prefix = "✅ " if item in selected else ""
-        builder.button(text=f"{prefix}{item}", callback_data=f"interest_{item}")
-    builder.adjust(2)
-    builder.row(InlineKeyboardButton(text=f"➡️ Done ({len(selected)}/{MAX_INTERESTS})", callback_data="interest_done"))
-    builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="interest_cancel"))
-    
-    await callback_query.message.edit_reply_markup(reply_markup=builder.as_markup())
-    await callback_query.answer()
+    # Re-render the current page of interests with updated selections
+    # We can get the current page from the callback_query message's reply_markup if needed,
+    # but for simplicity, we'll just go back to page 1 which is a common UX pattern.
+    callback_query.data = "set_detail_interests_1"
+    await prompt_for_profile_detail(callback_query, state)
 
 
 @dp.callback_query(F.data.startswith("toggle_detail_"))
@@ -1521,7 +1625,7 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
 async def start_confession(message: types.Message, state: FSMContext):
     await state.set_state(ConfessionForm.waiting_for_text)
     await message.answer(
-        "Please send the text of your confession. You will be able to review, edit, or enhance it with AI before submitting.",
+        "Please send the text of your confession. You will be able to review, edit, or enhance it next",
         reply_markup=cancel_keyboard
     )
 
@@ -1552,24 +1656,39 @@ async def receive_confession_text(message: types.Message, state: FSMContext):
         reply_markup=builder.as_markup()
     )
 
+# --- MODIFICATION: Gemini API call with key rotation ---
+async def call_gemini_with_rotation(prompt: str) -> Optional[str]:
+    """Calls the Gemini API, rotating keys on failure."""
+    if not GEMINI_API_KEYS:
+        logging.error("No Gemini API keys provided for API call.")
+        return None
+
+    for key in GEMINI_API_KEYS:
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel('gemini-2.0-flash') # Using a recommended model
+            response = await model.generate_content_async(prompt)
+            return response.text
+        except Exception as e:
+            logging.warning(f"Gemini API call failed with key ending in '...{key[-4:]}': {e}")
+            continue # Try the next key
+
+    logging.error("All Gemini API keys failed.")
+    return None
+
 async def get_ai_enhanced_text(original_text: str) -> Optional[str]:
     """Helper function to call the Gemini API and return the enhanced text."""
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash-001')
-        prompt = (f"A user has submitted a confession. Please rephrase it to make it more articulate and clear. "
-                  f"Fix any broken English, grammar, or spelling mistakes. "
-                  f"Preserve the original meaning and tone of the confession. Do not add any new information or opinions. "
-                  f"Only send the confession back, no other text before or after it. "
-                  f"Use a very casual and simple vocabulary and tone. "
-                  f"Never use em dashes. "
-                  f"Only use emojis when necessary (maximum of 1-2). 1 is ideal, and only if the confession needs one. "
-                  f"Here is the confession:\n\n'{original_text}'")
-        
-        response = await model.generate_content_async(prompt)
-        return response.text
-    except Exception as e:
-        logging.error(f"Error during AI enhancement API call: {e}")
-        return None
+    prompt = (f"A user has submitted a confession. Please rephrase it to make it more articulate and clear. "
+              f"Fix any broken English, grammar, or spelling mistakes. "
+              f"Preserve the original meaning and tone of the confession. Do not add any new information or opinions. "
+              f"Only send the confession back, no other text before or after it. "
+              f"Use a very casual and simple vocabulary and tone. "
+              f"Never use em dashes. "
+              f"Only use emojis when necessary (maximum of 1-2). 1 is ideal, and only if the confession needs one. "
+              f"Here is the confession:\n\n'{original_text}'")
+    
+    return await call_gemini_with_rotation(prompt)
+
 
 @dp.callback_query(StateFilter(ConfessionForm.waiting_for_confirmation), F.data.startswith("conf_"))
 async def handle_confession_confirmation(callback_query: types.CallbackQuery, state: FSMContext):
@@ -1579,7 +1698,7 @@ async def handle_confession_confirmation(callback_query: types.CallbackQuery, st
         await state.set_state(ConfessionForm.selecting_categories)
         await state.update_data(selected_categories=[])
         await callback_query.message.edit_text(
-            "Great! Now, please choose categories for your confession. You can also let the AI choose for you.",
+            "Great! Now, please choose categories for your confession.",
             reply_markup=create_category_keyboard([])
         )
         await callback_query.answer()
@@ -1591,6 +1710,10 @@ async def handle_confession_confirmation(callback_query: types.CallbackQuery, st
         await callback_query.answer()
 
     elif action == "enhance":
+        if not GEMINI_API_KEYS:
+            await callback_query.answer("Sorry, AI features are currently unavailable.", show_alert=True)
+            return
+
         await callback_query.answer("✨ Enhancing with AI... Please wait.", show_alert=False)
         data = await state.get_data()
         original_text = data.get("confession_text")
@@ -1663,29 +1786,30 @@ async def process_confession_submission(message: types.Message, state: FSMContex
         await state.clear()
 
 async def get_ai_categories(confession_text: str) -> List[str]:
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash-001')
-        valid_categories = [cat for cat in CATEGORIES if cat]
-        
-        prompt = (f"Analyze the following confession and select the most relevant categories from the provided list. "
-                  f"It may have amahric words written in latin letters so understand them too"
-                  f"You must choose a maximum of {MAX_CATEGORIES} categories. "
-                  f"Return only the category names, separated by commas. Do not add any other text, explanation, or formatting. "
-                  f"Try your best to selet atleast 2 catagories"
-                  f"If no category seems relevant, return 'Other'.\n\n"
-                  f"Available Categories: {', '.join(valid_categories)}\n\n"
-                  f"Confession:\n'{html.quote(confession_text)}'")
-        
-        response = await model.generate_content_async(prompt)
-        selected = [cat.strip() for cat in response.text.split(',') if cat.strip() in valid_categories]
-        
-        return selected[:MAX_CATEGORIES] if selected else ["Other"]
-    except Exception as e:
-        logging.error(f"Error getting AI categories: {e}")
-        return ["Other"]
+    valid_categories = [cat for cat in CATEGORIES if cat]
+    prompt = (f"Analyze the following confession and select the most relevant categories from the provided list. "
+              f"It may have amahric words written in latin letters so understand them too"
+              f"You must choose a maximum of {MAX_CATEGORIES} categories. "
+              f"Return only the category names, separated by commas. Do not add any other text, explanation, or formatting. "
+              f"Try your best to selet atleast 2 catagories"
+              f"If no category seems relevant, return 'Other'.\n\n"
+              f"Available Categories: {', '.join(valid_categories)}\n\n"
+              f"Confession:\n'{html.quote(confession_text)}'")
+    
+    response_text = await call_gemini_with_rotation(prompt)
+    if not response_text:
+        return ["Other"] # Default on failure
+
+    selected = [cat.strip() for cat in response_text.split(',') if cat.strip() in valid_categories]
+    return selected[:MAX_CATEGORIES] if selected else ["Other"]
+
 
 @dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data == "category_auto_ai")
 async def handle_auto_ai_categories(callback_query: types.CallbackQuery, state: FSMContext):
+    if not GEMINI_API_KEYS:
+        await callback_query.answer("Sorry, AI features are currently unavailable.", show_alert=True)
+        return
+        
     user_data = await state.get_data()
     confession_text = user_data.get("confession_text")
 
@@ -1699,7 +1823,6 @@ async def handle_auto_ai_categories(callback_query: types.CallbackQuery, state: 
     await state.update_data(selected_categories=ai_selected_categories)
     
     await callback_query.message.edit_reply_markup(reply_markup=create_category_keyboard(ai_selected_categories))
-    await bot.send_message(callback_query.from_user.id, f"<b>AI Suggestion:</b> {', '.join(ai_selected_categories)}\nYou can adjust the selection or click 'Done'.")
 
 @dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data.startswith("category_"))
 async def handle_category_selection(callback_query: types.CallbackQuery, state: FSMContext):
