@@ -146,6 +146,17 @@ main_menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# --- ADMIN REVIEW --- New keyboard for the admin
+admin_main_menu_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📬 Review Pending")],
+        [KeyboardButton(text="✍️ Confess")],
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+    ],
+    resize_keyboard=True
+)
+
+
 cancel_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="❌ Cancel")]],
     resize_keyboard=True
@@ -176,6 +187,10 @@ class SettingsForm(StatesGroup):
 
 class ChatState(StatesGroup):
     in_chat = State()
+
+# --- ADMIN REVIEW --- New state for the review process
+class AdminReview(StatesGroup):
+    reviewing = State()
 
 # --- Database ---
 db = None
@@ -385,6 +400,14 @@ async def start_dummy_server():
 
 
 # --- Helper Functions ---
+# --- ADMIN REVIEW --- Helper to get the correct keyboard based on user ID
+def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    """Returns the appropriate main menu keyboard for a user."""
+    if user_id == ADMIN_ID:
+        return admin_main_menu_keyboard
+    return main_menu_keyboard
+
+
 def create_category_keyboard(selected_categories: List[str] = None):
     if selected_categories is None:
         selected_categories = []
@@ -727,12 +750,13 @@ async def show_rules(message: types.Message):
         "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
         "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
-    await message.answer(rules_text, reply_markup=main_menu_keyboard)
+    await message.answer(rules_text, reply_markup=get_main_keyboard(message.from_user.id))
 
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
     await state.clear()
     user_id = message.from_user.id
+    keyboard = get_main_keyboard(user_id)
 
     async with db.acquire() as conn:
         has_accepted = await conn.fetchval("SELECT has_accepted_rules FROM user_status WHERE user_id = $1", user_id)
@@ -793,11 +817,11 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 await show_public_profile(user_id, profile_user_id)
 
             else:
-                await message.answer("Invalid link.", reply_markup=main_menu_keyboard)
+                await message.answer("Invalid link.", reply_markup=keyboard)
 
         except (ValueError, IndexError): await message.answer("Invalid link.")
         except Exception as e: logging.error(f"Err handling deep link '{deep_link_args}': {e}", exc_info=True); await message.answer("Error processing link.")
-    else: await message.answer("Welcome! Use Confess to submit confessions", reply_markup=main_menu_keyboard)
+    else: await message.answer("Welcome! Use Confess to submit confessions", reply_markup=keyboard)
 
 @dp.callback_query(F.data == "accept_rules")
 async def handle_accept_rules(callback_query: types.CallbackQuery):
@@ -811,7 +835,7 @@ async def handle_accept_rules(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
     await callback_query.message.answer("Thank you for accepting the rules! You can now use the bot.\n\n"
                                           "Use the buttons below to get started.",
-                                          reply_markup=main_menu_keyboard)
+                                          reply_markup=get_main_keyboard(user_id))
     await callback_query.answer("Rules accepted!")
 
 
@@ -860,7 +884,7 @@ async def show_rules_from_help(callback_query: types.CallbackQuery):
         "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
         "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
-    await callback_query.message.answer(rules_text, reply_markup=main_menu_keyboard)
+    await callback_query.message.answer(rules_text, reply_markup=get_main_keyboard(callback_query.from_user.id))
 
 
 @dp.callback_query(F.data == "contact_admin_start", StateFilter(None))
@@ -893,11 +917,11 @@ async def show_privacy(message: types.Message):
 async def cancel_any_state(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is None:
-        await message.answer("You have nothing to cancel.", reply_markup=main_menu_keyboard)
+        await message.answer("You have nothing to cancel.", reply_markup=get_main_keyboard(message.from_user.id))
         return
 
     await state.clear()
-    await message.answer("Action cancelled. You are back at the main menu.", reply_markup=main_menu_keyboard)
+    await message.answer("Action cancelled. You are back at the main menu.", reply_markup=get_main_keyboard(message.from_user.id))
 
 @dp.message(ContactAdminForm.waiting_for_message, F.text)
 async def receive_admin_message(message: types.Message, state: FSMContext):
@@ -912,7 +936,7 @@ async def receive_admin_message(message: types.Message, state: FSMContext):
         f"\n\n---\nReply to this message to respond to User ID <code>{user_id}</code>." )
     try:
         await bot.send_message(ADMIN_ID, admin_message)
-        await message.answer("✅ Your message has been sent to the admin.", reply_markup=main_menu_keyboard)
+        await message.answer("✅ Your message has been sent to the admin.", reply_markup=get_main_keyboard(user_id))
     except Exception as e: logging.error(f"Failed forward msg from {user_id} to admin: {e}"); await message.answer("❌ Error sending message.")
     finally: await state.clear()
 
@@ -1185,7 +1209,7 @@ async def settings_set_nickname(message: types.Message, state: FSMContext):
             feedback = f"✅ Nickname set to: <b>{html.quote(nickname)}</b>"
 
     await state.clear()
-    await message.answer(feedback, reply_markup=main_menu_keyboard)
+    await message.answer(feedback, reply_markup=get_main_keyboard(user_id))
     
     settings_text, keyboard = await _render_settings_menu(message.from_user.id)
     await message.answer(settings_text, reply_markup=keyboard)
@@ -1307,7 +1331,7 @@ async def settings_set_bio(message: types.Message, state: FSMContext):
             feedback = "✅ Your bio has been updated."
     
     await state.clear()
-    await message.answer(feedback, reply_markup=main_menu_keyboard)
+    await message.answer(feedback, reply_markup=get_main_keyboard(user_id))
 
     settings_text, keyboard = await _render_settings_menu(message.from_user.id)
     await message.answer(settings_text, reply_markup=keyboard)
@@ -1666,7 +1690,7 @@ async def call_gemini_with_rotation(prompt: str) -> Optional[str]:
     for key in GEMINI_API_KEYS:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-2.0-flash') # Using a recommended model
+            model = genai.GenerativeModel('gemini-1.5-flash') # Using a recommended model
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:
@@ -1693,6 +1717,7 @@ async def get_ai_enhanced_text(original_text: str) -> Optional[str]:
 @dp.callback_query(StateFilter(ConfessionForm.waiting_for_confirmation), F.data.startswith("conf_"))
 async def handle_confession_confirmation(callback_query: types.CallbackQuery, state: FSMContext):
     action = callback_query.data.split("_")[1]
+    user_id = callback_query.from_user.id
 
     if action == "submit":
         await state.set_state(ConfessionForm.selecting_categories)
@@ -1748,7 +1773,7 @@ async def handle_confession_confirmation(callback_query: types.CallbackQuery, st
     elif action == "cancel":
         await state.clear()
         await callback_query.message.edit_text("Confession submission cancelled.")
-        await callback_query.message.answer("You are back at the main menu.", reply_markup=main_menu_keyboard)
+        await callback_query.message.answer("You are back at the main menu.", reply_markup=get_main_keyboard(user_id))
         await callback_query.answer()
 
 # --- MODIFICATION: process_confession_submission ---
@@ -1759,9 +1784,10 @@ async def process_confession_submission(user_id: int, state: FSMContext, message
     state_data = await state.get_data()
     selected_categories: List[str] = state_data.get("selected_categories", [])
     conf_text: str = state_data.get("confession_text", "")
+    keyboard = get_main_keyboard(user_id)
 
     if not selected_categories or not conf_text:
-        await message.answer("⚠️ Error: Information lost. Please start again.", reply_markup=main_menu_keyboard)
+        await message.answer("⚠️ Error: Information lost. Please start again.", reply_markup=keyboard)
         await state.clear(); return
 
     try:
@@ -1779,7 +1805,7 @@ async def process_confession_submission(user_id: int, state: FSMContext, message
         admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Categories:</b> {category_tags}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
 
         await bot.send_message(ADMIN_ID, admin_msg_text, reply_markup=kbd)
-        await message.answer("✅ Your confession has been submitted and is pending review.", reply_markup=main_menu_keyboard)
+        await message.answer("✅ Your confession has been submitted and is pending review.", reply_markup=keyboard)
         logging.info(f"Confession #{conf_id} (Cats: {', '.join(selected_categories)}) submitted by User ID {user_id}")
 
     except Exception as e:
@@ -1832,6 +1858,7 @@ async def handle_auto_ai_categories(callback_query: types.CallbackQuery, state: 
 @dp.callback_query(StateFilter(ConfessionForm.selecting_categories), F.data.startswith("category_"))
 async def handle_category_selection(callback_query: types.CallbackQuery, state: FSMContext):
     action = callback_query.data.split("_", 1)[1]
+    user_id = callback_query.from_user.id
     
     if action == "auto": # This is caught by the specific handler above
         return
@@ -1842,7 +1869,7 @@ async def handle_category_selection(callback_query: types.CallbackQuery, state: 
     if action == "cancel":
         await state.clear()
         await callback_query.message.edit_text("Confession submission cancelled.", reply_markup=None)
-        await callback_query.message.answer("You are back at the main menu.", reply_markup=main_menu_keyboard)
+        await callback_query.message.answer("You are back at the main menu.", reply_markup=get_main_keyboard(user_id))
         await callback_query.answer()
         return
 
@@ -1874,6 +1901,145 @@ async def handle_category_selection(callback_query: types.CallbackQuery, state: 
         await callback_query.message.edit_reply_markup(reply_markup=create_category_keyboard(selected_categories))
         await callback_query.answer(f"'{category}' {'selected' if category in selected_categories else 'deselected'}.")
 
+
+# --- ADMIN REVIEW --- Helper function to display the current confession for review
+async def display_current_review_confession(message: types.Message, state: FSMContext, edit_message: bool = False):
+    """Fetches, formats, and displays the current pending confession for the admin."""
+    data = await state.get_data()
+    pending_ids = data.get("pending_ids", [])
+    current_index = data.get("current_index", 0)
+
+    if not pending_ids or current_index >= len(pending_ids):
+        await state.clear()
+        text = "✅ All pending confessions have been reviewed."
+        if edit_message:
+            await message.edit_text(text, reply_markup=None)
+        else:
+            await message.answer(text, reply_markup=get_main_keyboard(ADMIN_ID))
+        return
+
+    conf_id = pending_ids[current_index]
+    async with db.acquire() as conn:
+        conf = await conn.fetchrow("SELECT id, text, user_id, categories FROM confessions WHERE id = $1", conf_id)
+
+    if not conf:
+        # This confession might have been deleted or processed elsewhere.
+        pending_ids.pop(current_index)
+        await state.update_data(pending_ids=pending_ids)
+        # Retry with the updated list
+        await display_current_review_confession(message, state, edit_message=edit_message)
+        return
+
+    category_tags = " ".join([f"#{html.quote(cat)}" for cat in conf['categories'] or []])
+    review_text = (
+        f"<b>📬 Confession Review ({current_index + 1}/{len(pending_ids)})</b>\n\n"
+        f"<b>ID:</b> {conf['id']}\n"
+        f"<b>User ID:</b> <code>{conf['user_id']}</code>\n"
+        f"<b>Categories:</b> {category_tags}\n\n"
+        f"<b>Text:</b>\n{html.quote(conf['text'])}"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Approve", callback_data=f"admin_review_approve_{conf['id']}")
+    builder.button(text="❌ Reject", callback_data=f"admin_review_reject_{conf['id']}")
+    nav_row = []
+    if current_index > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data="admin_review_nav_prev"))
+    if current_index < len(pending_ids) - 1:
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data="admin_review_nav_next"))
+    
+    builder.row(*nav_row)
+    builder.row(InlineKeyboardButton(text="Exit Review", callback_data="admin_review_nav_exit"))
+    
+    try:
+        if edit_message:
+            await message.edit_text(review_text, reply_markup=builder.as_markup())
+        else:
+            await message.answer(review_text, reply_markup=builder.as_markup())
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            logging.error(f"Error editing review message: {e}")
+        # If not modified, we just ignore it.
+
+
+# --- ADMIN REVIEW --- Handler to start the review process
+@dp.message(F.text == "📬 Review Pending", F.from_user.id == ADMIN_ID, StateFilter(None))
+async def admin_start_review(message: types.Message, state: FSMContext):
+    async with db.acquire() as conn:
+        pending_confessions = await conn.fetch("SELECT id FROM confessions WHERE status = 'pending' ORDER BY id ASC")
+
+    if not pending_confessions:
+        await message.answer("No pending confessions to review.", reply_markup=get_main_keyboard(ADMIN_ID))
+        return
+
+    pending_ids = [row['id'] for row in pending_confessions]
+    await state.set_state(AdminReview.reviewing)
+    await state.update_data(pending_ids=pending_ids, current_index=0)
+
+    await display_current_review_confession(message, state)
+
+
+# --- ADMIN REVIEW --- Handler for navigation buttons (Next, Prev, Exit)
+@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith("admin_review_nav_"))
+async def admin_navigate_review(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split("_")[-1]
+    data = await state.get_data()
+    current_index = data.get("current_index", 0)
+    
+    if action == "next":
+        current_index += 1
+    elif action == "prev":
+        current_index -= 1
+    elif action == "exit":
+        await state.clear()
+        await callback_query.message.edit_text("Review session closed.", reply_markup=None)
+        await callback_query.message.answer("You are back at the main menu.", reply_markup=get_main_keyboard(ADMIN_ID))
+        await callback_query.answer()
+        return
+
+    await state.update_data(current_index=current_index)
+    await display_current_review_confession(callback_query.message, state, edit_message=True)
+    await callback_query.answer()
+
+
+# --- ADMIN REVIEW --- Handler for Approve/Reject buttons within the review menu
+@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith(("admin_review_approve_", "admin_review_reject_")))
+async def admin_process_review_action(callback_query: types.CallbackQuery, state: FSMContext):
+    action, conf_id_str = callback_query.data.replace("admin_review_", "").split("_", 1)
+    conf_id = int(conf_id_str)
+
+    # This re-uses the original admin_action logic for single notifications.
+    # We simply change the callback_data to match what that handler expects.
+    callback_query.data = f"{action}_{conf_id}"
+    await admin_action(callback_query, state)
+    
+    # After the action, update the review state and show the next item.
+    data = await state.get_data()
+    pending_ids = data.get("pending_ids", [])
+    
+    if conf_id in pending_ids:
+        # Find the index of the item we just processed
+        processed_index = pending_ids.index(conf_id)
+        # Remove it from the list
+        pending_ids.pop(processed_index)
+        
+        # Adjust the current index if needed. If we removed an item at or before
+        # the current index, the new "current" item is now at a lower index.
+        current_index = data.get("current_index", 0)
+        if processed_index < current_index:
+            current_index -= 1
+        
+        # Make sure the index is not out of bounds
+        if current_index >= len(pending_ids) and len(pending_ids) > 0:
+            current_index = len(pending_ids) - 1
+
+        await state.update_data(pending_ids=pending_ids, current_index=current_index)
+
+    # Delete the old message and display the new/next one
+    await callback_query.message.delete()
+    await display_current_review_confession(callback_query.message, state, edit_message=False)
+
+
 # --- Admin Action Handlers ---
 @dp.callback_query(F.data.startswith(("approve_", "reject_")))
 async def admin_action(callback_query: types.CallbackQuery, state: FSMContext):
@@ -1894,7 +2060,12 @@ async def admin_action(callback_query: types.CallbackQuery, state: FSMContext):
                 msg = await bot.send_message(CHANNEL_ID, channel_post_text, reply_markup=channel_kbd)
                 await conn.execute("UPDATE confessions SET status = 'approved', message_id = $1 WHERE id = $2", msg.message_id, conf_id)
                 await safe_send_message(conf['user_id'], f"✅ Your confession (#{conf_id}) has been approved!")
-                await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Approved --", reply_markup=None)
+                
+                # If not in review mode, edit the single notification message
+                current_fsm_state = await state.get_state()
+                if current_fsm_state != AdminReview.reviewing:
+                    await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Approved --", reply_markup=None)
+                
                 await callback_query.answer(f"Confession #{conf_id} approved.")
             except Exception as e: logging.error(f"Error approving Confession {conf_id}: {e}", exc_info=True); await callback_query.answer(f"Error: {e}", show_alert=True)
         elif action == "reject":
@@ -1914,26 +2085,29 @@ async def receive_rejection_reason(message: types.Message, state: FSMContext):
     conf_id = data.get("rejecting_conf_id")
     original_admin_text = data.get("original_admin_text")
     admin_review_message_id = data.get("admin_review_message_id")
+    keyboard = get_main_keyboard(message.from_user.id)
 
     if not conf_id: await message.answer("Error: Context lost."); await state.clear(); return
     reason, reason_text_for_user = None, "Your confession was rejected."
     if message.text.startswith("/skip"): await message.answer("Skipping reason.", reply_markup=ReplyKeyboardRemove())
-    elif message.text.startswith("/cancel"): await message.answer("Rejection cancelled.", reply_markup=ReplyKeyboardRemove()); await state.clear(); return
+    elif message.text.startswith("/cancel"): await message.answer("Rejection cancelled.", reply_markup=keyboard); await state.clear(); return
     else: reason = message.text.strip(); reason_text_for_user = f"Your confession was rejected for the following reason:\n<i>{html.quote(reason)}</i>"
     
     async with db.acquire() as conn:
         conf_data = await conn.fetchrow("SELECT user_id, categories FROM confessions WHERE id = $1 AND status = 'pending'", conf_id)
-        if not conf_data: await message.answer("Error: Confession no longer pending.", reply_markup=ReplyKeyboardRemove()); await state.clear(); return
+        if not conf_data: await message.answer("Error: Confession no longer pending.", reply_markup=keyboard); await state.clear(); return
         await conn.execute("UPDATE confessions SET status = 'rejected', rejection_reason = $1 WHERE id = $2", reason, conf_id)
         category_tags = " ".join([f"#{html.quote(cat)}" for cat in conf_data['categories'] or []])
         await safe_send_message(conf_data['user_id'], f"❌ {reason_text_for_user}\n(Confession ID: #{conf_id}, Categories: {category_tags})")
         
-        try:
-            await bot.edit_message_text(original_admin_text + f"\n\n-- Rejected --\nReason: {html.quote(reason or 'Skipped')}", chat_id=ADMIN_ID, message_id=admin_review_message_id, reply_markup=None)
-        except Exception as e:
-            logging.error(f"Could not edit admin review message {admin_review_message_id} for rejection: {e}")
+        current_fsm_state = await state.get_state()
+        if current_fsm_state != AdminReview.reviewing:
+            try:
+                await bot.edit_message_text(original_admin_text + f"\n\n-- Rejected --\nReason: {html.quote(reason or 'Skipped')}", chat_id=ADMIN_ID, message_id=admin_review_message_id, reply_markup=None)
+            except Exception as e:
+                logging.error(f"Could not edit admin review message {admin_review_message_id} for rejection: {e}")
             
-        await message.answer(f"Confession #{conf_id} rejected.", reply_markup=ReplyKeyboardRemove())
+        await message.answer(f"Confession #{conf_id} rejected.", reply_markup=keyboard)
     await state.clear()
 
 @dp.callback_query(F.data.startswith(("admin_approve_delete_", "admin_reject_delete_")))
@@ -2102,6 +2276,7 @@ async def comments_page_callback(callback_query: types.CallbackQuery):
 @dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation))
 async def receive_comment(message: types.Message, state: FSMContext):
     user_id = message.from_user.id; data = await state.get_data(); conf_id = data.get("confession_id")
+    keyboard = get_main_keyboard(user_id)
     if not conf_id: await message.answer("⚠️ Error: Context lost. Please try again."); return
     comm_text, sticker_id, animation_id, log_type = None, None, None, "Unknown"
     if message.text: comm_text, log_type = message.text.strip(), "Text"
@@ -2114,7 +2289,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
                 conf_owner_id = await conn.fetchval("SELECT user_id FROM confessions WHERE id = $1 AND status = 'approved'", conf_id)
                 if not conf_owner_id: raise Exception("Confession not found or approved.")
                 new_comm_id = await conn.fetchval("INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", conf_id, user_id, comm_text, sticker_id, animation_id)
-        await message.answer("💬 Your comment has been added!", reply_markup=main_menu_keyboard);
+        await message.answer("💬 Your comment has been added!", reply_markup=keyboard);
         await update_channel_post_button(conf_id)
         if conf_owner_id and conf_owner_id != user_id:
             link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
@@ -2173,9 +2348,10 @@ async def receive_reply(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     data = await state.get_data()
     conf_id, parent_id = data.get("confession_id"), data.get("parent_comment_id")
+    keyboard = get_main_keyboard(user_id)
 
     if not all([conf_id, parent_id]):
-        await message.answer("⚠️ Error: Reply context lost. Please try again.", reply_markup=main_menu_keyboard)
+        await message.answer("⚠️ Error: Reply context lost. Please try again.", reply_markup=keyboard)
         await state.clear()
         return
 
@@ -2197,7 +2373,7 @@ async def receive_reply(message: types.Message, state: FSMContext):
                     conf_id, user_id, reply_text, sticker_id, animation_id, parent_id
                 )
 
-        await message.answer("↪️ Your reply has been sent!", reply_markup=main_menu_keyboard)
+        await message.answer("↪️ Your reply has been sent!", reply_markup=keyboard)
         await update_channel_post_button(conf_id)
         
         if parent_data['user_id'] != user_id:
@@ -2482,25 +2658,27 @@ async def leave_chat_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     data = await state.get_data()
     partner_id = data.get("chat_partner_id")
+    keyboard = get_main_keyboard(user_id)
     
     await state.clear()
-    await message.answer("You have left the chat.", reply_markup=main_menu_keyboard)
+    await message.answer("You have left the chat.", reply_markup=keyboard)
     
     if partner_id:
         partner_key = StorageKey(bot_id=bot.id, chat_id=partner_id, user_id=partner_id)
         partner_context = FSMContext(storage=dp.storage, key=partner_key)
         await partner_context.clear()
-        await safe_send_message(partner_id, "ℹ️ The other user has left the chat. The session has ended.", reply_markup=main_menu_keyboard)
+        await safe_send_message(partner_id, "ℹ️ The other user has left the chat. The session has ended.", reply_markup=get_main_keyboard(partner_id))
 
 @dp.message(ChatState.in_chat)
 async def forward_chat_message(message: types.Message, state: FSMContext):
     sender_id = message.from_user.id
     data = await state.get_data()
     recipient_id = data.get("chat_partner_id")
+    keyboard = get_main_keyboard(sender_id)
     
     if not recipient_id:
         await state.clear()
-        await message.answer("Chat session expired. Please start again.", reply_markup=main_menu_keyboard)
+        await message.answer("Chat session expired. Please start again.", reply_markup=keyboard)
         return
 
     recipient_key = StorageKey(bot_id=bot.id, chat_id=recipient_id, user_id=recipient_id)
@@ -2539,7 +2717,7 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
 async def handle_text_without_state(message: types.Message):
     await message.reply(
         "Hi! 👋 Use the buttons below to navigate the bot.",
-        reply_markup=main_menu_keyboard
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 # --- Main Execution ---
