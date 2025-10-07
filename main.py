@@ -1966,7 +1966,8 @@ async def display_current_review_confession(message: types.Message, state: FSMCo
 @dp.message(F.text == "📬 Review Pending", F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_start_review(message: types.Message, state: FSMContext):
     async with db.acquire() as conn:
-        pending_confessions = await conn.fetch("SELECT id FROM confessions WHERE status = 'pending' ORDER BY id ASC")
+        # --- MODIFICATION --- Changed order to DESC to show newest first
+        pending_confessions = await conn.fetch("SELECT id FROM confessions WHERE status = 'pending' ORDER BY id DESC")
 
     if not pending_confessions:
         await message.answer("No pending confessions to review.", reply_markup=get_main_keyboard(ADMIN_ID))
@@ -2008,76 +2009,108 @@ async def admin_process_review_action(callback_query: types.CallbackQuery, state
     action, conf_id_str = callback_query.data.replace("admin_review_", "").split("_", 1)
     conf_id = int(conf_id_str)
 
-    # This re-uses the original admin_action logic for single notifications.
-    # We simply change the callback_data to match what that handler expects.
-    callback_query.data = f"{action}_{conf_id}"
-    await admin_action(callback_query, state)
-    
-    # After the action, update the review state and show the next item.
-    data = await state.get_data()
-    pending_ids = data.get("pending_ids", [])
-    
-    if conf_id in pending_ids:
-        # Find the index of the item we just processed
-        processed_index = pending_ids.index(conf_id)
-        # Remove it from the list
-        pending_ids.pop(processed_index)
-        
-        # Adjust the current index if needed. If we removed an item at or before
-        # the current index, the new "current" item is now at a lower index.
-        current_index = data.get("current_index", 0)
-        if processed_index < current_index:
-            current_index -= 1
-        
-        # Make sure the index is not out of bounds
-        if current_index >= len(pending_ids) and len(pending_ids) > 0:
-            current_index = len(pending_ids) - 1
+    if action == "approve":
+        success = await _admin_handle_approval(conf_id, callback_query, state)
+        if not success:
+            return
 
-        await state.update_data(pending_ids=pending_ids, current_index=current_index)
+        # --- Approval Logic: Move to next item ---
+        data = await state.get_data()
+        pending_ids = data.get("pending_ids", [])
+        
+        if conf_id in pending_ids:
+            processed_index = pending_ids.index(conf_id)
+            pending_ids.pop(processed_index)
+            
+            current_index = data.get("current_index", 0)
+            if processed_index < current_index:
+                current_index -= 1
+            
+            if current_index >= len(pending_ids) and len(pending_ids) > 0:
+                current_index = len(pending_ids) - 1
 
-    # Delete the old message and display the new/next one
-    await callback_query.message.delete()
-    await display_current_review_confession(callback_query.message, state, edit_message=False)
+            await state.update_data(pending_ids=pending_ids, current_index=current_index)
+
+        # Show the next item by editing the current message
+        await display_current_review_confession(callback_query.message, state, edit_message=True)
+
+    elif action == "reject":
+        # --- Rejection Logic: Exit review and start rejection FSM ---
+        # The rejection handler puts the bot in a new state (AdminActions.waiting_for_rejection_reason)
+        await _admin_handle_rejection(conf_id, callback_query, state)
+        
+        # We clean up the review menu message as the flow has now changed.
+        try:
+            await callback_query.message.delete()
+        except TelegramBadRequest:
+            pass # Message might already be gone
 
 
 # --- Admin Action Handlers ---
+
+# --- FIX: New helper function for handling approvals to avoid mutation
+async def _admin_handle_approval(conf_id: int, callback_query: types.CallbackQuery, state: FSMContext) -> bool:
+    """Handles the logic for approving a confession."""
+    async with db.acquire() as conn:
+        conf = await conn.fetchrow("SELECT id, text, user_id, categories, status FROM confessions WHERE id = $1", conf_id)
+        if not conf or conf['status'] != 'pending':
+            await callback_query.answer("Confession not found or already processed.", show_alert=True)
+            return False
+
+        try:
+            link = f"https://t.me/{bot_info.username}?start=view_{conf['id']}"
+            category_tags = " ".join([f"#{html.quote(cat)}" for cat in conf['categories'] or []])
+            channel_post_text = f"<b>Confession #{conf['id']}</b>\n\n{html.quote(conf['text'])}\n\n{category_tags}"
+            channel_kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 View / Add Comments (0)", url=link)]])
+            msg = await bot.send_message(CHANNEL_ID, channel_post_text, reply_markup=channel_kbd)
+            await conn.execute("UPDATE confessions SET status = 'approved', message_id = $1 WHERE id = $2", msg.message_id, conf_id)
+            await safe_send_message(conf['user_id'], f"✅ Your confession (#{conf_id}) has been approved!")
+            
+            current_fsm_state = await state.get_state()
+            if current_fsm_state != AdminReview.reviewing:
+                await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Approved --", reply_markup=None)
+
+            await callback_query.answer(f"Confession #{conf_id} approved.")
+            return True
+        except Exception as e:
+            logging.error(f"Error approving Confession {conf_id}: {e}", exc_info=True)
+            await callback_query.answer(f"Error: {e}", show_alert=True)
+            return False
+
+# --- FIX: New helper function for handling rejections to avoid mutation
+async def _admin_handle_rejection(conf_id: int, callback_query: types.CallbackQuery, state: FSMContext):
+    """Handles the logic for rejecting a confession."""
+    async with db.acquire() as conn:
+        conf = await conn.fetchrow("SELECT status FROM confessions WHERE id = $1", conf_id)
+        if not conf or conf['status'] != 'pending':
+            await callback_query.answer("Confession not found or already processed.", show_alert=True)
+            return
+
+    await state.update_data(
+        rejecting_conf_id=conf_id,
+        original_admin_text=callback_query.message.html_text,
+        admin_review_message_id=callback_query.message.message_id
+    )
+    await state.set_state(AdminActions.waiting_for_rejection_reason)
+    reason_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/skip")], [KeyboardButton(text="/cancel")]], resize_keyboard=True, one_time_keyboard=True)
+    await callback_query.answer("❓ Provide rejection reason")
+    await bot.send_message(ADMIN_ID, f"Reason for rejecting Confession #{conf_id}?\nUse /skip or /cancel.", reply_markup=reason_keyboard)
+
+
 @dp.callback_query(F.data.startswith(("approve_", "reject_")))
 async def admin_action(callback_query: types.CallbackQuery, state: FSMContext):
-    if callback_query.from_user.id != ADMIN_ID: await callback_query.answer("Unauthorized.", show_alert=True); return
-    action, conf_id_str = callback_query.data.split("_", 1); conf_id = int(conf_id_str)
+    if callback_query.from_user.id != ADMIN_ID:
+        await callback_query.answer("Unauthorized.", show_alert=True)
+        return
     
-    async with db.acquire() as conn:
-        conf = await conn.fetchrow("SELECT id, text, user_id, categories, status, message_id FROM confessions WHERE id = $1", conf_id)
-        if not conf: await callback_query.answer("Confession not found.", show_alert=True); return
-        if conf['status'] != 'pending': await callback_query.answer(f"Already '{conf['status']}'.", show_alert=True); return
+    action, conf_id_str = callback_query.data.split("_", 1)
+    conf_id = int(conf_id_str)
+    
+    if action == "approve":
+        await _admin_handle_approval(conf_id, callback_query, state)
+    elif action == "reject":
+        await _admin_handle_rejection(conf_id, callback_query, state)
 
-        if action == "approve":
-            try:
-                link = f"https://t.me/{bot_info.username}?start=view_{conf['id']}"
-                category_tags = " ".join([f"#{html.quote(cat)}" for cat in conf['categories'] or []])
-                channel_post_text = f"<b>Confession #{conf['id']}</b>\n\n{html.quote(conf['text'])}\n\n{category_tags}"
-                channel_kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 View / Add Comments (0)", url=link)]])
-                msg = await bot.send_message(CHANNEL_ID, channel_post_text, reply_markup=channel_kbd)
-                await conn.execute("UPDATE confessions SET status = 'approved', message_id = $1 WHERE id = $2", msg.message_id, conf_id)
-                await safe_send_message(conf['user_id'], f"✅ Your confession (#{conf_id}) has been approved!")
-                
-                # If not in review mode, edit the single notification message
-                current_fsm_state = await state.get_state()
-                if current_fsm_state != AdminReview.reviewing:
-                    await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Approved --", reply_markup=None)
-                
-                await callback_query.answer(f"Confession #{conf_id} approved.")
-            except Exception as e: logging.error(f"Error approving Confession {conf_id}: {e}", exc_info=True); await callback_query.answer(f"Error: {e}", show_alert=True)
-        elif action == "reject":
-            await state.update_data(
-                rejecting_conf_id=conf_id,
-                original_admin_text=callback_query.message.html_text,
-                admin_review_message_id=callback_query.message.message_id
-            )
-            await state.set_state(AdminActions.waiting_for_rejection_reason)
-            reason_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/skip")], [KeyboardButton(text="/cancel")]], resize_keyboard=True, one_time_keyboard=True)
-            await callback_query.answer("❓ Provide rejection reason")
-            await bot.send_message(callback_query.from_user.id, f"Reason for rejecting Confession #{conf_id}?\nUse /skip or /cancel.", reply_markup=reason_keyboard)
 
 @dp.message(AdminActions.waiting_for_rejection_reason, F.text)
 async def receive_rejection_reason(message: types.Message, state: FSMContext):
