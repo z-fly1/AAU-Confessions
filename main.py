@@ -19,7 +19,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime, timedelta, timezone
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from typing import Optional, Tuple, Dict, Any, List, Set
+from typing import Optional, Tuple, Dict, Any, List, Set, Union
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
 
@@ -187,6 +187,10 @@ class SettingsForm(StatesGroup):
 
 class ChatState(StatesGroup):
     in_chat = State()
+    
+class ReportForm(StatesGroup):
+    waiting_for_reason = State()
+
 
 # --- ADMIN REVIEW --- New state for the review process
 class AdminReview(StatesGroup):
@@ -284,8 +288,8 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'user_points' table.")
-
-        # --- Reports Table ---
+        
+        # --- Reports Table Schema & Corrections ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
                 id SERIAL PRIMARY KEY,
@@ -294,10 +298,30 @@ async def setup():
                 reported_user_id BIGINT NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (comment_id, reporter_user_id)
+                reason TEXT NULL
             );
         """)
-        logging.info("Checked/Created 'reports' table.")
+        # --- FIX: Alter table to ensure it matches the required schema ---
+        await conn.execute("ALTER TABLE reports ADD COLUMN IF NOT EXISTS reason TEXT NULL;")
+        # 1. Drop old unique constraint if it exists
+        await conn.execute("ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_comment_id_reporter_user_id_key;")
+        # 2. Ensure comment_id can be NULL
+        await conn.execute("ALTER TABLE reports ALTER COLUMN comment_id DROP NOT NULL;")
+        # 3. Add a new constraint for comment reports (ensuring a user can't report the same comment twice)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_comment_report
+            ON reports (comment_id, reporter_user_id)
+            WHERE comment_id IS NOT NULL;
+        """)
+        # 4. Add a new constraint for user reports (ensuring a user can't report the same user profile twice)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_user_report
+            ON reports (reported_user_id, reporter_user_id)
+            WHERE comment_id IS NULL;
+        """)
+        logging.info("Checked/Created/Altered 'reports' table and constraints.")
+
+
         # --- User to User Chat Requests Table ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS chat_requests (
@@ -311,6 +335,21 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'chat_requests' table.")
+
+        # --- Chat Messages Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id SERIAL PRIMARY KEY,
+                sender_id BIGINT NOT NULL,
+                recipient_id BIGINT NOT NULL,
+                text TEXT NULL,
+                sticker_file_id TEXT NULL,
+                animation_file_id TEXT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT one_chat_content_type CHECK (num_nonnulls(text, sticker_file_id, animation_file_id) = 1)
+            );
+        """)
+        logging.info("Checked/Created 'chat_messages' table.")
 
 
         # --- Deletion Requests Table ---
@@ -1055,7 +1094,8 @@ async def user_profile(message: types.Message, state: FSMContext):
     profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points:</b> {points}"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
-        [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
+        [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
+        [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
     ])
     await message.answer(profile_text, reply_markup=keyboard)
 
@@ -1073,7 +1113,8 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points :</b> {points}"
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
-                [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")]
+                [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
+                [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
             ])
             await callback_query.message.edit_text(profile_text, reply_markup=keyboard)
 
@@ -1138,6 +1179,10 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
         elif action == "customization":
             settings_text, keyboard = await _render_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
+            
+        elif action == "chats":
+            await show_my_chats(callback_query, state)
+
 
     except TelegramBadRequest as e:
         if "message is not modified" in str(e).lower():
@@ -1941,14 +1986,26 @@ async def display_current_review_confession(message: types.Message, state: FSMCo
 
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Approve", callback_data=f"admin_review_approve_{conf['id']}")
-    builder.button(text="❌ Reject", callback_data=f"admin_review_reject_{conf['id']}")
+    builder.button(text="❌ Reject (No Reason)", callback_data=f"admin_review_reject_nr_{conf['id']}")
+    builder.button(text="✍️ Reject (With Reason)", callback_data=f"admin_review_reject_wr_{conf['id']}")
+    builder.adjust(1, 2)
+
     nav_row = []
     if current_index > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data="admin_review_nav_prev"))
     if current_index < len(pending_ids) - 1:
         nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data="admin_review_nav_next"))
-    
-    builder.row(*nav_row)
+    if nav_row:
+        builder.row(*nav_row)
+        
+    skip_row = []
+    if current_index < len(pending_ids) - 5:
+        skip_row.append(InlineKeyboardButton(text="Next +5 ⏭️", callback_data="admin_review_nav_skip_5"))
+    if current_index < len(pending_ids) - 10:
+        skip_row.append(InlineKeyboardButton(text="Next +10 ⏭️", callback_data="admin_review_nav_skip_10"))
+    if skip_row:
+        builder.row(*skip_row)
+
     builder.row(InlineKeyboardButton(text="Exit Review", callback_data="admin_review_nav_exit"))
     
     try:
@@ -1959,7 +2016,35 @@ async def display_current_review_confession(message: types.Message, state: FSMCo
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             logging.error(f"Error editing review message: {e}")
-        # If not modified, we just ignore it.
+
+async def _update_review_queue_and_display(conf_id: int, state: FSMContext, message: types.Message):
+    """
+    Removes the processed confession from the state and displays the next one
+    based on the new logic: try to go to previous, fallback to next if at start.
+    """
+    data = await state.get_data()
+    pending_ids = data.get("pending_ids", [])
+    
+    if conf_id in pending_ids:
+        # Get the index of the item we just processed
+        processed_index = pending_ids.index(conf_id)
+        
+        # Remove it from the list
+        pending_ids.pop(processed_index)
+        
+        # New logic: Set the cursor to the item *before* the one we just removed.
+        # Use max(0, ...) to handle the case where we process the first item (index 0).
+        # In that case, 0 - 1 = -1, and max(0, -1) = 0. The cursor stays at the beginning
+        # of the now-shorter list, effectively showing the "next" item.
+        new_index = max(0, processed_index - 1)
+        
+        # Make sure the index isn't out of bounds if the list is now very short
+        if new_index >= len(pending_ids) and len(pending_ids) > 0:
+            new_index = len(pending_ids) - 1
+
+        await state.update_data(pending_ids=pending_ids, current_index=new_index)
+
+    await display_current_review_confession(message, state, edit_message=True)
 
 
 # --- ADMIN REVIEW --- Handler to start the review process
@@ -1983,14 +2068,26 @@ async def admin_start_review(message: types.Message, state: FSMContext):
 # --- ADMIN REVIEW --- Handler for navigation buttons (Next, Prev, Exit)
 @dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith("admin_review_nav_"))
 async def admin_navigate_review(callback_query: types.CallbackQuery, state: FSMContext):
-    action = callback_query.data.split("_")[-1]
+    parts = callback_query.data.split("_")
+    action = parts[-1]
+    
     data = await state.get_data()
     current_index = data.get("current_index", 0)
+    pending_ids = data.get("pending_ids", [])
+    total_count = len(pending_ids)
     
     if action == "next":
         current_index += 1
     elif action == "prev":
         current_index -= 1
+    elif parts[-2] == "skip":
+        try:
+            skip_amount = int(action)
+            current_index += skip_amount
+        except ValueError:
+            logging.error(f"Invalid skip amount in callback: {callback_query.data}")
+            await callback_query.answer("Invalid navigation action.", show_alert=True)
+            return
     elif action == "exit":
         await state.clear()
         await callback_query.message.edit_text("Review session closed.", reply_markup=None)
@@ -1998,52 +2095,37 @@ async def admin_navigate_review(callback_query: types.CallbackQuery, state: FSMC
         await callback_query.answer()
         return
 
+    # Ensure index is within bounds
+    current_index = max(0, min(current_index, total_count - 1))
+
     await state.update_data(current_index=current_index)
     await display_current_review_confession(callback_query.message, state, edit_message=True)
     await callback_query.answer()
 
 
-# --- ADMIN REVIEW --- Handler for Approve/Reject buttons within the review menu
-@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith(("admin_review_approve_", "admin_review_reject_")))
-async def admin_process_review_action(callback_query: types.CallbackQuery, state: FSMContext):
-    action, conf_id_str = callback_query.data.replace("admin_review_", "").split("_", 1)
-    conf_id = int(conf_id_str)
+# --- ADMIN REVIEW --- Handlers for Approve/Reject buttons
+@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith("admin_review_approve_"))
+async def admin_process_review_approve(callback_query: types.CallbackQuery, state: FSMContext):
+    conf_id = int(callback_query.data.split("_")[-1])
+    success = await _admin_handle_approval(conf_id, callback_query, state)
+    if success:
+        await _update_review_queue_and_display(conf_id, state, callback_query.message)
 
-    if action == "approve":
-        success = await _admin_handle_approval(conf_id, callback_query, state)
-        if not success:
-            return
+@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith("admin_review_reject_nr_"))
+async def admin_process_review_reject_nr(callback_query: types.CallbackQuery, state: FSMContext):
+    conf_id = int(callback_query.data.split("_")[-1])
+    success = await _admin_handle_rejection_no_reason(conf_id, callback_query, state)
+    if success:
+        await _update_review_queue_and_display(conf_id, state, callback_query.message)
 
-        # --- Approval Logic: Move to next item ---
-        data = await state.get_data()
-        pending_ids = data.get("pending_ids", [])
-        
-        if conf_id in pending_ids:
-            processed_index = pending_ids.index(conf_id)
-            pending_ids.pop(processed_index)
-            
-            current_index = data.get("current_index", 0)
-            if processed_index < current_index:
-                current_index -= 1
-            
-            if current_index >= len(pending_ids) and len(pending_ids) > 0:
-                current_index = len(pending_ids) - 1
-
-            await state.update_data(pending_ids=pending_ids, current_index=current_index)
-
-        # Show the next item by editing the current message
-        await display_current_review_confession(callback_query.message, state, edit_message=True)
-
-    elif action == "reject":
-        # --- Rejection Logic: Exit review and start rejection FSM ---
-        # The rejection handler puts the bot in a new state (AdminActions.waiting_for_rejection_reason)
-        await _admin_handle_rejection(conf_id, callback_query, state)
-        
-        # We clean up the review menu message as the flow has now changed.
-        try:
-            await callback_query.message.delete()
-        except TelegramBadRequest:
-            pass # Message might already be gone
+@dp.callback_query(StateFilter(AdminReview.reviewing), F.data.startswith("admin_review_reject_wr_"))
+async def admin_process_review_reject_wr(callback_query: types.CallbackQuery, state: FSMContext):
+    conf_id = int(callback_query.data.split("_")[-1])
+    await _admin_handle_rejection(conf_id, callback_query, state)
+    try:
+        await callback_query.message.delete()
+    except TelegramBadRequest:
+        pass
 
 
 # --- Admin Action Handlers ---
@@ -2074,6 +2156,25 @@ async def _admin_handle_approval(conf_id: int, callback_query: types.CallbackQue
             return True
         except Exception as e:
             logging.error(f"Error approving Confession {conf_id}: {e}", exc_info=True)
+            await callback_query.answer(f"Error: {e}", show_alert=True)
+            return False
+            
+async def _admin_handle_rejection_no_reason(conf_id: int, callback_query: types.CallbackQuery, state: FSMContext) -> bool:
+    """Handles the logic for rejecting a confession without providing a reason."""
+    async with db.acquire() as conn:
+        conf = await conn.fetchrow("SELECT id, user_id, status FROM confessions WHERE id = $1", conf_id)
+        if not conf or conf['status'] != 'pending':
+            await callback_query.answer("Confession not found or already processed.", show_alert=True)
+            return False
+
+        try:
+            await conn.execute("UPDATE confessions SET status = 'rejected' WHERE id = $1", conf_id)
+            await safe_send_message(conf['user_id'], f"❌ Your confession (#{conf_id}) has been rejected by the admin.")
+            
+            await callback_query.answer(f"Confession #{conf_id} rejected (no reason).")
+            return True
+        except Exception as e:
+            logging.error(f"Error rejecting Confession {conf_id} (no reason): {e}", exc_info=True)
             await callback_query.answer(f"Error: {e}", show_alert=True)
             return False
 
@@ -2535,9 +2636,10 @@ async def handle_request_contact(callback_query: types.CallbackQuery):
             notification_to_commenter = (f"🤝 The author of Confession #{conf_id} would like to contact you regarding your comment:\n\n"
                                         f"<i>\"{snippet}...\"</i>\n\n"
                                         "Do you approve sharing your Telegram @username with them? Your User ID is never shared.")
+            # --- FIX: Refactored callback data for clarity and robustness ---
             kbd = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Approve & Share Username", callback_data=f"approve_contact_{req_id}")],
-                [InlineKeyboardButton(text="❌ Deny Request", callback_data=f"deny_contact_{req_id}")]
+                [InlineKeyboardButton(text="✅ Approve & Share Username", callback_data=f"contact_approve_{req_id}")],
+                [InlineKeyboardButton(text="❌ Deny Request", callback_data=f"contact_deny_{req_id}")]
             ])
             sent = await safe_send_message(commenter_uid, notification_to_commenter, reply_markup=kbd)
             if sent:
@@ -2546,22 +2648,40 @@ async def handle_request_contact(callback_query: types.CallbackQuery):
                 await conn.execute("UPDATE contact_requests SET status = 'failed_to_notify' WHERE id = $1", req_id)
                 await callback_query.answer("⚠️ Could not notify the commenter (they may have blocked the bot).", show_alert=True)
 
-@dp.callback_query(F.data.startswith(("approve_contact_", "deny_contact_")))
+# --- FIX: Refactored this entire handler for robustness ---
+@dp.callback_query(F.data.startswith("contact_"))
 async def handle_contact_response(callback_query: types.CallbackQuery):
-    action, _, req_id_str = callback_query.data.partition("_contact_"); req_id = int(req_id_str); responder_uid = callback_query.from_user.id
+    try:
+        _, action, req_id_str = callback_query.data.split("_")
+        req_id = int(req_id_str)
+    except (ValueError, IndexError):
+        logging.error(f"Could not parse callback data for contact response: {callback_query.data}")
+        await callback_query.answer("An error occurred.", show_alert=True)
+        return
+
+    responder_uid = callback_query.from_user.id
+    
     async with db.acquire() as conn:
         async with conn.transaction():
             req_data = await conn.fetchrow("SELECT * FROM contact_requests WHERE id = $1", req_id)
+            
             if not req_data:
-                await callback_query.answer("This request could not be found. It may have expired.", show_alert=True); return
+                await callback_query.answer("This request could not be found. It may have expired.", show_alert=True)
+                return
+            
             if responder_uid != req_data['requested_user_id']:
-                logging.warning(f"Unauthorized contact response attempt. User {responder_uid} tried to respond to request {req_id} intended for {req_data['requested_user_id']}.")
-                await callback_query.answer("This request is not for you.", show_alert=True); return
-            if req_data['status'] != 'pending':
-                await callback_query.answer(f"This request has already been handled (status: {req_data['status']}).", show_alert=True); return
+                logging.warning(f"Unauthorized contact response. User {responder_uid} tried to respond to request {req_id} for user {req_data['requested_user_id']}.")
+                await callback_query.answer("This request is not for you.", show_alert=True)
+                return
 
-            author_uid = req_data['requester_user_id']; conf_id = req_data['confession_id']
+            if req_data['status'] != 'pending':
+                await callback_query.answer(f"This request has already been handled (status: {req_data['status']}).", show_alert=True)
+                return
+
+            author_uid = req_data['requester_user_id']
+            conf_id = req_data['confession_id']
             notification_to_author = ""
+
             if action == "approve":
                 try:
                     responder_info = await bot.get_chat(responder_uid)
@@ -2576,8 +2696,9 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
                         await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Approved, but you have no public username to share. --", reply_markup=None)
                 except Exception as e:
                     logging.error(f"Failed to get chat for user {responder_uid} on contact approve: {e}")
-                    await callback_query.answer("An error occurred while fetching your info.", show_alert=True); return
-            else: # Deny
+                    await callback_query.answer("An error occurred while fetching your info.", show_alert=True)
+                    return
+            elif action == "deny":
                 await conn.execute("UPDATE contact_requests SET status = 'denied', updated_at = CURRENT_TIMESTAMP WHERE id = $1", req_id)
                 notification_to_author = f"❌ The commenter for Confession #{conf_id} has declined your contact request."
                 await callback_query.message.edit_text(callback_query.message.html_text + "\n\n-- Denied. The author has been notified. --", reply_markup=None)
@@ -2585,26 +2706,145 @@ async def handle_contact_response(callback_query: types.CallbackQuery):
             await safe_send_message(author_uid, notification_to_author)
             await callback_query.answer("Response recorded.")
 
+
 # --- Public Profile and User-to-User Chat Handlers ---
 @dp.callback_query(F.data.startswith("report_user_"))
-async def report_user_callback(callback_query: types.CallbackQuery):
+async def report_user_prompt(callback_query: types.CallbackQuery, state: FSMContext):
     reported_user_id = int(callback_query.data.split("_")[-1])
     reporter_user_id = callback_query.from_user.id
 
     if reported_user_id == reporter_user_id:
-        await callback_query.answer("You cannot report yourself.", show_alert=True); return
+        await callback_query.answer("You cannot report yourself.", show_alert=True)
+        return
 
-    async with db.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO reports (reporter_user_id, reported_user_id) VALUES ($1, $2)",
-            reporter_user_id, reported_user_id
+    await state.set_state(ReportForm.waiting_for_reason)
+    await state.update_data(reported_user_id=reported_user_id)
+
+    builder = InlineKeyboardBuilder()
+    predefined_reasons = ["Spam", "Harassment", "Inappropriate Profile"]
+    for reason in predefined_reasons:
+        builder.button(text=reason, callback_data=f"report_reason_{reason}")
+    builder.button(text="✍️ Other (Custom Reason)", callback_data="report_reason_custom")
+    builder.button(text="➡️ Skip Reason", callback_data="report_reason_skip")
+    builder.button(text="❌ Cancel", callback_data="report_reason_cancel")
+    builder.adjust(1)
+
+    await callback_query.message.edit_text(
+        "Please select a reason for reporting this user, or provide a custom one.",
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
+
+
+async def _execute_user_report(
+    reporter_user_id: int,
+    reported_user_id: int,
+    reason: Optional[str],
+    state: FSMContext,
+    message_or_query: Union[types.Message, types.CallbackQuery]
+):
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO reports (reporter_user_id, reported_user_id, comment_id, reason)
+                   VALUES ($1, $2, NULL, $3)""",
+                reporter_user_id, reported_user_id, reason
+            )
+
+        reason_text_for_admin = f"<i>{html.quote(reason)}</i>" if reason else "<i>No reason provided.</i>"
+        admin_notification = (
+            f"⚠️ <b>New User Report</b> ⚠️\n\n"
+            f"<b>Reported User ID:</b> <code>{reported_user_id}</code>\n"
+            f"<b>Reporter User ID:</b> <code>{reporter_user_id}</code>\n"
+            f"<b>Reason:</b> {reason_text_for_admin}"
         )
+        await safe_send_message(ADMIN_ID, admin_notification)
 
-    admin_notification = (f"⚠️ <b>New User Report</b> ⚠️\n\n"
-                          f"<b>Reported User ID:</b> <code>{reported_user_id}</code>\n"
-                          f"<b>Reporter User ID:</b> <code>{reporter_user_id}</code>")
-    await safe_send_message(ADMIN_ID, admin_notification)
-    await callback_query.answer("✅ User reported to the admin. Thank you.", show_alert=True)
+        confirmation_text = "✅ User reported to the admin. Thank you."
+        if isinstance(message_or_query, types.CallbackQuery):
+            await message_or_query.message.edit_text(confirmation_text)
+            await message_or_query.answer("Report sent.")
+        else:
+            await message_or_query.answer(confirmation_text, reply_markup=get_main_keyboard(reporter_user_id))
+
+    except asyncpg.exceptions.UniqueViolationError:
+        error_text = "You have already reported this user."
+        if isinstance(message_or_query, types.CallbackQuery):
+            await message_or_query.answer(error_text, show_alert=True)
+            await message_or_query.message.edit_text(error_text)
+        else:
+            await message_or_query.answer(error_text, reply_markup=get_main_keyboard(reporter_user_id))
+
+    except Exception as e:
+        logging.error(f"Error processing user report from {reporter_user_id} against {reported_user_id}: {e}")
+        error_text = "An error occurred while reporting."
+        if isinstance(message_or_query, types.CallbackQuery):
+            await message_or_query.answer(error_text, show_alert=True)
+        else:
+            await message_or_query.answer(error_text, reply_markup=get_main_keyboard(reporter_user_id))
+    finally:
+        await state.clear()
+
+
+@dp.callback_query(StateFilter(ReportForm.waiting_for_reason), F.data.startswith("report_reason_"))
+async def handle_report_reason(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split("_", 2)[2]
+    data = await state.get_data()
+    reported_user_id = data.get("reported_user_id")
+
+    if not reported_user_id:
+        await callback_query.message.edit_text("Error: Report context lost. Please try again.")
+        await state.clear()
+        return
+
+    if action == "cancel":
+        await callback_query.message.edit_text("Report cancelled.")
+        await state.clear()
+        await callback_query.answer()
+        return
+
+    if action == "custom":
+        await callback_query.message.edit_text(
+            "Please send your custom reason for reporting this user.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="report_reason_cancel")]
+            ])
+        )
+        await callback_query.answer()
+        return
+
+    reason = action if action != "skip" else None
+    await _execute_user_report(
+        reporter_user_id=callback_query.from_user.id,
+        reported_user_id=reported_user_id,
+        reason=reason,
+        state=state,
+        message_or_query=callback_query
+    )
+
+
+@dp.message(ReportForm.waiting_for_reason, F.text)
+async def handle_report_custom_reason(message: types.Message, state: FSMContext):
+    custom_reason = message.text.strip()
+    data = await state.get_data()
+    reported_user_id = data.get("reported_user_id")
+
+    if not reported_user_id:
+        await message.answer("Error: Report context lost. Please try again.", reply_markup=get_main_keyboard(message.from_user.id))
+        await state.clear()
+        return
+        
+    if len(custom_reason) > 500:
+        await message.answer("Your reason is too long (max 500 characters). Please try again.")
+        return
+
+    await _execute_user_report(
+        reporter_user_id=message.from_user.id,
+        reported_user_id=reported_user_id,
+        reason=custom_reason,
+        state=state,
+        message_or_query=message
+    )
 
 
 @dp.callback_query(F.data.startswith("request_chat_"))
@@ -2677,6 +2917,8 @@ async def start_chat_callback(callback_query: types.CallbackQuery, state: FSMCon
         partner_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", recipient_id)
         partner_nickname = html.quote(partner_nickname_row['nickname'] or "Anonymous") if partner_nickname_row else "Anonymous"
     
+    await show_chat_history(callback_query.from_user.id, recipient_id, message_to_edit=callback_query.message)
+    
     chat_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/leavechat")]], resize_keyboard=True)
     await callback_query.message.answer(
         f"You are now in a chat with <b>{partner_nickname}</b>. "
@@ -2727,6 +2969,15 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
     async with db.acquire() as conn:
         sender_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", sender_id)
         sender_nickname = html.quote(sender_nickname_row['nickname'] or "Anonymous") if sender_nickname_row else "Anonymous"
+        
+        # Save message to database
+        if message.text:
+            await conn.execute("INSERT INTO chat_messages (sender_id, recipient_id, text) VALUES ($1, $2, $3)", sender_id, recipient_id, message.text)
+        elif message.sticker:
+            await conn.execute("INSERT INTO chat_messages (sender_id, recipient_id, sticker_file_id) VALUES ($1, $2, $3)", sender_id, recipient_id, message.sticker.file_id)
+        elif message.animation:
+            await conn.execute("INSERT INTO chat_messages (sender_id, recipient_id, animation_file_id) VALUES ($1, $2, $3)", sender_id, recipient_id, message.animation.file_id)
+
 
     prefix = f"💬 <b>Message from {sender_nickname}:</b>\n\n"
     
@@ -2743,6 +2994,75 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
       await message.react([types.ReactionTypeEmoji(emoji="✅")])
     except TelegramBadRequest:
       pass
+
+async def show_my_chats(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    async with db.acquire() as conn:
+        chats = await conn.fetch("""
+            SELECT
+                CASE
+                    WHEN requester_id = $1 THEN recipient_id
+                    ELSE requester_id
+                END AS partner_id
+            FROM chat_requests
+            WHERE (requester_id = $1 OR recipient_id = $1) AND status = 'accepted'
+        """, user_id)
+
+    if not chats:
+        await callback_query.answer("You have no active chats.", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for chat in chats:
+        partner_id = chat['partner_id']
+        async with db.acquire() as conn:
+            partner_info = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", partner_id)
+        
+        partner_nickname = partner_info.get('nickname') or "Anonymous"
+        partner_emoji = partner_info.get('profile_emoji') or '👤'
+        
+        builder.button(text=f"{partner_emoji} {partner_nickname}", callback_data=f"select_chat_{partner_id}")
+    
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1"))
+
+    await callback_query.message.edit_text("<b>💬 My Chats</b>\n\nSelect a chat to view the history and send a message.", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("select_chat_"))
+async def select_chat_partner(callback_query: types.CallbackQuery, state: FSMContext):
+    partner_id = int(callback_query.data.split("_")[-1])
+    await start_chat_callback(callback_query, state)
+    
+async def show_chat_history(user_id: int, partner_id: int, message_to_edit: types.Message):
+    async with db.acquire() as conn:
+        messages = await conn.fetch("""
+            SELECT * FROM chat_messages
+            WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)
+            ORDER BY created_at ASC
+            LIMIT 50
+        """, user_id, partner_id)
+        
+        partner_info = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", partner_id)
+        partner_nickname = html.quote(partner_info.get('nickname') or "Anonymous")
+        
+    history_text = f"<b>Chat History with {partner_nickname}</b>\n\n"
+    
+    if not messages:
+        history_text += "<i>No messages yet.</i>"
+    else:
+        for msg in messages:
+            sender = "You" if msg['sender_id'] == user_id else partner_nickname
+            if msg['text']:
+                history_text += f"<b>{sender}:</b> {html.quote(msg['text'])}\n"
+            elif msg['sticker_file_id']:
+                history_text += f"<b>{sender}:</b> [Sticker]\n"
+            elif msg['animation_file_id']:
+                history_text += f"<b>{sender}:</b> [GIF]\n"
+
+    try:
+        await message_to_edit.edit_text(history_text)
+    except TelegramBadRequest:
+        await safe_send_message(user_id, history_text)
 
 
 # --- Fallback Handler ---
