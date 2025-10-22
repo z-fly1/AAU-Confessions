@@ -1896,7 +1896,7 @@ async def call_gemini_with_rotation(prompt: str) -> Optional[str]:
     for key in GEMINI_API_KEYS:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash') # Using a recommended model
+            model = genai.GenerativeModel('gemini-2.0-flash-001') # Using a recommended model
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:
