@@ -377,6 +377,18 @@ async def setup():
             );
         """)
         logging.info("Checked/Created 'user_status' table.")
+        
+        # --- NEW: User Follows Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_follows (
+                follower_id BIGINT NOT NULL REFERENCES user_status(user_id) ON DELETE CASCADE,
+                following_id BIGINT NOT NULL REFERENCES user_status(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (follower_id, following_id)
+            );
+        """)
+        logging.info("Checked/Created 'user_follows' table.")
+
 
         # --- Add new columns to user_status if they don't exist ---
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS nickname VARCHAR(32) NULL;")
@@ -396,6 +408,13 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_department BOOLEAN NOT NULL DEFAULT FALSE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_interests BOOLEAN NOT NULL DEFAULT FALSE;")
         logging.info("Ensured all customizable profile columns exist in 'user_status'.")
+
+        # --- NEW: Notification Preference Columns ---
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_confession_comment BOOLEAN NOT NULL DEFAULT TRUE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_comment_reply BOOLEAN NOT NULL DEFAULT TRUE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_like BOOLEAN NOT NULL DEFAULT TRUE;")
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_followed_user_activity BOOLEAN NOT NULL DEFAULT TRUE;")
+        logging.info("Ensured all notification preference columns exist in 'user_status'.")
 
 
         logging.info("Database tables setup complete.")
@@ -687,6 +706,13 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
             WHERE us.user_id = $1
         """, profile_user_id)
 
+        # --- NEW: Get follower/following counts ---
+        follower_count = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE following_id = $1", profile_user_id) or 0
+        following_count = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", profile_user_id) or 0
+        
+        # --- NEW: Check if viewer is following this user ---
+        is_following = await conn.fetchval("SELECT 1 FROM user_follows WHERE follower_id = $1 AND following_id = $2", viewer_user_id, profile_user_id) is not None
+
     if not profile_data:
         await safe_send_message(viewer_user_id, "This user's profile could not be found.")
         return
@@ -699,7 +725,8 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
 
     profile_text = (
         f"{emoji} <b>{nickname}'s Public Profile</b>\n\n"
-        f"⚡︎ <b>Aura Points:</b> {points}\n\n"
+        f"⚡︎ <b>Aura Points:</b> {points}\n"
+        f"👥 <b>Followers:</b> {follower_count} | <b>Following:</b> {following_count}\n\n"
         f"📝 <b>Bio:</b>\n<i>{bio}</i>\n"
     )
 
@@ -722,6 +749,12 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
 
     builder = InlineKeyboardBuilder()
     if viewer_user_id != profile_user_id:
+        # --- NEW: Add Follow/Unfollow button ---
+        if is_following:
+            builder.button(text="✅ Unfollow", callback_data=f"unfollow_user_{profile_user_id}")
+        else:
+            builder.button(text="➕ Follow", callback_data=f"follow_user_{profile_user_id}")
+
         builder.button(text="⚠️ Report User", callback_data=f"report_user_{profile_user_id}")
         
         async with db.acquire() as conn:
@@ -775,6 +808,53 @@ class BlockUserMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 # --- Handlers ---
+
+# --- FIX: Corrected parsing for follow/unfollow actions ---
+@dp.callback_query(F.data.startswith(("follow_user_", "unfollow_user_")))
+async def handle_follow_toggle(callback_query: types.CallbackQuery):
+    parts = callback_query.data.split('_') # e.g., ['follow', 'user', '12345']
+    action = parts[0] # 'follow' or 'unfollow'
+    profile_user_id = int(parts[2])
+    viewer_user_id = callback_query.from_user.id
+
+    if profile_user_id == viewer_user_id:
+        await callback_query.answer("You cannot follow yourself.", show_alert=True)
+        return
+
+    async with db.acquire() as conn:
+        if action == "follow":
+            try:
+                await conn.execute(
+                    "INSERT INTO user_follows (follower_id, following_id) VALUES ($1, $2)",
+                    viewer_user_id, profile_user_id
+                )
+                await callback_query.answer(f"You are now following this user.", show_alert=False)
+
+                # Send notification to the followed user
+                viewer_info = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", viewer_user_id)
+                viewer_nickname = html.quote(viewer_info.get('nickname') or "An anonymous user") if viewer_info else "An anonymous user"
+                viewer_emoji = viewer_info.get('profile_emoji') if viewer_info else '👤'
+                
+                await safe_send_message(
+                    profile_user_id,
+                    f"🆕 You have a new follower: {viewer_emoji} <b>{viewer_nickname}</b>!"
+                )
+            except asyncpg.exceptions.UniqueViolationError:
+                await callback_query.answer("You are already following this user.", show_alert=True)
+        
+        elif action == "unfollow":
+            await conn.execute(
+                "DELETE FROM user_follows WHERE follower_id = $1 AND following_id = $2",
+                viewer_user_id, profile_user_id
+            )
+            await callback_query.answer("You have unfollowed this user.", show_alert=False)
+
+    # Refresh the profile view by deleting the old message and sending a new one
+    try:
+        await callback_query.message.delete()
+    except TelegramBadRequest:
+        pass # Message might already be gone or inaccessible
+    await show_public_profile(viewer_user_id, profile_user_id)
 
 @dp.message(Command("rules"))
 async def show_rules(message: types.Message):
@@ -1034,38 +1114,55 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
     except Exception as e: info_parts.append(f"\n❌ <b>Bot Interaction:</b> Error fetching database info: {e}")
     await message.reply("\n".join(info_parts));
 
-# --- /profile Command and Handlers ---
+# --- /profile Command and Handlers (REORGANIZED) ---
 
-async def _render_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
-    """Helper function to build the settings menu text and keyboard."""
+async def _render_customization_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Helper function to build the main customization menu text and keyboard."""
     async with db.acquire() as conn:
-        settings = await conn.fetchrow("SELECT nickname, comments_per_page, profile_emoji, bio, allow_contact FROM user_status WHERE user_id = $1", user_id)
+        settings = await conn.fetchrow("SELECT nickname, profile_emoji, bio FROM user_status WHERE user_id = $1", user_id)
     
     current_nickname = settings.get('nickname') if settings else None
-    current_page_size = settings.get('comments_per_page') if settings else None
     current_emoji = settings.get('profile_emoji') if settings else '👤'
     current_bio = settings.get('bio') if settings else None
-    allow_contact = settings.get('allow_contact', True) if settings else True
-
-    cpp_display = "All" if current_page_size == 0 else (current_page_size if current_page_size is not None else f'Default ({PAGE_SIZE})')
-    contact_status = "✅ On" if allow_contact else "❌ Off"
 
     settings_text = (
-        "<b>⚙️ General Settings</b>\n\n"
+        "<b>🎨 Profile Customization</b>\n\n"
+        "Here you can change your public appearance in the bot.\n\n"
         f"<b>Profile Emoji:</b> {current_emoji}\n"
         f"<b>Nickname:</b> {html.quote(current_nickname or 'Default (Anonymous)')}\n"
-        f"<b>Bio:</b> {html.quote(current_bio or 'Not set')}\n"
-        f"<b>Comments Per Page:</b> {cpp_display}\n"
-        f"<b>Allow Chat Requests:</b> {contact_status}"
+        f"<b>Bio:</b> {html.quote(current_bio or 'Not set')}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎨 Change Profile Emoji", callback_data="settings_change_emoji")],
         [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="settings_change_nickname")],
         [InlineKeyboardButton(text="📝 Set/Update Bio", callback_data="settings_change_bio")],
         [InlineKeyboardButton(text="ℹ️ Edit Profile Details & Visibility", callback_data="profile_details_menu")],
+        [InlineKeyboardButton(text="⚙️ General Settings", callback_data="profile_menu_settings")],
+        [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
+    ])
+    return settings_text, keyboard
+
+
+async def _render_general_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Helper function to build the general settings submenu."""
+    async with db.acquire() as conn:
+        settings = await conn.fetchrow("SELECT comments_per_page, allow_contact FROM user_status WHERE user_id = $1", user_id)
+
+    current_page_size = settings.get('comments_per_page') if settings else None
+    allow_contact = settings.get('allow_contact', True) if settings else True
+    cpp_display = "All" if current_page_size == 0 else (current_page_size if current_page_size is not None else f'Default ({PAGE_SIZE})')
+    contact_status = "✅ On" if allow_contact else "❌ Off"
+
+    settings_text = (
+        "<b>⚙️ General Settings</b>\n\n"
+        f"<b>Comments Per Page:</b> {cpp_display}\n"
+        f"<b>Allow Chat Requests:</b> {contact_status}"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Notification Settings", callback_data="notification_settings_menu")],
         [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
         [InlineKeyboardButton(text=f"📬 Toggle Chat Requests ({'Off' if allow_contact else 'On'})", callback_data="settings_toggle_contact")],
-        [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
+        [InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1")]
     ])
     return settings_text, keyboard
 
@@ -1105,7 +1202,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
     user_id = callback_query.from_user.id
     parts = callback_query.data.split("_")
     action = parts[2]
-    page = int(parts[-1])
+    page = int(parts[-1]) if len(parts) > 3 else 1 # Default page to 1
 
     try:
         if action == "main":
@@ -1177,12 +1274,15 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             await callback_query.message.edit_text(response_text, reply_markup=nav_keyboard, disable_web_page_preview=True)
         
         elif action == "customization":
-            settings_text, keyboard = await _render_settings_menu(user_id)
+            settings_text, keyboard = await _render_customization_menu(user_id)
+            await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
+
+        elif action == "settings":
+            settings_text, keyboard = await _render_general_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
             
         elif action == "chats":
             await show_my_chats(callback_query, state)
-
 
     except TelegramBadRequest as e:
         if "message is not modified" in str(e).lower():
@@ -1256,7 +1356,7 @@ async def settings_set_nickname(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(feedback, reply_markup=get_main_keyboard(user_id))
     
-    settings_text, keyboard = await _render_settings_menu(message.from_user.id)
+    settings_text, keyboard = await _render_customization_menu(message.from_user.id)
     await message.answer(settings_text, reply_markup=keyboard)
 
 
@@ -1269,7 +1369,7 @@ async def settings_change_cpp_prompt(callback_query: types.CallbackQuery):
     builder.adjust(len(options))
     builder.row(InlineKeyboardButton(text="♾️ All", callback_data="settings_set_cpp_0"))
     builder.row(InlineKeyboardButton(text=f"Reset to Default ({PAGE_SIZE})", callback_data="settings_set_cpp_default"))
-    builder.row(InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Settings", callback_data="profile_menu_settings"))
 
     await callback_query.message.edit_text(
         "Select how many comments you want to see per page.",
@@ -1301,7 +1401,7 @@ async def settings_set_cpp(callback_query: types.CallbackQuery, state: FSMContex
     
     await callback_query.answer(feedback.split("✅ ")[1], show_alert=True)
     
-    settings_text, keyboard = await _render_settings_menu(user_id)
+    settings_text, keyboard = await _render_general_settings_menu(user_id)
     await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
 
@@ -1337,7 +1437,7 @@ async def settings_set_emoji(callback_query: types.CallbackQuery, state: FSMCont
     
     await callback_query.answer(f"Profile emoji set to {emoji}!", show_alert=True)
     
-    settings_text, keyboard = await _render_settings_menu(user_id)
+    settings_text, keyboard = await _render_customization_menu(user_id)
     await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
 
@@ -1378,7 +1478,7 @@ async def settings_set_bio(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(feedback, reply_markup=get_main_keyboard(user_id))
 
-    settings_text, keyboard = await _render_settings_menu(message.from_user.id)
+    settings_text, keyboard = await _render_customization_menu(message.from_user.id)
     await message.answer(settings_text, reply_markup=keyboard)
 
 
@@ -1386,6 +1486,7 @@ async def settings_set_bio(message: types.Message, state: FSMContext):
 async def settings_toggle_contact(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     async with db.acquire() as conn:
+        await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
         new_status = await conn.fetchval(
             """UPDATE user_status SET allow_contact = NOT allow_contact
                WHERE user_id = $1 RETURNING allow_contact""",
@@ -1395,8 +1496,68 @@ async def settings_toggle_contact(callback_query: types.CallbackQuery, state: FS
     status_text = "enabled" if new_status else "disabled"
     await callback_query.answer(f"Chat requests have been {status_text}.", show_alert=True)
     
-    settings_text, keyboard = await _render_settings_menu(user_id)
+    settings_text, keyboard = await _render_general_settings_menu(user_id)
     await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
+
+
+# --- NEW: Notification Settings Handlers ---
+
+async def _render_notification_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    """Helper to build the notification settings menu."""
+    async with db.acquire() as conn:
+        settings = await conn.fetchrow("""
+            SELECT notify_on_confession_comment, notify_on_comment_reply, 
+                   notify_on_like, notify_on_followed_user_activity
+            FROM user_status WHERE user_id = $1
+        """, user_id)
+
+    if not settings: # Failsafe in case a user record wasn't created properly
+        async with db.acquire() as conn:
+            await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+        settings = {}
+
+    def get_status_text(is_on):
+        return "✅ On" if is_on else "❌ Off"
+
+    menu_text = "<b>🔔 Notification Settings</b>\n\nChoose which notifications you would like to receive."
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"Comment on My Confession: {get_status_text(settings.get('notify_on_confession_comment', True))}", callback_data="toggle_notify_confession_comment")
+    builder.button(text=f"Reply to My Comment: {get_status_text(settings.get('notify_on_comment_reply', True))}", callback_data="toggle_notify_comment_reply")
+    builder.button(text=f"Like on My Comment: {get_status_text(settings.get('notify_on_like', True))}", callback_data="toggle_notify_like")
+    builder.button(text=f"Activity from Users I Follow: {get_status_text(settings.get('notify_on_followed_user_activity', True))}", callback_data="toggle_notify_followed_user_activity")
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Settings", callback_data="profile_menu_settings"))
+
+    return menu_text, builder.as_markup()
+
+@dp.callback_query(F.data == "notification_settings_menu")
+async def show_notification_settings_menu(callback_query: types.CallbackQuery):
+    menu_text, keyboard = await _render_notification_settings_menu(callback_query.from_user.id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith("toggle_notify_"))
+async def toggle_notification_setting(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    setting_field = callback_query.data.replace("toggle_notify_", "")
+    
+    allowed_fields = [
+        "confession_comment", "comment_reply", 
+        "like", "followed_user_activity"
+    ]
+    db_field = f"notify_on_{setting_field}"
+
+    if setting_field not in allowed_fields:
+        await callback_query.answer("Invalid setting.", show_alert=True)
+        return
+    
+    async with db.acquire() as conn:
+        await conn.execute(f"UPDATE user_status SET {db_field} = NOT {db_field} WHERE user_id = $1", user_id)
+    
+    menu_text, keyboard = await _render_notification_settings_menu(user_id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+    await callback_query.answer(f"{setting_field.replace('_', ' ').title()} notifications toggled.")
 
 # --- Handlers for New Customizable Profile Details ---
 
@@ -2407,6 +2568,34 @@ async def comments_page_callback(callback_query: types.CallbackQuery):
     await callback_query.answer("Loading page...")
     await show_comments_for_confession(callback_query.from_user.id, conf_id, callback_query.message, page=page)
 
+# --- NEW: Helper to notify followers ---
+async def notify_followers_of_comment(commenter_id: int, confession_id: int, comment_preview: str):
+    async with db.acquire() as conn:
+        commenter_info = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", commenter_id)
+        if not commenter_info: return
+        
+        commenter_nickname = html.quote(commenter_info.get('nickname') or "Anonymous")
+        commenter_emoji = commenter_info.get('profile_emoji') or '👤'
+        
+        followers = await conn.fetch("""
+            SELECT f.follower_id FROM user_follows f
+            JOIN user_status us ON f.follower_id = us.user_id
+            WHERE f.following_id = $1 AND us.notify_on_followed_user_activity = TRUE
+        """, commenter_id)
+
+        if not followers: return
+        
+        link = f"https://t.me/{bot_info.username}?start=view_{confession_id}"
+        notification_text = (
+            f"🔔 {commenter_emoji} <b>{commenter_nickname}</b>, who you follow, commented on <a href='{link}'>Confession #{confession_id}</a>:\n\n"
+            f"<i>{comment_preview}...</i>"
+        )
+
+        for follower in followers:
+            # Double-check follower is not the commenter themselves (edge case)
+            if follower['follower_id'] != commenter_id:
+                await safe_send_message(follower['follower_id'], notification_text, disable_web_page_preview=True)
+
 @dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation))
 async def receive_comment(message: types.Message, state: FSMContext):
     user_id = message.from_user.id; data = await state.get_data(); conf_id = data.get("confession_id")
@@ -2425,10 +2614,20 @@ async def receive_comment(message: types.Message, state: FSMContext):
                 new_comm_id = await conn.fetchval("INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", conf_id, user_id, comm_text, sticker_id, animation_id)
         await message.answer("💬 Your comment has been added!", reply_markup=keyboard);
         await update_channel_post_button(conf_id)
+        
+        preview = html.quote(comm_text[:150]) if comm_text else f"[{log_type}]"
+
+        # --- MODIFIED: Notify confession owner based on preferences ---
         if conf_owner_id and conf_owner_id != user_id:
-            link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
-            preview = html.quote(comm_text[:150]) if comm_text else f"[{log_type}]"
-            await safe_send_message(conf_owner_id, f"💬 A new comment has been posted on your Confession #{conf_id}.\n\n<i>{preview}...</i>\n\n<a href='{link}'>Click here to view.</a>", disable_web_page_preview=True)
+            async with db.acquire() as conn_notify:
+                should_notify = await conn_notify.fetchval("SELECT notify_on_confession_comment FROM user_status WHERE user_id = $1", conf_owner_id)
+            if should_notify is not False: # Default to True
+                link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
+                await safe_send_message(conf_owner_id, f"💬 A new comment has been posted on your Confession #{conf_id}.\n\n<i>{preview}...</i>\n\n<a href='{link}'>Click here to view.</a>", disable_web_page_preview=True)
+        
+        # --- NEW: Notify followers ---
+        await notify_followers_of_comment(user_id, conf_id, preview)
+
         await show_comments_for_confession(user_id, conf_id)
     except Exception as e:
         logging.error(f"Error saving {log_type} comment for Conf {conf_id} by {user_id}: {e}", exc_info=True)
@@ -2510,19 +2709,28 @@ async def receive_reply(message: types.Message, state: FSMContext):
         await message.answer("↪️ Your reply has been sent!", reply_markup=keyboard)
         await update_channel_post_button(conf_id)
         
-        if parent_data['user_id'] != user_id:
-            link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
-            preview = html.quote(reply_text[:150]) if reply_text else f"[{log_type.replace(' Reply', '')}]"
-            
-            async with db.acquire() as conn:
-                user_settings = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", user_id)
-            
-            nickname = user_settings.get('nickname') if user_settings else 'Anonymous'
-            profile_emoji = user_settings.get('profile_emoji') if user_settings else '👤'
-            tag = f"{profile_emoji} (Author)" if user_id == conf_data['user_id'] else f"{profile_emoji} {nickname}"
+        preview = html.quote(reply_text[:150]) if reply_text else f"[{log_type.replace(' Reply', '')}]"
 
-            await safe_send_message(parent_data['user_id'], f"↪️ Someone ({tag}) replied to your comment on Confession #{conf_id}.\n\n<i>{preview}...</i>\n\n<a href='{link}'>Click here to view the reply.</a>", disable_web_page_preview=True)
+        # --- MODIFIED: Notify parent commenter based on preferences ---
+        if parent_data['user_id'] != user_id:
+            async with db.acquire() as conn_notify:
+                should_notify_parent = await conn_notify.fetchval("SELECT notify_on_comment_reply FROM user_status WHERE user_id = $1", parent_data['user_id'])
+            
+            if should_notify_parent is not False: # Default to True
+                link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
+                
+                async with db.acquire() as conn_info:
+                    user_settings = await conn_info.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", user_id)
+                
+                nickname = user_settings.get('nickname') if user_settings else 'Anonymous'
+                profile_emoji = user_settings.get('profile_emoji') if user_settings else '👤'
+                tag = f"{profile_emoji} (Author)" if user_id == conf_data['user_id'] else f"{profile_emoji} {nickname}"
+
+                await safe_send_message(parent_data['user_id'], f"↪️ Someone ({tag}) replied to your comment on Confession #{conf_id}.\n\n<i>{preview}...</i>\n\n<a href='{link}'>Click here to view the reply.</a>", disable_web_page_preview=True)
         
+        # --- NEW: Notify followers ---
+        await notify_followers_of_comment(user_id, conf_id, preview)
+
         async with db.acquire() as conn:
              total_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", conf_id) or 0
              user_page_size = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", user_id)
@@ -2545,7 +2753,7 @@ async def handle_reaction(callback_query: types.CallbackQuery):
     point_delta, alert = 0, ""
     async with db.acquire() as conn:
         async with conn.transaction():
-            info = await conn.fetchrow("SELECT c.user_id as comm_uid, co.user_id as conf_owner_id FROM comments c JOIN confessions co ON c.confession_id = co.id WHERE c.id = $1", comm_id)
+            info = await conn.fetchrow("SELECT c.user_id as comm_uid, co.user_id as conf_owner_id, co.id as conf_id FROM comments c JOIN confessions co ON c.confession_id = co.id WHERE c.id = $1", comm_id)
             if not info: await callback_query.answer("Comment not found.", show_alert=True); return
             if info['comm_uid'] == user_id: await callback_query.answer("You cannot react to your own comment.", show_alert=True); return
             existing = await conn.fetchval("SELECT reaction_type FROM reactions WHERE comment_id = $1 AND user_id = $2", comm_id, user_id)
@@ -2562,6 +2770,20 @@ async def handle_reaction(callback_query: types.CallbackQuery):
                 await conn.execute("INSERT INTO reactions (comment_id, user_id, reaction_type) VALUES ($1, $2, $3)", comm_id, user_id, r_type)
                 point_delta = POINTS_PER_LIKE_RECEIVED if r_type == 'like' else POINTS_PER_DISLIKE_RECEIVED
                 alert = f"{r_type.capitalize()} added"
+                
+                # --- NEW: Notification Logic ---
+                should_notify_commenter = await conn.fetchval("SELECT notify_on_like FROM user_status WHERE user_id = $1", info['comm_uid'])
+                if should_notify_commenter is not False: # Default to True
+                    conf_id = info['conf_id']
+                    if conf_id:
+                        link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
+                        reaction_verb = "liked" if r_type == 'like' else "disliked"
+                        await safe_send_message(
+                            info['comm_uid'],
+                            f"👍 Someone {reaction_verb} your comment on <a href='{link}'>Confession #{conf_id}</a>.",
+                            disable_web_page_preview=True
+                        )
+
             if point_delta != 0: await update_user_points(conn, info['comm_uid'], point_delta)
     kbd = await build_comment_keyboard(comm_id, info['comm_uid'], user_id, info['conf_owner_id'])
     try: await callback_query.message.edit_reply_markup(reply_markup=kbd); await callback_query.answer(alert)
