@@ -168,6 +168,8 @@ class ConfessionForm(StatesGroup):
     waiting_for_text = State()
     waiting_for_confirmation = State()
     selecting_categories = State()
+    selecting_thread = State()
+
 
 class CommentForm(StatesGroup):
     waiting_for_comment = State()
@@ -233,12 +235,15 @@ async def setup():
                 message_id BIGINT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 rejection_reason TEXT NULL,
-                categories TEXT[] NULL
+                categories TEXT[] NULL,
+                parent_confession_id INTEGER NULL REFERENCES confessions(id) ON DELETE SET NULL
             );
         """)
         logging.info("Checked/Created 'confessions' table.")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_confessions_categories ON confessions USING gin(categories);")
         logging.info("Checked/Created GIN index on 'confessions.categories'.")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_confessions_parent ON confessions(parent_confession_id);")
+        logging.info("Checked/Created index on 'confessions.parent_confession_id'.")
 
         # --- Comments Table Schema ---
         await conn.execute("""
@@ -1853,11 +1858,24 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
 @dp.message(Command("confess"), StateFilter(None))
 @dp.message(F.text == "✍️ Confess", StateFilter(None))
 async def start_confession(message: types.Message, state: FSMContext):
+    await state.clear()
     await state.set_state(ConfessionForm.waiting_for_text)
     await message.answer(
         "Please send the text of your confession. You will be able to review, edit, or enhance it next",
         reply_markup=cancel_keyboard
     )
+
+async def _get_confession_preview_text(state: FSMContext) -> str:
+    data = await state.get_data()
+    conf_text = data.get("confession_text", "")
+    parent_conf_id = data.get("parent_confession_id")
+
+    header = "<b>Here is a preview of your confession:</b>"
+    if parent_conf_id:
+        header += f"\n\n🔗 <i>Threading to Confession #{parent_conf_id}</i>"
+
+    return f"{header}\n\n<i>{html.quote(conf_text)}</i>\n\n" \
+           "Please review it and choose an option below."
 
 @dp.message(ConfessionForm.waiting_for_text, F.text)
 async def receive_confession_text(message: types.Message, state: FSMContext):
@@ -1876,13 +1894,13 @@ async def receive_confession_text(message: types.Message, state: FSMContext):
     builder.button(text="✅ Submit", callback_data="conf_submit")
     builder.button(text="✍️ Edit", callback_data="conf_edit")
     builder.button(text="✨ Enhance with AI", callback_data="conf_enhance_ai")
+    builder.button(text="🔗 Thread to Previous", callback_data="conf_thread")
     builder.button(text="❌ Cancel", callback_data="conf_cancel")
     builder.adjust(1)
-
+    
+    preview_text = await _get_confession_preview_text(state)
     await message.answer(
-        "<b>Here is a preview of your confession:</b>\n\n"
-        f"<i>{html.quote(conf_text)}</i>\n\n"
-        "Please review it and choose an option below.",
+        preview_text,
         reply_markup=builder.as_markup()
     )
 
@@ -1920,6 +1938,89 @@ async def get_ai_enhanced_text(original_text: str) -> Optional[str]:
     return await call_gemini_with_rotation(prompt)
 
 
+async def show_threadable_confessions(callback_query: types.CallbackQuery, state: FSMContext, page: int = 1):
+    user_id = callback_query.from_user.id
+    page_size = 5
+
+    async with db.acquire() as conn:
+        total_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM confessions WHERE user_id = $1 AND status = 'approved'", user_id
+        ) or 0
+        
+        if total_count == 0:
+            await callback_query.answer("You have no approved confessions to thread to.", show_alert=True)
+            await state.set_state(ConfessionForm.waiting_for_confirmation)
+            return
+
+        total_pages = (total_count + page_size - 1) // page_size
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * page_size
+        
+        confessions = await conn.fetch(
+            "SELECT id, text FROM confessions WHERE user_id = $1 AND status = 'approved' ORDER BY id DESC LIMIT $2 OFFSET $3",
+            user_id, page_size, offset
+        )
+
+    builder = InlineKeyboardBuilder()
+    response_text = f"<b>Select a confession to thread to (Page {page}/{total_pages}):</b>\n\n"
+    
+    for conf in confessions:
+        snippet = html.quote(conf['text'][:60]) + ('...' if len(conf['text']) > 60 else '')
+        builder.button(text=f"#{conf['id']}: \"{snippet}\"", callback_data=f"thread_select_{conf['id']}")
+    
+    builder.adjust(1)
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"thread_page_{page-1}"))
+    if total_pages > 1:
+        nav_row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"thread_page_{page+1}"))
+    if nav_row:
+        builder.row(*nav_row)
+
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="thread_cancel"))
+    
+    await callback_query.message.edit_text(response_text, reply_markup=builder.as_markup())
+    await callback_query.answer()
+
+
+@dp.callback_query(StateFilter(ConfessionForm.selecting_thread), F.data.startswith("thread_"))
+async def handle_thread_selection_actions(callback_query: types.CallbackQuery, state: FSMContext):
+    _, _, value = callback_query.data.partition("_")
+    
+    if value.startswith("page_"):
+        page = int(value.split("_")[1])
+        await show_threadable_confessions(callback_query, state, page=page)
+        return
+
+    if value.startswith("select_"):
+        parent_conf_id = int(value.split("_")[1])
+        await state.update_data(parent_confession_id=parent_conf_id)
+    elif value == "cancel":
+        current_data = await state.get_data()
+        current_data.pop("parent_confession_id", None)
+        await state.set_data(current_data)
+        
+    await state.set_state(ConfessionForm.waiting_for_confirmation)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Submit", callback_data="conf_submit")
+    builder.button(text="✍️ Edit", callback_data="conf_edit")
+    builder.button(text="✨ Enhance with AI", callback_data="conf_enhance_ai")
+    builder.button(text="🔗 Change/Remove Thread", callback_data="conf_thread")
+    builder.button(text="❌ Cancel", callback_data="conf_cancel")
+    builder.adjust(1)
+    
+    preview_text = await _get_confession_preview_text(state)
+    await callback_query.message.edit_text(
+        preview_text,
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
+
+
 @dp.callback_query(StateFilter(ConfessionForm.waiting_for_confirmation), F.data.startswith("conf_"))
 async def handle_confession_confirmation(callback_query: types.CallbackQuery, state: FSMContext):
     action = callback_query.data.split("_")[1]
@@ -1939,6 +2040,11 @@ async def handle_confession_confirmation(callback_query: types.CallbackQuery, st
         await callback_query.message.edit_text("Okay, please send the new version of your confession.")
         await callback_query.message.answer("Waiting for your edited confession...", reply_markup=cancel_keyboard)
         await callback_query.answer()
+
+    elif action == "thread":
+        await state.set_state(ConfessionForm.selecting_thread)
+        await show_threadable_confessions(callback_query, state, page=1)
+        return
 
     elif action == "enhance":
         if not GEMINI_API_KEYS:
@@ -1990,6 +2096,7 @@ async def process_confession_submission(user_id: int, state: FSMContext, message
     state_data = await state.get_data()
     selected_categories: List[str] = state_data.get("selected_categories", [])
     conf_text: str = state_data.get("confession_text", "")
+    parent_conf_id: Optional[int] = state_data.get("parent_confession_id")
     keyboard = get_main_keyboard(user_id)
 
     if not selected_categories or not conf_text:
@@ -2000,15 +2107,17 @@ async def process_confession_submission(user_id: int, state: FSMContext, message
         async with db.acquire() as conn:
             async with conn.transaction():
                 conf_id = await conn.fetchval(
-                    "INSERT INTO confessions (text, user_id, categories, status) VALUES ($1, $2, $3, 'pending') RETURNING id",
-                    conf_text, user_id, selected_categories)
+                    "INSERT INTO confessions (text, user_id, categories, status, parent_confession_id) VALUES ($1, $2, $3, 'pending', $4) RETURNING id",
+                    conf_text, user_id, selected_categories, parent_conf_id)
                 if not conf_id: raise Exception("Failed to get confession ID")
                 await update_user_points(conn, user_id, POINTS_PER_CONFESSION)
 
         category_tags = " ".join([f"#{html.quote(cat)}" for cat in selected_categories])
         kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{conf_id}")],
                                                    [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{conf_id}")]])
-        admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Categories:</b> {category_tags}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
+        
+        thread_info = f"\n<b>Threaded to:</b> #{parent_conf_id}" if parent_conf_id else ""
+        admin_msg_text = f"<b>New Confession Review</b>\n<b>ID:</b> {conf_id}\n<b>Categories:</b> {category_tags}{thread_info}\n<b>User ID:</b> <code>{user_id}</code>\n\n<b>Text:</b>\n{html.quote(conf_text)}"
 
         await bot.send_message(ADMIN_ID, admin_msg_text, reply_markup=kbd)
         await message.answer("✅ Your confession has been submitted and is pending review.", reply_markup=keyboard)
@@ -2295,7 +2404,7 @@ async def admin_process_review_reject_wr(callback_query: types.CallbackQuery, st
 async def _admin_handle_approval(conf_id: int, callback_query: types.CallbackQuery, state: FSMContext) -> bool:
     """Handles the logic for approving a confession."""
     async with db.acquire() as conn:
-        conf = await conn.fetchrow("SELECT id, text, user_id, categories, status FROM confessions WHERE id = $1", conf_id)
+        conf = await conn.fetchrow("SELECT id, text, user_id, categories, status, parent_confession_id FROM confessions WHERE id = $1", conf_id)
         if not conf or conf['status'] != 'pending':
             await callback_query.answer("Confession not found or already processed.", show_alert=True)
             return False
@@ -2303,9 +2412,16 @@ async def _admin_handle_approval(conf_id: int, callback_query: types.CallbackQue
         try:
             link = f"https://t.me/{bot_info.username}?start=view_{conf['id']}"
             category_tags = " ".join([f"#{html.quote(cat)}" for cat in conf['categories'] or []])
-            channel_post_text = f"<b>Confession #{conf['id']}</b>\n\n{html.quote(conf['text'])}\n\n{category_tags}"
+            
+            thread_header = ""
+            parent_id = conf.get('parent_confession_id')
+            if parent_id:
+                parent_link = f"https://t.me/{bot_info.username}?start=view_{parent_id}"
+                thread_header = f"↪️ A thread from <a href='{parent_link}'>Confession #{parent_id}</a>\n\n"
+
+            channel_post_text = f"{thread_header}<b>Confession #{conf['id']}</b>\n\n{html.quote(conf['text'])}\n\n{category_tags}"
             channel_kbd = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 View / Add Comments (0)", url=link)]])
-            msg = await bot.send_message(CHANNEL_ID, channel_post_text, reply_markup=channel_kbd)
+            msg = await bot.send_message(CHANNEL_ID, channel_post_text, reply_markup=channel_kbd, disable_web_page_preview=True)
             await conn.execute("UPDATE confessions SET status = 'approved', message_id = $1 WHERE id = $2", msg.message_id, conf_id)
             await safe_send_message(conf['user_id'], f"✅ Your confession (#{conf_id}) has been approved!")
             
