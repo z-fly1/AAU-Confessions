@@ -1038,7 +1038,7 @@ async def show_privacy(message: types.Message):
         "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
         "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura, and any other details you choose to share) and request to chat anonymously.\n"
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
-        f"▪️ The bot admin (User ID: <code>{ADMIN_ID}</code>) can access stored User IDs for moderation.\n\n"
+        f"▪️ The bot admin can access stored User IDs for moderation.\n\n"
         f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
     )
     await message.answer(privacy_text, disable_web_page_preview=True)
