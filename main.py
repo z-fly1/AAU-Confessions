@@ -235,11 +235,18 @@ async def setup():
                 message_id BIGINT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 rejection_reason TEXT NULL,
-                categories TEXT[] NULL,
-                parent_confession_id INTEGER NULL REFERENCES confessions(id) ON DELETE SET NULL
+                categories TEXT[] NULL
             );
         """)
         logging.info("Checked/Created 'confessions' table.")
+
+        # --- FIX: Add the new column if it doesn't exist for backward compatibility ---
+        await conn.execute("""
+            ALTER TABLE confessions
+            ADD COLUMN IF NOT EXISTS parent_confession_id INTEGER NULL REFERENCES confessions(id) ON DELETE SET NULL;
+        """)
+        logging.info("Ensured 'parent_confession_id' column exists in 'confessions'.")
+
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_confessions_categories ON confessions USING gin(categories);")
         logging.info("Checked/Created GIN index on 'confessions.categories'.")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_confessions_parent ON confessions(parent_confession_id);")
