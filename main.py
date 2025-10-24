@@ -92,7 +92,7 @@ POINTS_PER_LIKE_RECEIVED = 1
 POINTS_PER_DISLIKE_RECEIVED = -1 # Note: This is negative
 MAX_CATEGORIES = 3 # Maximum categories allowed per confession
 NICKNAME_COOLDOWN = timedelta(days=30)
-PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧐", "👻", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
+PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧕", "🥷", "🧐", "👻", "🎃", "👹","🧚‍♀️","🧜‍♀️","👾","🤠", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
 AI_ENHANCED_MARKER = "✨" # Marker for AI-enhanced confessions
 PROFILE_OPTIONS_PAGE_SIZE = 8 # Number of items for profile selection pagination
 
