@@ -1,0 +1,20 @@
+[
+  {
+    "question": "Which of the following is NOT a real confession category in the bot?",
+    "options": ["Health", "Exam", "Sports", "Trauma"],
+    "correct_index": 2,
+    "points": 5
+  },
+  {
+    "question": "What is the cooldown period for changing your nickname?",
+    "options": ["7 days", "15 days", "30 days", "45 days"],
+    "correct_index": 2,
+    "points": 10
+  },
+  {
+    "question": "What emoji is used to mark an AI-enhanced confession?",
+    "options": ["🤖", "✨", "💡", "🧠"],
+    "correct_index": 1,
+    "points": 5
+  }
+]
