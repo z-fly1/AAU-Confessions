@@ -23,6 +23,10 @@ from typing import Optional, Tuple, Dict, Any, List, Set, Union
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
 
+# --- New Imports for Games ---
+import json
+import random
+
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
 
@@ -95,6 +99,7 @@ NICKNAME_COOLDOWN = timedelta(days=30)
 PROFILE_EMOJIS = ["👤", "👨", "👩", "🧑", "🧕", "🥷", "🧐", "👻", "🎃", "👹","🧚‍♀️","🧜‍♀️","👾","🤠", "✨", "😴", "😎", "🦊", "🥲", "🎮", "🎧", "🎨", "☀️"]
 AI_ENHANCED_MARKER = "✨" # Marker for AI-enhanced confessions
 PROFILE_OPTIONS_PAGE_SIZE = 8 # Number of items for profile selection pagination
+LEADERBOARD_PAGE_SIZE = 10 # Number of users to show per leaderboard page
 
 
 # Load environment variables at the top level
@@ -141,7 +146,7 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="🏆 5K Games")]
     ],
     resize_keyboard=True
 )
@@ -151,7 +156,7 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="🏆 5K Games")]
     ],
     resize_keyboard=True
 )
@@ -197,6 +202,11 @@ class ReportForm(StatesGroup):
 # --- ADMIN REVIEW --- New state for the review process
 class AdminReview(StatesGroup):
     reviewing = State()
+
+# --- NEW: State for Games ---
+class GamesForm(StatesGroup):
+    in_trivia = State()
+
 
 # --- Database ---
 db = None
@@ -427,6 +437,41 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_like BOOLEAN NOT NULL DEFAULT TRUE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_followed_user_activity BOOLEAN NOT NULL DEFAULT TRUE;")
         logging.info("Ensured all notification preference columns exist in 'user_status'.")
+
+        # --- NEW: Scavenger Hunt Tables ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS scavenger_hunts (
+                id SERIAL PRIMARY KEY,
+                hunt_name TEXT NOT NULL,
+                initial_clue TEXT NOT NULL,
+                deep_link_code TEXT NOT NULL UNIQUE,
+                points_reward INTEGER NOT NULL DEFAULT 25,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        logging.info("Checked/Created 'scavenger_hunts' table.")
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS scavenger_winners (
+                hunt_id INTEGER NOT NULL REFERENCES scavenger_hunts(id) ON DELETE CASCADE,
+                user_id BIGINT NOT NULL,
+                won_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (hunt_id, user_id)
+            );
+        """)
+        logging.info("Checked/Created 'scavenger_winners' table.")
+
+        # --- NEW: Trivia Game Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS trivia_answered (
+                user_id BIGINT NOT NULL,
+                question_index INTEGER NOT NULL,
+                answered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, question_index)
+            );
+        """)
+        logging.info("Checked/Created 'trivia_answered' table.")
 
 
         logging.info("Database tables setup complete.")
@@ -942,6 +987,34 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 builder.adjust(1, 1)
                 await message.answer(txt, reply_markup=builder.as_markup())
             
+            elif deep_link_args.startswith("scavenger_win_"):
+                deep_link_code = deep_link_args.replace("scavenger_win_", "", 1)
+                logging.info(f"User {user_id} attempted scavenger hunt win with code: {deep_link_code}")
+                async with db.acquire() as conn:
+                    hunt = await conn.fetchrow(
+                        "SELECT id, points_reward, hunt_name FROM scavenger_hunts WHERE deep_link_code = $1 AND is_active = TRUE",
+                        deep_link_code
+                    )
+                    if not hunt:
+                        await message.answer("This scavenger hunt code is invalid or the hunt has ended.", reply_markup=keyboard)
+                        return
+
+                    hunt_id, reward, hunt_name = hunt['id'], hunt['points_reward'], hunt['hunt_name']
+                    
+                    try:
+                        # Try to record the win
+                        await conn.execute(
+                            "INSERT INTO scavenger_winners (hunt_id, user_id) VALUES ($1, $2)",
+                            hunt_id, user_id
+                        )
+                        # If successful, award points
+                        await update_user_points(conn, user_id, reward)
+                        await message.answer(f"🎉 <b>Congratulations!</b> 🎉\n\nYou've successfully completed the '<b>{html.quote(hunt_name)}</b>' and earned <b>{reward}</b> Aura Points!", reply_markup=keyboard)
+                    
+                    except asyncpg.exceptions.UniqueViolationError:
+                        # This means the user has already won this hunt
+                        await message.answer("You have already completed this scavenger hunt and claimed its prize. Well done!", reply_markup=keyboard)
+
             elif deep_link_args.startswith("profile_"):
                 profile_user_id = int(deep_link_args.split("_")[1])
                 logging.info(f"User {user_id} deep linked to profile of {profile_user_id}")
@@ -1921,7 +1994,7 @@ async def call_gemini_with_rotation(prompt: str) -> Optional[str]:
     for key in GEMINI_API_KEYS:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-2.0-flash-001') # Using a recommended model
+            model = genai.GenerativeModel('gemini-1.0-pro') # Using a recommended model
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:
@@ -2940,7 +3013,8 @@ async def report_execute_callback(callback_query: types.CallbackQuery):
                 await conn.execute("INSERT INTO reports (comment_id, reporter_user_id, reported_user_id) VALUES ($1, $2, $3) ON CONFLICT (comment_id, reporter_user_id) DO NOTHING", comment_id, reporter_user_id, reported_user_id)
         snippet = html.quote(comment_data['text'][:200]) if comment_data['text'] else f"[Sticker/GIF: <code>{comment_data.get('sticker_file_id') or comment_data.get('animation_file_id')}</code>]"
         conf_link = f"https://t.me/{bot_info.username}?start=view_{comment_data['confession_id']}"
-        admin_notification = (f"⚠️ <b>New Comment Report</b> ⚠️\n\n<b>Confession:</b> <a href='{conf_link}'>#{comment_data['confession_id']}</a>\n"
+        admin_notification = (f"⚠️ <b>New Comment Report</b> ⚠️\n\n"
+                              f"<b>Confession:</b> <a href='{conf_link}'>#{comment_data['confession_id']}</a>\n"
                               f"<b>Comment ID:</b> <code>{comment_id}</code>\n<b>Content:</b>\n<i>{snippet}</i>\n\n"
                               f"<b>Reported User:</b> <code>{reported_user_id}</code>\n<b>Reporter:</b> <code>{reporter_user_id}</code>")
         await safe_send_message(ADMIN_ID, admin_notification, disable_web_page_preview=True)
@@ -3408,6 +3482,212 @@ async def show_chat_history(user_id: int, partner_id: int, message_to_edit: type
         await message_to_edit.edit_text(history_text)
     except TelegramBadRequest:
         await safe_send_message(user_id, history_text)
+
+# --- 5K GAMES SECTION ---
+
+trivia_questions = []
+try:
+    with open('trivia_questions.json', 'r', encoding='utf-8') as f:
+        trivia_questions = json.load(f)
+    logging.info(f"Successfully loaded {len(trivia_questions)} trivia questions.")
+except FileNotFoundError:
+    logging.warning("trivia_questions.json not found. Trivia game will be unavailable.")
+except json.JSONDecodeError:
+    logging.error("Failed to decode trivia_questions.json. Check for syntax errors.")
+
+@dp.message(F.text == "🏆 5K Games", StateFilter(None))
+async def show_games_menu(message: types.Message):
+    """Displays the main games menu."""
+    games_text = (
+        "🏆 <b>Welcome to the 5K Celebration Games!</b> 🏆\n\n"
+        "Thank you for being part of our community! To celebrate reaching 5,000 members, we've prepared some fun games for you to play and earn Aura Points.\n\n"
+        "Choose an option below to get started:"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔎 Scavenger Hunt", callback_data="games_menu_scavenger")
+    builder.button(text="🧠 Confession Trivia", callback_data="games_menu_trivia")
+    builder.button(text="📊 Leaderboard", callback_data="games_menu_leaderboard_1")
+    builder.adjust(1)
+    await message.answer(games_text, reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("games_menu_"))
+async def handle_games_menu_callback(callback_query: types.CallbackQuery, state: FSMContext):
+    parts = callback_query.data.split("_")
+    action = parts[-1]
+
+    if action == "scavenger":
+        await callback_query.answer("Loading scavenger hunt...")
+        async with db.acquire() as conn:
+            # For now, just show the first active hunt
+            first_hunt = await conn.fetchrow("SELECT initial_clue FROM scavenger_hunts WHERE is_active = TRUE ORDER BY id ASC LIMIT 1")
+        
+        if first_hunt:
+            await callback_query.message.edit_text(
+                f"<b>🔎 Scavenger Hunt</b>\n\n{html.quote(first_hunt['initial_clue'])}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Back to Games", callback_data="games_menu_back")]])
+            )
+        else:
+            await callback_query.message.edit_text(
+                "<b>🔎 Scavenger Hunt</b>\n\nThere are no active scavenger hunts at the moment. Check back later!",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Back to Games", callback_data="games_menu_back")]])
+            )
+
+    elif action == "trivia":
+        if not trivia_questions:
+            await callback_query.answer("The Trivia game is currently unavailable.", show_alert=True)
+            return
+
+        await callback_query.answer("Let's play trivia!")
+        await start_trivia_round(callback_query.message, state, callback_query.from_user.id)
+        try:
+            await callback_query.message.delete()
+        except TelegramBadRequest:
+            pass # Message might already be gone
+
+    elif action.startswith("leaderboard"):
+        page_str = parts[-1].replace("leaderboard", "")
+        page = int(page_str) if page_str.isdigit() else 1
+        await show_leaderboard(callback_query, page)
+
+    elif action == "back":
+        games_text = "🏆 <b>Welcome to the 5K Celebration Games!</b> 🏆\n\nChoose an option below:"
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔎 Scavenger Hunt", callback_data="games_menu_scavenger")
+        builder.button(text="🧠 Confession Trivia", callback_data="games_menu_trivia")
+        builder.button(text="📊 Leaderboard", callback_data="games_menu_leaderboard_1")
+        builder.adjust(1)
+        await callback_query.message.edit_text(games_text, reply_markup=builder.as_markup())
+
+
+async def show_leaderboard(callback_query: types.CallbackQuery, page: int = 1):
+    user_id = callback_query.from_user.id
+    offset = (page - 1) * LEADERBOARD_PAGE_SIZE
+
+    async with db.acquire() as conn:
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM user_points WHERE points > 0") or 0
+        if total_users == 0:
+            await callback_query.answer("The leaderboard is empty.", show_alert=True)
+            return
+
+        total_pages = (total_users + LEADERBOARD_PAGE_SIZE - 1) // LEADERBOARD_PAGE_SIZE
+        page = max(1, min(page, total_pages))
+
+        top_users = await conn.fetch("""
+            SELECT up.user_id, up.points, us.nickname, us.profile_emoji
+            FROM user_points up
+            LEFT JOIN user_status us ON up.user_id = us.user_id
+            ORDER BY up.points DESC
+            LIMIT $1 OFFSET $2
+        """, LEADERBOARD_PAGE_SIZE, offset)
+        
+        user_rank_query = """
+            WITH ranked_users AS (
+                SELECT user_id, RANK() OVER (ORDER BY points DESC) as rank
+                FROM user_points
+            )
+            SELECT rank FROM ranked_users WHERE user_id = $1
+        """
+        user_rank = await conn.fetchval(user_rank_query, user_id)
+
+    leaderboard_text = f"📊 <b>Aura Points Leaderboard - Page {page}/{total_pages}</b>\n\n"
+    rank_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
+    rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+    for i, user in enumerate(top_users):
+        rank = rank_offset + i + 1
+        emoji = user.get('profile_emoji') or '👤'
+        nickname = html.quote(user.get('nickname') or 'Anonymous')
+        points = user['points']
+        rank_display = rank_emojis.get(rank, f"<b>{rank}.</b>")
+        leaderboard_text += f"{rank_display} {emoji} {nickname} - <i>{points} points</i>\n"
+
+    if user_rank:
+        user_points = await get_user_points(user_id)
+        leaderboard_text += f"\n---\n<b>Your Rank:</b> #{user_rank} with {user_points} points"
+    else:
+        leaderboard_text += "\n---\nYou are not yet on the leaderboard. Participate to earn points!"
+
+    builder = InlineKeyboardBuilder()
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"games_menu_leaderboard_{page-1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"games_menu_leaderboard_{page+1}"))
+    if nav_row:
+        builder.row(*nav_row)
+    
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Games", callback_data="games_menu_back"))
+    await callback_query.message.edit_text(leaderboard_text, reply_markup=builder.as_markup())
+    await callback_query.answer()
+
+
+async def start_trivia_round(message: types.Message, state: FSMContext, user_id: int):
+    """Finds and sends a new trivia question to the user."""
+    async with db.acquire() as conn:
+        answered_indices = await conn.fetch("SELECT question_index FROM trivia_answered WHERE user_id = $1", user_id)
+    
+    answered_set = {record['question_index'] for record in answered_indices}
+    available_questions = [(i, q) for i, q in enumerate(trivia_questions) if i not in answered_set]
+
+    if not available_questions:
+        await message.answer(
+            "Wow! You've answered all available trivia questions. Thanks for playing!",
+            reply_markup=get_main_keyboard(user_id)
+        )
+        return
+
+    question_index, question_data = random.choice(available_questions)
+    
+    await state.set_state(GamesForm.in_trivia)
+    await state.update_data(
+        question_index=question_index,
+        correct_index=question_data['correct_index'],
+        points=question_data['points']
+    )
+
+    await bot.send_poll(
+        chat_id=user_id,
+        question=question_data['question'],
+        options=question_data['options'],
+        is_anonymous=False,
+        type='quiz',
+        correct_option_id=question_data['correct_index'],
+        explanation=f"Correct answer awards {question_data['points']} points!"
+    )
+
+@dp.poll_answer(StateFilter(GamesForm.in_trivia))
+async def handle_trivia_answer(poll_answer: types.PollAnswer, state: FSMContext):
+    user_id = poll_answer.user.id
+    data = await state.get_data()
+    
+    question_index = data.get("question_index")
+    correct_index = data.get("correct_index")
+    points = data.get("points", 0)
+
+    # Stop the FSM to prevent multiple answers for the same poll
+    await state.clear()
+
+    is_correct = poll_answer.option_ids[0] == correct_index
+    
+    async with db.acquire() as conn:
+        # Record that the user has answered this question
+        await conn.execute(
+            "INSERT INTO trivia_answered (user_id, question_index) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            user_id, question_index
+        )
+        if is_correct:
+            await update_user_points(conn, user_id, points)
+    
+    if is_correct:
+        feedback = f"✅ Correct! You've earned <b>{points}</b> Aura Points!"
+    else:
+        feedback = "❌ Sorry, that wasn't the correct answer."
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Play another round!", callback_data="games_menu_trivia")
+    builder.button(text="Back to Games Menu", callback_data="games_menu_back")
+
+    await bot.send_message(user_id, feedback, reply_markup=builder.as_markup())
 
 
 # --- Fallback Handler ---
