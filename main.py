@@ -1128,6 +1128,7 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
 @dp.message(Command("privacy"), StateFilter(None))
 async def show_privacy(message: types.Message):
     privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-04-27"
+    win_url = "https://t.me/@aau_confessions_bot?start=scavenger_win_5k_celebration_win"
     privacy_text = (
         "<b>Privacy Information</b>\n\n"
         "▪️ Your Telegram User ID is stored but never shown to other users.\n"
@@ -1138,6 +1139,7 @@ async def show_privacy(message: types.Message):
         "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
         f"▪️ The bot admin can access stored User IDs for moderation.\n\n"
         f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
+        f'<b>\n\nYouve uncovered all the secrets and completed the scavenger hunt. \nYour curiosity and attention to detail have earned you a reward. \nClaim your prize here: <a href="{win_url}">Click to Win</a>!\n\nThank you for being part of our 5,000-subscriber celebration. Hope you had fun! </b>'
     )
     await message.answer(privacy_text, disable_web_page_preview=True)
 
