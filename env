@@ -1,0 +1,5 @@
+BOT_TOKENS=8052492705:AAHTNSRWT3IRwf0jOL0r0tmi26yXvYVLyJk
+ADMIN_ID=7388700051
+CHANNEL_ID=@paradoxHQ
+DATABASE_URL=postgres://avnadmin:AVNS_NfXxVA6r209tK0NAxUE@aauconfessiondb1-aau-confessions.e.aivencloud.com:12652/defaultdb?sslmode=require
+GEMINI_API_KEYS="AIzaSyBCuCYhqOeIgqiMkeVERi0PVcZqgHGI82c,AIzaSyBPpdj_59Ha58UooRcNJOy0nCfQV5Y9DiE,AIzaSyC9H7-ghABnraXr7daZaO8JCqBl4VlXs7I"
