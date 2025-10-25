@@ -952,7 +952,7 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
 
         except (ValueError, IndexError): await message.answer("Invalid link.")
         except Exception as e: logging.error(f"Err handling deep link '{deep_link_args}': {e}", exc_info=True); await message.answer("Error processing link.")
-    else: await message.answer("Welcome! Use Confess to submit confessions", reply_markup=keyboard)
+    else: await message.answer("Welcome! Use Confess to submit confessions. Partcipate in the 5K games", reply_markup=keyboard)
 
 @dp.callback_query(F.data == "accept_rules")
 async def handle_accept_rules(callback_query: types.CallbackQuery):
