@@ -1238,7 +1238,7 @@ async def _render_customization_menu(user_id: int) -> Tuple[str, InlineKeyboardM
 
     settings_text = (
         "<b>🎨 Profile Customization</b>\n\n"
-        "Here you can change your public appearance in the bot.\n\n"
+        "Here you can change your public appearance in the bot.\n\n🔍<b>CLUE 3\n Profiles reveal names, but hearts reveal clues.\nFind a #Crush from number last year - the year we breathed in.\nRead all the way down its where the next begin\n</b>"
         f"<b>Profile Emoji:</b> {current_emoji}\n"
         f"<b>Nickname:</b> {html.quote(current_nickname or 'Default (Anonymous)')}\n"
         f"<b>Bio:</b> {html.quote(current_bio or 'Not set')}"
