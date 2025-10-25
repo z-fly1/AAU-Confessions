@@ -311,6 +311,15 @@ async def setup():
         """)
         logging.info("Checked/Created 'user_points' table.")
         
+        # --- NEW: User Game Points Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_game_points (
+                user_id BIGINT PRIMARY KEY,
+                game_points INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        logging.info("Checked/Created 'user_game_points' table.")
+        
         # --- Reports Table Schema & Corrections ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reports (
@@ -556,6 +565,18 @@ async def get_user_points(user_id: int) -> int:
     async with db.acquire() as conn:
         points = await conn.fetchval("SELECT points FROM user_points WHERE user_id = $1", user_id)
         return points or 0
+        
+# --- NEW: Helper functions for game points ---
+async def get_user_game_points(user_id: int) -> int:
+    async with db.acquire() as conn:
+        points = await conn.fetchval("SELECT game_points FROM user_game_points WHERE user_id = $1", user_id)
+        return points or 0
+
+async def update_user_game_points(conn: asyncpg.Connection, user_id: int, delta: int):
+    if delta == 0: return
+    await conn.execute("INSERT INTO user_game_points (user_id, game_points) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET game_points = user_game_points.game_points + $2", user_id, delta)
+    logging.debug(f"Updated GAME points for user {user_id} by {delta}")
+# --- End of new helper functions ---
 
 async def update_user_points(conn: asyncpg.Connection, user_id: int, delta: int):
     if delta == 0: return
@@ -757,9 +778,11 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
                 us.nickname, us.profile_emoji, us.bio, us.allow_contact, 
                 us.gender, us.campus, us.year, us.department, us.interests,
                 us.show_gender, us.show_campus, us.show_year, us.show_department, us.show_interests,
-                COALESCE(up.points, 0) as points
+                COALESCE(up.points, 0) as points,
+                COALESCE(ugp.game_points, 0) as game_points
             FROM user_status us
             LEFT JOIN user_points up ON us.user_id = up.user_id
+            LEFT JOIN user_game_points ugp ON us.user_id = ugp.user_id
             WHERE us.user_id = $1
         """, profile_user_id)
 
@@ -777,12 +800,14 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
     nickname = html.quote(profile_data.get('nickname') or "Anonymous")
     emoji = profile_data.get('profile_emoji') or '👤'
     points = profile_data.get('points', 0)
+    game_points = profile_data.get('game_points', 0)
     bio = html.quote(profile_data.get('bio') or "This user has not set a bio yet.")
     allow_contact = profile_data.get('allow_contact', False)
 
     profile_text = (
         f"{emoji} <b>{nickname}'s Public Profile</b>\n\n"
         f"⚡︎ <b>Aura Points:</b> {points}\n"
+        f"🏆 <b>Game Points:</b> {game_points}\n"
         f"👥 <b>Followers:</b> {follower_count} | <b>Following:</b> {following_count}\n\n"
         f"📝 <b>Bio:</b>\n<i>{bio}</i>\n"
     )
@@ -987,6 +1012,7 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 builder.adjust(1, 1)
                 await message.answer(txt, reply_markup=builder.as_markup())
             
+            # --- MODIFICATION: Handle scavenger hunt win deep links ---
             elif deep_link_args.startswith("scavenger_win_"):
                 deep_link_code = deep_link_args.replace("scavenger_win_", "", 1)
                 logging.info(f"User {user_id} attempted scavenger hunt win with code: {deep_link_code}")
@@ -1007,9 +1033,9 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                             "INSERT INTO scavenger_winners (hunt_id, user_id) VALUES ($1, $2)",
                             hunt_id, user_id
                         )
-                        # If successful, award points
-                        await update_user_points(conn, user_id, reward)
-                        await message.answer(f"🎉 <b>Congratulations!</b> 🎉\n\nYou've successfully completed the '<b>{html.quote(hunt_name)}</b>' and earned <b>{reward}</b> Aura Points!", reply_markup=keyboard)
+                        # If successful, award GAME points
+                        await update_user_game_points(conn, user_id, reward)
+                        await message.answer(f"🎉 <b>Congratulations!</b> 🎉\n\nYou've successfully completed the '<b>{html.quote(hunt_name)}</b>' and earned <b>{reward}</b> Game Points!", reply_markup=keyboard)
                     
                     except asyncpg.exceptions.UniqueViolationError:
                         # This means the user has already won this hunt
@@ -1044,7 +1070,6 @@ async def handle_accept_rules(callback_query: types.CallbackQuery):
 
 
 @dp.message(Command("help"), StateFilter(None))
-@dp.message(F.text == "ℹ️ Help", StateFilter(None))
 async def show_help(message: types.Message):
     help_text = (
         "<b>Welcome to the Confession Bot!</b>\n\n"
@@ -1055,7 +1080,7 @@ async def show_help(message: types.Message):
         "/help - Display this help message.\n"
         "/privacy - View information about data privacy.\n\n"
         "<b>Interact with comments using the buttons:</b>\n"
-        "👍/👎: Like/Dislike (+1🏅/-1🏅 for the commenter).\n"
+        "👍/👎: Like/Dislike (+1⚡︎/-1⚡︎ Aura for the commenter).\n"
         "↪️ Reply: Reply to a comment (Text, Sticker, or GIF).\n"
         "🤝 Request Contact: (Author only) Ask to contact a commenter.\n\n"
         "Need more info or want to reach the admin directly?"
@@ -1180,11 +1205,12 @@ async def get_user_info_command(message: types.Message, command: CommandObject):
     try:
         async with db.acquire() as conn:
             user_points = await get_user_points(target_user_id)
+            user_game_points = await get_user_game_points(target_user_id)
             conf_count = await conn.fetchval("SELECT COUNT(*) FROM confessions WHERE user_id = $1", target_user_id)
             comm_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", target_user_id)
             status_data = await conn.fetchrow("SELECT * FROM user_status WHERE user_id = $1", target_user_id)
             
-            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Aura Points:</b> ⚡︎ {user_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
+            info_parts.append(f"\n<b>Bot Interaction:</b>\n  - <b>Aura Points:</b> ⚡︎ {user_points}\n  - <b>Game Points:</b> 🏆 {user_game_points}\n  - <b>Confessions:</b> {conf_count}\n  - <b>Comments:</b> {comm_count}")
             if status_data:
                 info_parts.append(f"  - <b>Nickname:</b> {html.quote(status_data['nickname'] or 'Default')} {status_data['profile_emoji'] or ''}")
                 if status_data['nickname_last_changed_at']:
@@ -1272,8 +1298,14 @@ async def user_profile(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     points = await get_user_points(user_id)
+    game_points = await get_user_game_points(user_id) # --- MODIFICATION ---
 
-    profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points:</b> {points}"
+    # --- MODIFICATION: Added Game Points display ---
+    profile_text = (
+        f"👤 <b>Your Profile</b>\n\n"
+        f"⚡︎ <b>Aura Points:</b> {points}\n"
+        f"🏆 <b>Game Points:</b> {game_points}"
+    )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
         [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
@@ -1292,7 +1324,13 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
     try:
         if action == "main":
             points = await get_user_points(user_id)
-            profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points :</b> {points}"
+            game_points = await get_user_game_points(user_id) # --- MODIFICATION ---
+            # --- MODIFICATION: Added Game Points display ---
+            profile_text = (
+                f"👤 <b>Your Profile</b>\n\n"
+                f"⚡︎ <b>Aura Points:</b> {points}\n"
+                f"🏆 <b>Game Points:</b> {game_points}"
+            )
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
                 [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
@@ -3483,6 +3521,7 @@ async def show_chat_history(user_id: int, partner_id: int, message_to_edit: type
     except TelegramBadRequest:
         await safe_send_message(user_id, history_text)
 
+
 # --- 5K GAMES SECTION ---
 
 trivia_questions = []
@@ -3500,7 +3539,7 @@ async def show_games_menu(message: types.Message):
     """Displays the main games menu."""
     games_text = (
         "🏆 <b>Welcome to the 5K Celebration Games!</b> 🏆\n\n"
-        "Thank you for being part of our community! To celebrate reaching 5,000 members, we've prepared some fun games for you to play and earn Aura Points.\n\n"
+        "Thank you for being part of our community! To celebrate reaching 5,000 members, we've prepared some fun games for you to play and earn Game Points.\n\n"
         "Choose an option below to get started:"
     )
     builder = InlineKeyboardBuilder()
@@ -3564,32 +3603,34 @@ async def show_leaderboard(callback_query: types.CallbackQuery, page: int = 1):
     offset = (page - 1) * LEADERBOARD_PAGE_SIZE
 
     async with db.acquire() as conn:
-        total_users = await conn.fetchval("SELECT COUNT(*) FROM user_points WHERE points > 0") or 0
+        # --- MODIFICATION: Query user_game_points table ---
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM user_game_points WHERE game_points > 0") or 0
         if total_users == 0:
-            await callback_query.answer("The leaderboard is empty.", show_alert=True)
+            await callback_query.answer("The game leaderboard is empty.", show_alert=True)
             return
 
         total_pages = (total_users + LEADERBOARD_PAGE_SIZE - 1) // LEADERBOARD_PAGE_SIZE
         page = max(1, min(page, total_pages))
 
         top_users = await conn.fetch("""
-            SELECT up.user_id, up.points, us.nickname, us.profile_emoji
-            FROM user_points up
-            LEFT JOIN user_status us ON up.user_id = us.user_id
-            ORDER BY up.points DESC
+            SELECT ugp.user_id, ugp.game_points, us.nickname, us.profile_emoji
+            FROM user_game_points ugp
+            LEFT JOIN user_status us ON ugp.user_id = us.user_id
+            ORDER BY ugp.game_points DESC
             LIMIT $1 OFFSET $2
         """, LEADERBOARD_PAGE_SIZE, offset)
         
         user_rank_query = """
             WITH ranked_users AS (
-                SELECT user_id, RANK() OVER (ORDER BY points DESC) as rank
-                FROM user_points
+                SELECT user_id, RANK() OVER (ORDER BY game_points DESC) as rank
+                FROM user_game_points
             )
             SELECT rank FROM ranked_users WHERE user_id = $1
         """
         user_rank = await conn.fetchval(user_rank_query, user_id)
 
-    leaderboard_text = f"📊 <b>Aura Points Leaderboard - Page {page}/{total_pages}</b>\n\n"
+    # --- MODIFICATION: Updated text to "Game Points" ---
+    leaderboard_text = f"🏆 <b>5K Games Leaderboard - Page {page}/{total_pages}</b>\n\n"
     rank_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
     rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -3597,15 +3638,15 @@ async def show_leaderboard(callback_query: types.CallbackQuery, page: int = 1):
         rank = rank_offset + i + 1
         emoji = user.get('profile_emoji') or '👤'
         nickname = html.quote(user.get('nickname') or 'Anonymous')
-        points = user['points']
+        points = user['game_points']
         rank_display = rank_emojis.get(rank, f"<b>{rank}.</b>")
-        leaderboard_text += f"{rank_display} {emoji} {nickname} - <i>{points} points</i>\n"
+        leaderboard_text += f"{rank_display} {emoji} {nickname} - <i>{points} Game Points</i>\n"
 
     if user_rank:
-        user_points = await get_user_points(user_id)
-        leaderboard_text += f"\n---\n<b>Your Rank:</b> #{user_rank} with {user_points} points"
+        user_game_points = await get_user_game_points(user_id)
+        leaderboard_text += f"\n---\n<b>Your Rank:</b> #{user_rank} with {user_game_points} Game Points"
     else:
-        leaderboard_text += "\n---\nYou are not yet on the leaderboard. Participate to earn points!"
+        leaderboard_text += "\n---\nYou are not yet on the leaderboard. Play a game to earn points!"
 
     builder = InlineKeyboardBuilder()
     nav_row = []
@@ -3652,7 +3693,7 @@ async def start_trivia_round(message: types.Message, state: FSMContext, user_id:
         is_anonymous=False,
         type='quiz',
         correct_option_id=question_data['correct_index'],
-        explanation=f"Correct answer awards {question_data['points']} points!"
+        explanation=f"Correct answer awards {question_data['points']} Game Points!"
     )
 
 @dp.poll_answer(StateFilter(GamesForm.in_trivia))
@@ -3675,11 +3716,12 @@ async def handle_trivia_answer(poll_answer: types.PollAnswer, state: FSMContext)
             "INSERT INTO trivia_answered (user_id, question_index) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             user_id, question_index
         )
+        # --- MODIFICATION: Update game points ---
         if is_correct:
-            await update_user_points(conn, user_id, points)
+            await update_user_game_points(conn, user_id, points)
     
     if is_correct:
-        feedback = f"✅ Correct! You've earned <b>{points}</b> Aura Points!"
+        feedback = f"✅ Correct! You've earned <b>{points}</b> Game Points!"
     else:
         feedback = "❌ Sorry, that wasn't the correct answer."
 
