@@ -1128,7 +1128,7 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
 @dp.message(Command("privacy"), StateFilter(None))
 async def show_privacy(message: types.Message):
     privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-04-27"
-    win_url = "https://t.me/@aau_confessions_bot?start=scavenger_win_5k_celebration_win"
+    win_url = "https://t.me/aau_confessions_bot?start=scavenger_win_5k_celebration_win"
     privacy_text = (
         "<b>Privacy Information</b>\n\n"
         "▪️ Your Telegram User ID is stored but never shown to other users.\n"
