@@ -23,6 +23,9 @@ from typing import Optional, Tuple, Dict, Any, List, Set, Union
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
 
+# --- NEW: Import cryptography ---
+from cryptography.fernet import Fernet, InvalidToken
+
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
 
@@ -110,6 +113,8 @@ RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNA
 # --- MODIFICATION: Load multiple Gemini API keys ---
 GEMINI_API_KEYS_STR = os.getenv("GEMINI_API_KEYS")
 GEMINI_API_KEYS = [key.strip() for key in (GEMINI_API_KEYS_STR or "").split(',') if key.strip()]
+# --- NEW: Load Encryption Key ---
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 
 # Validate essential environment variables before proceeding
@@ -118,11 +123,17 @@ if not ADMIN_ID_STR: raise ValueError("FATAL: ADMIN_ID environment variable not 
 if not CHANNEL_ID: raise ValueError("FATAL: CHANNEL_ID environment variable not set!")
 if not DATABASE_URL: raise ValueError("FATAL: DATABASE_URL environment variable not set!")
 if not GEMINI_API_KEYS: raise ValueError("FATAL: GEMINI_API_KEYS environment variable not set or empty!")
+# --- NEW: Validate Encryption Key ---
+if not ENCRYPTION_KEY: raise ValueError("FATAL: ENCRYPTION_KEY environment variable not set! Please generate one.")
+
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
 except ValueError:
     raise ValueError("FATAL: ADMIN_ID environment variable must be a valid integer!")
+
+# --- NEW: Initialize encryption suite ---
+cipher_suite = Fernet(ENCRYPTION_KEY.encode())
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -470,6 +481,20 @@ async def start_dummy_server():
 
 
 # --- Helper Functions ---
+# --- NEW: Encryption Helpers ---
+def encrypt_user_id(user_id: int) -> str:
+    """Encrypts a user ID into a URL-safe string."""
+    return cipher_suite.encrypt(str(user_id).encode()).decode()
+
+def decrypt_user_id(encrypted_id: str) -> Optional[int]:
+    """Decrypts a string back to a user ID, returns None on failure."""
+    try:
+        decrypted_bytes = cipher_suite.decrypt(encrypted_id.encode())
+        return int(decrypted_bytes.decode())
+    except (InvalidToken, ValueError, TypeError):
+        logging.warning(f"Failed to decrypt an invalid token: {encrypted_id}")
+        return None
+
 # --- ADMIN REVIEW --- Helper to get the correct keyboard based on user ID
 def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     """Returns the appropriate main menu keyboard for a user."""
@@ -624,7 +649,10 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
 
             nickname = c_data.get('nickname') or "Anonymous"
-            profile_url = f"https://t.me/{bot_info.username}?start=profile_{commenter_uid}"
+            
+            # --- MODIFICATION: Use encrypted ID for profile URL ---
+            encrypted_uid = encrypt_user_id(commenter_uid)
+            profile_url = f"https://t.me/{bot_info.username}?start=profile_{encrypted_uid}"
             
             if commenter_uid == confession_owner_id:
                 tag = f"<a href='{profile_url}'>✅ Confession Author</a>"
@@ -942,10 +970,15 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 builder.adjust(1, 1)
                 await message.answer(txt, reply_markup=builder.as_markup())
             
+            # --- MODIFICATION: Decrypt the user ID from the deep link ---
             elif deep_link_args.startswith("profile_"):
-                profile_user_id = int(deep_link_args.split("_")[1])
-                logging.info(f"User {user_id} deep linked to profile of {profile_user_id}")
-                await show_public_profile(user_id, profile_user_id)
+                encrypted_id = deep_link_args.split("_")[1]
+                profile_user_id = decrypt_user_id(encrypted_id)
+                if profile_user_id:
+                    logging.info(f"User {user_id} deep linked to profile of {profile_user_id}")
+                    await show_public_profile(user_id, profile_user_id)
+                else:
+                    await message.answer("This profile link is invalid or has expired.", reply_markup=keyboard)
 
             else:
                 await message.answer("Invalid link.", reply_markup=keyboard)
