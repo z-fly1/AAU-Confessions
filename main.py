@@ -22,9 +22,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from typing import Optional, Tuple, Dict, Any, List, Set, Union
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
-
-# --- NEW: Import cryptography ---
-from cryptography.fernet import Fernet, InvalidToken
+import secrets # <-- NEW: For generating secure tokens
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -113,8 +111,6 @@ RESERVED_NICKNAMES: Set[str] = {name.strip().lower() for name in RESERVED_NICKNA
 # --- MODIFICATION: Load multiple Gemini API keys ---
 GEMINI_API_KEYS_STR = os.getenv("GEMINI_API_KEYS")
 GEMINI_API_KEYS = [key.strip() for key in (GEMINI_API_KEYS_STR or "").split(',') if key.strip()]
-# --- NEW: Load Encryption Key ---
-ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 
 # Validate essential environment variables before proceeding
@@ -123,17 +119,12 @@ if not ADMIN_ID_STR: raise ValueError("FATAL: ADMIN_ID environment variable not 
 if not CHANNEL_ID: raise ValueError("FATAL: CHANNEL_ID environment variable not set!")
 if not DATABASE_URL: raise ValueError("FATAL: DATABASE_URL environment variable not set!")
 if not GEMINI_API_KEYS: raise ValueError("FATAL: GEMINI_API_KEYS environment variable not set or empty!")
-# --- NEW: Validate Encryption Key ---
-if not ENCRYPTION_KEY: raise ValueError("FATAL: ENCRYPTION_KEY environment variable not set! Please generate one.")
 
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
 except ValueError:
     raise ValueError("FATAL: ADMIN_ID environment variable must be a valid integer!")
-
-# --- NEW: Initialize encryption suite ---
-cipher_suite = Fernet(ENCRYPTION_KEY.encode())
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -430,6 +421,12 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_year BOOLEAN NOT NULL DEFAULT FALSE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_department BOOLEAN NOT NULL DEFAULT FALSE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS show_interests BOOLEAN NOT NULL DEFAULT FALSE;")
+        
+        # --- NEW: Add profile_token column ---
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS profile_token VARCHAR(16) NULL;")
+        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_status_profile_token ON user_status(profile_token);")
+        logging.info("Ensured 'profile_token' column and index exist in 'user_status'.")
+
         logging.info("Ensured all customizable profile columns exist in 'user_status'.")
 
         # --- NEW: Notification Preference Columns ---
@@ -481,19 +478,37 @@ async def start_dummy_server():
 
 
 # --- Helper Functions ---
-# --- NEW: Encryption Helpers ---
-def encrypt_user_id(user_id: int) -> str:
-    """Encrypts a user ID into a URL-safe string."""
-    return cipher_suite.encrypt(str(user_id).encode()).decode()
+# --- NEW: Token-based profile link helper ---
+async def get_or_create_profile_token(user_id: int) -> str:
+    """
+    Retrieves a user's unique profile token from the DB.
+    If it doesn't exist, it creates, saves, and returns a new one.
+    """
+    async with db.acquire() as conn:
+        # --- FIX: Ensure the user row exists before we do anything else ---
+        # This safely creates a record for the user if they don't have one,
+        # without which the UPDATE query below would fail silently.
+        await conn.execute("INSERT INTO user_status(user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
 
-def decrypt_user_id(encrypted_id: str) -> Optional[int]:
-    """Decrypts a string back to a user ID, returns None on failure."""
-    try:
-        decrypted_bytes = cipher_suite.decrypt(encrypted_id.encode())
-        return int(decrypted_bytes.decode())
-    except (InvalidToken, ValueError, TypeError):
-        logging.warning(f"Failed to decrypt an invalid token: {encrypted_id}")
-        return None
+        # 1. Try to get the existing token
+        token = await conn.fetchval("SELECT profile_token FROM user_status WHERE user_id = $1", user_id)
+        if token:
+            return token
+
+        # 2. If no token, create a new one and save it
+        # Loop to ensure the generated token is absolutely unique.
+        while True:
+            new_token = secrets.token_urlsafe(8) # Generates an 11-character URL-safe string
+            try:
+                await conn.execute(
+                    "UPDATE user_status SET profile_token = $1 WHERE user_id = $2",
+                    new_token, user_id
+                )
+                logging.info(f"Generated new profile token for user {user_id}")
+                return new_token
+            except asyncpg.exceptions.UniqueViolationError:
+                logging.warning("Profile token collision detected. Generating a new one.")
+                continue
 
 # --- ADMIN REVIEW --- Helper to get the correct keyboard based on user ID
 def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
@@ -650,9 +665,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 
             nickname = c_data.get('nickname') or "Anonymous"
             
-            # --- MODIFICATION: Use encrypted ID for profile URL ---
-            encrypted_uid = encrypt_user_id(commenter_uid)
-            profile_url = f"https://t.me/{bot_info.username}?start=profile_{encrypted_uid}"
+            # --- MODIFICATION: Use profile token for the link ---
+            profile_token = await get_or_create_profile_token(commenter_uid)
+            profile_url = f"https://t.me/{bot_info.username}?start=profile_{profile_token}"
             
             if commenter_uid == confession_owner_id:
                 tag = f"<a href='{profile_url}'>✅ Confession Author</a>"
@@ -970,12 +985,19 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 builder.adjust(1, 1)
                 await message.answer(txt, reply_markup=builder.as_markup())
             
-            # --- MODIFICATION: Decrypt the user ID from the deep link ---
             elif deep_link_args.startswith("profile_"):
-                encrypted_id = deep_link_args.split("_")[1]
-                profile_user_id = decrypt_user_id(encrypted_id)
+                # --- FIX IS HERE ---
+                # OLD: profile_token = deep_link_args.split("_")[1] 
+                # NEW: Use slicing to robustly remove the prefix
+                profile_token = deep_link_args[len("profile_"):]
+
+                async with db.acquire() as conn:
+                    profile_user_id = await conn.fetchval(
+                        "SELECT user_id FROM user_status WHERE profile_token = $1", profile_token
+                    )
+                
                 if profile_user_id:
-                    logging.info(f"User {user_id} deep linked to profile of {profile_user_id}")
+                    logging.info(f"User {user_id} deep linked to profile of {profile_user_id} via token.")
                     await show_public_profile(user_id, profile_user_id)
                 else:
                     await message.answer("This profile link is invalid or has expired.", reply_markup=keyboard)
