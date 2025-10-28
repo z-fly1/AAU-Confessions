@@ -1084,17 +1084,17 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
 
 @dp.message(Command("privacy"), StateFilter(None))
 async def show_privacy(message: types.Message):
-    privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-04-27"
+    privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-10-28"
     privacy_text = (
-        "<b>Privacy Information</b>\n\n"
-        "▪️ Your Telegram User ID is stored but never shown to other users.\n"
-        "▪️ Comments are posted with your chosen Nickname (default: Anonymous).\n"
-        "▪️ Your Aura points (⚡︎) are displayed next to your tag on comments.\n"
-        "▪️ The confession author can request to contact you. You must explicitly approve sharing your @username.\n"
-        "▪️ Other users can view your public profile (Nickname, Emoji, Bio, Aura, and any other details you choose to share) and request to chat anonymously.\n"
-        "▪️ Reporting a comment links your User ID to the report for admin review but is not shown publicly.\n"
-        f"▪️ The bot admin can access stored User IDs for moderation.\n\n"
-        f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
+    "<b>Privacy Information</b>\n\n"
+    "▪️ Your Telegram User ID is stored for functionality but is **never** shown to other users.\n"
+    "▪️ Your public identity (Nickname, Emoji, Bio, Aura points) is visible on your comments and profile.\n"
+    "▪️ You control what extra details (like Campus or Interests) are visible on your profile.\n"
+    "▪️ Other users can follow you and request to chat. You must approve any chat request.\n"
+    "▪️ Using AI features sends your confession text to Google's AI for processing.\n"
+    "▪️ Reporting a user or comment links your User ID to the report for admin review only.\n"
+    f"▪️ The bot admin can access stored User IDs for moderation and support.\n\n"
+    f'For more details, read our full <a href="{privacy_policy_url}">Privacy Policy</a>.'
     )
     await message.answer(privacy_text, disable_web_page_preview=True)
 
