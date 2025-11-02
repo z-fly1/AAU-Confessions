@@ -2774,16 +2774,63 @@ async def notify_followers_of_comment(commenter_id: int, confession_id: int, com
             if follower['follower_id'] != commenter_id:
                 await safe_send_message(follower['follower_id'], notification_text, disable_web_page_preview=True)
 
+# --- NEW: Spam check and auto-block helper function ---
+async def check_and_handle_spam(message: types.Message, state: FSMContext) -> bool:
+    """Checks message text for spam keywords. If found, blocks the user and returns True."""
+    if not message.text:
+        return False
+
+    normalized_text = message.text.lower()
+    spam_keywords = ["melsget"]  # This list can be expanded with more keywords
+
+    if any(keyword in normalized_text for keyword in spam_keywords):
+        user_id = message.from_user.id
+        reason = "Automatic block: Spam detected in comment/reply."
+        keyboard = get_main_keyboard(user_id)
+
+        # Notify the user they are being blocked
+        await message.answer(
+            "❌ Your message was flagged as spam and has been rejected. This action has resulted in a permanent block.",
+            reply_markup=keyboard
+        )
+
+        # Apply the permanent block. We pass the message object so the apply_block function can reply to it.
+        await apply_block(message, user_id, reason, is_permanent=True)
+
+        # Notify the admin
+        admin_notification = (
+            f"🤖 <b>Automatic User Block</b> 🤖\n\n"
+            f"<b>User ID:</b> <code>{user_id}</code>\n"
+            f"<b>Username:</b> @{message.from_user.username or 'N/A'}\n"
+            f"<b>Reason:</b> {reason}\n\n"
+            f"<b>Triggering Message:</b>\n<i>{html.quote(message.text)}</i>"
+        )
+        await safe_send_message(ADMIN_ID, admin_notification)
+
+        await state.clear()
+        return True  # Indicates that spam was found and handled
+
+    return False  # No spam found
+
 @dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation))
 async def receive_comment(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id; data = await state.get_data(); conf_id = data.get("confession_id")
+    # --- MODIFIED: Spam Check at the beginning ---
+    if await check_and_handle_spam(message, state):
+        return
+    # --- End of Spam Check ---
+
+    user_id = message.from_user.id
+    data = await state.get_data()
+    conf_id = data.get("confession_id")
     keyboard = get_main_keyboard(user_id)
     if not conf_id: await message.answer("⚠️ Error: Context lost. Please try again."); return
+    
     comm_text, sticker_id, animation_id, log_type = None, None, None, "Unknown"
     if message.text: comm_text, log_type = message.text.strip(), "Text"
     elif message.sticker: sticker_id, log_type = message.sticker.file_id, "Sticker"
     elif message.animation: animation_id, log_type = message.animation.file_id, "GIF"
     else: await message.answer("Invalid content. Please send text, sticker, or GIF."); return
+
     try:
         async with db.acquire() as conn:
             async with conn.transaction():
@@ -2811,7 +2858,6 @@ async def receive_comment(message: types.Message, state: FSMContext):
         logging.error(f"Error saving {log_type} comment for Conf {conf_id} by {user_id}: {e}", exc_info=True)
         await message.answer("❌ Error saving comment. The confession may have been removed.")
     finally: await state.clear()
-
 
 @dp.callback_query(F.data.startswith("reply_"))
 async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMContext):
@@ -2856,6 +2902,11 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
 
 @dp.message(CommentForm.waiting_for_reply, (F.text | F.sticker | F.animation))
 async def receive_reply(message: types.Message, state: FSMContext):
+    # --- MODIFIED: Spam Check at the beginning ---
+    if await check_and_handle_spam(message, state):
+        return
+    # --- End of Spam Check ---
+    
     user_id = message.from_user.id
     data = await state.get_data()
     conf_id, parent_id = data.get("confession_id"), data.get("parent_comment_id")
