@@ -200,6 +200,11 @@ class ReportForm(StatesGroup):
 class AdminReview(StatesGroup):
     reviewing = State()
 
+# --- NEW: FSM for Announcements ---
+class AnnouncementForm(StatesGroup):
+    waiting_for_content = State()
+    waiting_for_confirmation = State()
+
 # --- Database ---
 db = None
 async def create_db_pool():
@@ -436,6 +441,25 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_followed_user_activity BOOLEAN NOT NULL DEFAULT TRUE;")
         logging.info("Ensured all notification preference columns exist in 'user_status'.")
 
+        # --- NEW: Announcements Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS announcements (
+                id SERIAL PRIMARY KEY,
+                message TEXT NOT NULL,
+                photo_file_id TEXT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        logging.info("Checked/Created 'announcements' table.")
+
+        # --- NEW: Add last_seen_announcement_id to user_status ---
+        await conn.execute("""
+            ALTER TABLE user_status 
+            ADD COLUMN IF NOT EXISTS last_seen_announcement_id INTEGER NULL 
+            REFERENCES announcements(id) ON DELETE SET NULL;
+        """)
+        logging.info("Ensured 'last_seen_announcement_id' column exists in 'user_status'.")
 
         logging.info("Database tables setup complete.")
 
@@ -862,6 +886,139 @@ class BlockUserMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
+# --- NEW: Middleware to show announcements (with action resumption) ---
+class AnnouncementMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: types.TelegramObject, data: Dict[str, Any]) -> Any:
+        user = data.get('event_from_user')
+        
+        if isinstance(event, types.CallbackQuery) and event.data.startswith("seen_ann_"):
+            return await handler(event, data)
+
+        if not user or user.id == ADMIN_ID:
+            return await handler(event, data)
+
+        state: FSMContext = data.get('state')
+        if state and await state.get_state() is not None:
+             return await handler(event, data)
+
+        async with db.acquire() as conn:
+            active_ann = await conn.fetchrow("SELECT id, message, photo_file_id FROM announcements WHERE is_active = TRUE LIMIT 1")
+            if not active_ann:
+                return await handler(event, data)
+
+            user_last_seen_id = await conn.fetchval(
+                "SELECT last_seen_announcement_id FROM user_status WHERE user_id = $1", user.id
+            )
+            if user_last_seen_id == active_ann['id']:
+                return await handler(event, data)
+
+        # --- User needs to see the announcement, store their action ---
+        if isinstance(event, types.Message) and event.text:
+            await state.update_data(resume_action={'type': 'message', 'text': event.text})
+        elif isinstance(event, types.CallbackQuery) and event.data:
+            await state.update_data(resume_action={'type': 'callback', 'data': event.data})
+
+        if isinstance(event, types.CallbackQuery):
+            await event.answer()
+
+        ann_id = active_ann['id']
+        message_text = f"📢 <b>Announcement</b>\n\n{html.quote(active_ann['message'])}"
+        photo_file_id = active_ann['photo_file_id']
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Got it!", callback_data=f"seen_ann_{ann_id}")]
+        ])
+
+        try:
+            if photo_file_id:
+                await bot.send_photo(user.id, photo_file_id, caption=message_text, reply_markup=keyboard)
+            else:
+                await bot.send_message(user.id, message_text, reply_markup=keyboard)
+        except (TelegramForbiddenError, TelegramBadRequest):
+            logging.warning(f"Could not deliver announcement to user {user.id} (bot may be blocked).")
+            async with db.acquire() as conn:
+                await conn.execute("UPDATE user_status SET last_seen_announcement_id = $1 WHERE user_id = $2", ann_id, user.id)
+            return await handler(event, data)
+
+        return # Stop the original handler
+
+# --- NEW: Handler for acknowledging the announcement (with action resumption) ---
+@dp.callback_query(F.data.startswith("seen_ann_"))
+async def handle_seen_announcement(callback_query: types.CallbackQuery, state: FSMContext):
+    ann_id = int(callback_query.data.split("_")[-1])
+    user_id = callback_query.from_user.id
+    user_data = await state.get_data()
+    resume_action = user_data.get('resume_action')
+
+    async with db.acquire() as conn:
+        await conn.execute("INSERT INTO user_status (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
+        await conn.execute(
+            "UPDATE user_status SET last_seen_announcement_id = $1 WHERE user_id = $2",
+            ann_id, user_id
+        )
+    
+    await state.clear() # Clear the resume_action from state
+    await callback_query.answer("Thank you!")
+    await callback_query.message.delete()
+
+    if resume_action:
+        await callback_query.message.answer("Resuming your previous action...")
+        await resume_user_action(user_id, resume_action, state)
+    else:
+        await callback_query.message.answer("You can now continue using the bot.", reply_markup=get_main_keyboard(user_id))
+
+# --- NEW: Helper function to resume user actions ---
+async def resume_user_action(user_id: int, action_data: dict, state: FSMContext):
+    """
+    Takes stored action data and attempts to re-initiate the user's
+    intended command or callback.
+    """
+    action_type = action_data.get('type')
+    user = types.User(id=user_id, is_bot=False, first_name="User")
+
+    if action_type == 'message':
+        text = action_data.get('text')
+        # We create a dummy message object sufficient for the handlers
+        dummy_message = types.Message(
+            message_id=0, date=datetime.now(),
+            chat=types.Chat(id=user_id, type='private'),
+            from_user=user, text=text
+        )
+        if text in ["/confess", "✍️ Confess"]:
+            await start_confession(dummy_message, state)
+        elif text in ["/profile", "👤 Profile"]:
+            await user_profile(dummy_message, state)
+        elif text in ["/help", "ℹ️ Help"]:
+            await show_help(dummy_message)
+        elif text == "/rules":
+            await show_rules(dummy_message)
+        elif text == "/privacy":
+            await show_privacy(dummy_message)
+        else:
+             await bot.send_message(user_id, "Please try your action again.", reply_markup=get_main_keyboard(user_id))
+
+
+    elif action_type == 'callback':
+        data = action_data.get('data')
+        # Callbacks are harder as they expect to edit a message.
+        # We'll send a temporary message and pass it to the handler.
+        temp_msg = await bot.send_message(user_id, "...")
+        dummy_callback = types.CallbackQuery(
+            id="resume_dummy", from_user=user,
+            chat_instance="dummy", message=temp_msg, data=data
+        )
+        try:
+            if data.startswith("profile_menu_"):
+                await handle_profile_menu(dummy_callback, state)
+            # Add other major callback handlers here if needed
+            # elif data.startswith("browse_"):
+            #     await browse_comments_action(dummy_callback)
+            else:
+                 await temp_msg.edit_text("Could not automatically resume your action. Please try again.", reply_markup=None)
+        except Exception as e:
+            logging.error(f"Error resuming callback action '{data}': {e}")
+            await temp_msg.edit_text("An error occurred while resuming your action. Please try again.")
+
 # --- Handlers ---
 
 # --- FIX: Corrected parsing for follow/unfollow actions ---
@@ -1048,6 +1205,7 @@ async def show_help(message: types.Message):
     ])
     if message.from_user and message.from_user.id == ADMIN_ID:
         help_text += ("\n\n<b>Admin Commands:</b>\n"
+                      "🔹 /announce - Create a new global announcement.\n"
                       "🔹 /id &lt;user_id&gt; - Get user info.\n"
                       "🔹 /warn &lt;user_id&gt; &lt;reason&gt; - Send a warning.\n"
                       "🔹 /block &lt;user_id&gt; &lt;duration&gt; [reason] - Temp block (e.g., 7d, 2w).\n"
@@ -2620,6 +2778,79 @@ async def admin_handle_deletion_request(callback_query: types.CallbackQuery):
     await callback_query.answer(f"Request {final_status}.")
 
 
+# --- NEW: Admin Announcement Handlers ---
+@dp.message(Command("announce"), F.from_user.id == ADMIN_ID)
+async def admin_start_announcement(message: types.Message, state: FSMContext):
+    await state.set_state(AnnouncementForm.waiting_for_content)
+    await message.answer(
+        "Please send the announcement message.\n\nYou can send text, or a photo with a caption.",
+        reply_markup=cancel_keyboard
+    )
+
+@dp.message(AnnouncementForm.waiting_for_content, (F.text | F.photo))
+async def admin_receive_announcement_content(message: types.Message, state: FSMContext):
+    text = ""
+    photo_id = None
+
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+        text = message.caption or ""
+    elif message.text:
+        text = message.text
+
+    if not text:
+        await message.answer("The announcement must have some text. Please try again.")
+        return
+
+    await state.update_data(ann_text=text, ann_photo_id=photo_id)
+    await state.set_state(AnnouncementForm.waiting_for_confirmation)
+
+    # Show preview
+    preview_text = f"<b>📢 Announcement Preview</b>\n\n{html.quote(text)}"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Broadcast to All Users", callback_data="ann_confirm")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="ann_cancel")]
+    ])
+
+    if photo_id:
+        await message.answer_photo(photo_id, caption=preview_text, reply_markup=keyboard)
+    else:
+        await message.answer(preview_text, reply_markup=keyboard)
+
+@dp.callback_query(StateFilter(AnnouncementForm.waiting_for_confirmation), F.data.startswith("ann_"))
+async def admin_confirm_announcement(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split("_")[1]
+
+    if action == "cancel":
+        await state.clear()
+        await callback_query.message.delete()
+        await callback_query.message.answer("Announcement cancelled.", reply_markup=get_main_keyboard(ADMIN_ID))
+        await callback_query.answer()
+        return
+
+    if action == "confirm":
+        data = await state.get_data()
+        text = data.get("ann_text")
+        photo_id = data.get("ann_photo_id")
+
+        async with db.acquire() as conn:
+            async with conn.transaction():
+                # Deactivate all old announcements
+                await conn.execute("UPDATE announcements SET is_active = FALSE WHERE is_active = TRUE")
+                # Insert the new active announcement
+                await conn.execute(
+                    "INSERT INTO announcements (message, photo_file_id, is_active) VALUES ($1, $2, TRUE)",
+                    text, photo_id
+                )
+        
+        await state.clear()
+        await callback_query.message.delete()
+        await callback_query.message.answer(
+            "✅ Announcement is now live. Users will see it on their next interaction.",
+            reply_markup=get_main_keyboard(ADMIN_ID)
+        )
+        await callback_query.answer("Announcement broadcasted!")
+
 @dp.message(Command("warn"))
 async def admin_warn_user(message: types.Message, command: CommandObject):
     if not message.from_user or message.from_user.id != ADMIN_ID: return
@@ -3531,9 +3762,13 @@ async def main():
         if not db or not bot_info:
             logging.critical("FATAL: Database or bot info missing after setup. Cannot start.")
             return
-
+        
+        # --- NEW: Register Middlewares. Announcement runs AFTER BlockUser ---
         dp.message.middleware(BlockUserMiddleware())
         dp.callback_query.middleware(BlockUserMiddleware())
+        dp.message.middleware(AnnouncementMiddleware())
+        dp.callback_query.middleware(AnnouncementMiddleware())
+
 
         commands = [
             types.BotCommand(command="start", description="Start/View confession"),
@@ -3545,6 +3780,7 @@ async def main():
             types.BotCommand(command="cancel", description="Cancel current action"),
         ]
         admin_commands = commands + [
+            types.BotCommand(command="announce", description="ADMIN: Create a new announcement"),
             types.BotCommand(command="id", description="ADMIN: Get user info"),
             types.BotCommand(command="warn", description="ADMIN: Warn a user"),
             types.BotCommand(command="block", description="ADMIN: Temporarily block a user"),
