@@ -104,6 +104,7 @@ BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
+BROWSE_PAGE_SIZE = 10  # Number of confessions to show per page in browse views
 DATABASE_URL = os.getenv("DATABASE_URL")
 HTTP_PORT_STR = os.getenv("PORT")
 RESERVED_NICKNAMES_STR = os.getenv("RESERVED_NICKNAMES", "Admin,Administrator,Moderator,Mod,Owner,Author,Anonymous,You")
@@ -207,7 +208,11 @@ class ReportForm(StatesGroup):
     waiting_for_reason = State()
 
 class BrowseForm(StatesGroup):
+    selecting_browse_option = State()
+    selecting_category = State()
     waiting_for_confession_id = State()
+    browsing_popular = State()
+    browsing_by_category = State()
 
 
 # --- ADMIN REVIEW --- New state for the review process
@@ -1260,16 +1265,252 @@ async def show_rules_from_help(callback_query: types.CallbackQuery):
 # --- Browse Confessions Handlers ---
 @dp.message(F.text == "🔍 Browse Confessions", StateFilter(None))
 async def browse_confessions_prompt(message: types.Message, state: FSMContext):
-    """Prompt user to enter a confession ID to browse."""
-    await state.set_state(BrowseForm.waiting_for_confession_id)
+    """Show menu options for browsing confessions."""
+    await state.set_state(BrowseForm.selecting_browse_option)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔥 Browse by Popular", callback_data="browse_popular")
+    builder.button(text="📂 Browse by Category", callback_data="browse_category")
+    builder.button(text="🔢 Browse by ID", callback_data="browse_by_id")
+    builder.adjust(1)
+    
     await message.answer(
         "🔍 <b>Browse Confessions</b>\n\n"
-        "Please enter the confession ID you want to view.\n"
-        "Example: <code>123</code>",
-        reply_markup=cancel_keyboard
+        "Choose how you want to browse confessions:",
+        reply_markup=builder.as_markup()
     )
 
 
+# --- Callback handler for browse by popular ---
+@dp.callback_query(F.data.startswith("browse_popular"))
+async def browse_by_popular(callback_query: types.CallbackQuery, state: FSMContext):
+    """Show popular confessions based on comment count with pagination."""
+    await callback_query.answer()
+    
+    # Parse page number from callback data
+    page = 1
+    if "_page_" in callback_query.data:
+        try:
+            page = int(callback_query.data.split("_page_")[1])
+        except (ValueError, IndexError):
+            page = 1
+    
+    offset = (page - 1) * BROWSE_PAGE_SIZE
+    
+    async with db.acquire() as conn:
+        # Get total count
+        total_count = await conn.fetchval("""
+            SELECT COUNT(DISTINCT c.id)
+            FROM confessions c
+            WHERE c.status = 'approved'
+        """)
+        
+        # Get confessions for current page
+        popular_confessions = await conn.fetch("""
+            SELECT c.id, c.text, c.categories, COUNT(cm.id) as comment_count
+            FROM confessions c
+            LEFT JOIN comments cm ON c.id = cm.confession_id
+            WHERE c.status = 'approved'
+            GROUP BY c.id
+            ORDER BY comment_count DESC, c.created_at DESC
+            LIMIT $1 OFFSET $2
+        """, BROWSE_PAGE_SIZE, offset)
+    
+    if not popular_confessions:
+        await callback_query.message.edit_text(
+            "❌ No confessions found yet.",
+            reply_markup=None
+        )
+        await state.clear()
+        return
+    
+    total_pages = (total_count + BROWSE_PAGE_SIZE - 1) // BROWSE_PAGE_SIZE
+    
+    text = f"🔥 <b>Popular Confessions</b> (by comments)\n\nPage {page}/{total_pages}\n\n"
+    builder = InlineKeyboardBuilder()
+    
+    for conf in popular_confessions:
+        preview = conf['text'][:50] + "..." if len(conf['text']) > 50 else conf['text']
+        comment_count = conf['comment_count']
+        builder.button(
+            text=f"#{conf['id']} - {preview} ({comment_count} 💬)",
+            callback_data=f"view_conf_{conf['id']}"
+        )
+    
+    builder.adjust(1)
+    
+    # Add pagination buttons
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(
+            text="⬅️ Previous",
+            callback_data=f"browse_popular_page_{page - 1}"
+        ))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Next ➡️",
+            callback_data=f"browse_popular_page_{page + 1}"
+        ))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+    
+    builder.row(InlineKeyboardButton(text="« Back to Browse Menu", callback_data="back_to_browse_menu"))
+    
+    await callback_query.message.edit_text(
+        text + "Select a confession to view:",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(BrowseForm.browsing_popular)
+
+
+# --- Callback handler for browse by category ---
+@dp.callback_query(F.data == "browse_category")
+async def browse_by_category_menu(callback_query: types.CallbackQuery, state: FSMContext):
+    """Show category selection menu."""
+    await callback_query.answer()
+    
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        if category:  # Skip empty categories
+            builder.button(text=category, callback_data=f"browse_cat_{category}")
+    
+    builder.button(text="« Back to Browse Menu", callback_data="back_to_browse_menu")
+    builder.adjust(2)
+    
+    await callback_query.message.edit_text(
+        "📂 <b>Browse by Category</b>\n\n"
+        "Select a category to view confessions:",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(BrowseForm.selecting_category)
+
+
+# --- Callback handler for category selection ---
+@dp.callback_query(F.data.startswith("browse_cat_"))
+async def show_category_confessions(callback_query: types.CallbackQuery, state: FSMContext):
+    """Show confessions for the selected category with pagination."""
+    await callback_query.answer()
+    
+    # Parse category and page from callback data
+    # Format: browse_cat_{category} or browse_cat_{category}_page_{page}
+    data_parts = callback_query.data.replace("browse_cat_", "")
+    
+    page = 1
+    if "_page_" in data_parts:
+        parts = data_parts.rsplit("_page_", 1)
+        category = parts[0]
+        try:
+            page = int(parts[1])
+        except (ValueError, IndexError):
+            page = 1
+    else:
+        category = data_parts
+    
+    offset = (page - 1) * BROWSE_PAGE_SIZE
+    
+    async with db.acquire() as conn:
+        # Get total count for this category
+        total_count = await conn.fetchval("""
+            SELECT COUNT(DISTINCT c.id)
+            FROM confessions c
+            WHERE c.status = 'approved' AND $1 = ANY(c.categories)
+        """, category)
+        
+        # Get confessions for current page
+        confessions = await conn.fetch("""
+            SELECT c.id, c.text, c.categories, COUNT(cm.id) as comment_count
+            FROM confessions c
+            LEFT JOIN comments cm ON c.id = cm.confession_id
+            WHERE c.status = 'approved' AND $1 = ANY(c.categories)
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            LIMIT $2 OFFSET $3
+        """, category, BROWSE_PAGE_SIZE, offset)
+    
+    if not confessions:
+        await callback_query.message.edit_text(
+            f"❌ No confessions found in the <b>{category}</b> category.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="« Back", callback_data="browse_category")
+            ]])
+        )
+        return
+    
+    total_pages = (total_count + BROWSE_PAGE_SIZE - 1) // BROWSE_PAGE_SIZE
+    
+    text = f"📂 <b>{category} Confessions</b>\n\nPage {page}/{total_pages}\n\n"
+    builder = InlineKeyboardBuilder()
+    
+    for conf in confessions:
+        preview = conf['text'][:50] + "..." if len(conf['text']) > 50 else conf['text']
+        comment_count = conf['comment_count']
+        builder.button(
+            text=f"#{conf['id']} - {preview} ({comment_count} 💬)",
+            callback_data=f"view_conf_{conf['id']}"
+        )
+    
+    builder.adjust(1)
+    
+    # Add pagination buttons
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(
+            text="⬅️ Previous",
+            callback_data=f"browse_cat_{category}_page_{page - 1}"
+        ))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Next ➡️",
+            callback_data=f"browse_cat_{category}_page_{page + 1}"
+        ))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+    
+    builder.row(InlineKeyboardButton(text="« Back to Categories", callback_data="browse_category"))
+    
+    await callback_query.message.edit_text(
+        text + "Select a confession to view:",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(BrowseForm.browsing_by_category)
+
+
+# --- Callback handler for browse by ID ---
+@dp.callback_query(F.data == "browse_by_id", BrowseForm.selecting_browse_option)
+async def browse_by_id_prompt(callback_query: types.CallbackQuery, state: FSMContext):
+    """Prompt user to enter confession ID."""
+    await callback_query.answer()
+    await callback_query.message.edit_text(
+        "🔢 <b>Browse by ID</b>\n\n"
+        "Please enter the confession ID you want to view.\n"
+        "Example: <code>123</code>"
+    )
+    await state.set_state(BrowseForm.waiting_for_confession_id)
+
+
+# --- Back to browse menu handler ---
+@dp.callback_query(F.data == "back_to_browse_menu")
+async def back_to_browse_menu(callback_query: types.CallbackQuery, state: FSMContext):
+    """Return to the main browse menu."""
+    await callback_query.answer()
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔥 Browse by Popular", callback_data="browse_popular")
+    builder.button(text="📂 Browse by Category", callback_data="browse_category")
+    builder.button(text="🔢 Browse by ID", callback_data="browse_by_id")
+    builder.adjust(1)
+    
+    await callback_query.message.edit_text(
+        "🔍 <b>Browse Confessions</b>\n\n"
+        "Choose how you want to browse confessions:",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(BrowseForm.selecting_browse_option)
+
+
+# --- Handler for confession ID input ---
 @dp.message(BrowseForm.waiting_for_confession_id, F.text)
 async def handle_confession_id_input(message: types.Message, state: FSMContext):
     """Handle the confession ID input and show the confession."""
@@ -1288,8 +1529,7 @@ async def handle_confession_id_input(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer(
             "❌ Invalid input. Please enter a valid confession ID (number only).\n"
-            "Example: <code>123</code>",
-            reply_markup=cancel_keyboard
+            "Example: <code>123</code>"
         )
         return
     
@@ -1302,15 +1542,13 @@ async def handle_confession_id_input(message: types.Message, state: FSMContext):
     
     if not confession:
         await message.answer(
-            f"❌ Confession #{confession_id} not found.",
-            reply_markup=cancel_keyboard
+            f"❌ Confession #{confession_id} not found."
         )
         return
     
     if confession['status'] != 'approved':
         await message.answer(
-            f"❌ Confession #{confession_id} is not yet published or was rejected.",
-            reply_markup=cancel_keyboard
+            f"❌ Confession #{confession_id} is not yet published or was rejected."
         )
         return
     
@@ -1336,6 +1574,56 @@ async def handle_confession_id_input(message: types.Message, state: FSMContext):
         reply_markup=builder.as_markup()
     )
     await message.answer(
+        "✅ Confession loaded! Use the buttons above to interact.",
+        reply_markup=keyboard
+    )
+
+
+# --- View confession callback (used by all browse methods) ---
+@dp.callback_query(F.data.startswith("view_conf_"))
+async def view_selected_confession(callback_query: types.CallbackQuery, state: FSMContext):
+    """View a confession selected from browse menus."""
+    await callback_query.answer()
+    
+    confession_id = int(callback_query.data.replace("view_conf_", ""))
+    
+    async with db.acquire() as conn:
+        confession = await conn.fetchrow(
+            "SELECT id, text, status, message_id FROM confessions WHERE id = $1",
+            confession_id
+        )
+    
+    if not confession or confession['status'] != 'approved':
+        await callback_query.message.edit_text(
+            f"❌ Confession #{confession_id} not found or not approved."
+        )
+        return
+    
+    # Clear state
+    await state.clear()
+    
+    # Show confession text
+    confession_text = f"<b>Confession #{confession_id}</b>\n\n{html.quote(confession['text'])}"
+    
+    # Create inline keyboard with options
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 View Comments", callback_data=f"browse_{confession_id}")
+    
+    # Add link to channel post if available
+    if confession['message_id']:
+        channel_link = f"https://t.me/{CHANNEL_ID.replace('@', '')}/{confession['message_id']}"
+        builder.button(text="📺 View on Channel", url=channel_link)
+    
+    builder.adjust(1)
+    
+    await callback_query.message.edit_text(
+        confession_text,
+        reply_markup=builder.as_markup()
+    )
+    
+    user_id = callback_query.from_user.id
+    keyboard = get_main_keyboard(user_id)
+    await callback_query.message.answer(
         "✅ Confession loaded! Use the buttons above to interact.",
         reply_markup=keyboard
     )
