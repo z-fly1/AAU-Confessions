@@ -143,7 +143,8 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="🔍 Browse Confessions")]
     ],
     resize_keyboard=True
 )
@@ -153,7 +154,8 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="🔍 Browse Confessions")]
     ],
     resize_keyboard=True
 )
@@ -203,6 +205,9 @@ class ChatState(StatesGroup):
     
 class ReportForm(StatesGroup):
     waiting_for_reason = State()
+
+class BrowseForm(StatesGroup):
+    waiting_for_confession_id = State()
 
 
 # --- ADMIN REVIEW --- New state for the review process
@@ -1210,6 +1215,7 @@ async def show_help(message: types.Message):
         "Here's how to use the bot:\n"
         "/confess - Submit a new anonymous confession.\n"
         "/profile - View your profile and history.\n"
+        "🔍 Browse Confessions - Search confessions by ID.\n"
         "/start - Show the welcome message.\n"
         "/help - Display this help message.\n"
         "/privacy - View information about data privacy.\n\n"
@@ -1249,6 +1255,90 @@ async def show_rules_from_help(callback_query: types.CallbackQuery):
         "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
     )
     await callback_query.message.answer(rules_text, reply_markup=get_main_keyboard(callback_query.from_user.id))
+
+
+# --- Browse Confessions Handlers ---
+@dp.message(F.text == "🔍 Browse Confessions", StateFilter(None))
+async def browse_confessions_prompt(message: types.Message, state: FSMContext):
+    """Prompt user to enter a confession ID to browse."""
+    await state.set_state(BrowseForm.waiting_for_confession_id)
+    await message.answer(
+        "🔍 <b>Browse Confessions</b>\n\n"
+        "Please enter the confession ID you want to view.\n"
+        "Example: <code>123</code>",
+        reply_markup=cancel_keyboard
+    )
+
+
+@dp.message(BrowseForm.waiting_for_confession_id, F.text)
+async def handle_confession_id_input(message: types.Message, state: FSMContext):
+    """Handle the confession ID input and show the confession."""
+    user_id = message.from_user.id
+    keyboard = get_main_keyboard(user_id)
+    
+    # Check for cancel
+    if message.text == "❌ Cancel":
+        await state.clear()
+        await message.answer("Browse cancelled.", reply_markup=keyboard)
+        return
+    
+    # Try to parse the confession ID
+    try:
+        confession_id = int(message.text.strip())
+    except ValueError:
+        await message.answer(
+            "❌ Invalid input. Please enter a valid confession ID (number only).\n"
+            "Example: <code>123</code>",
+            reply_markup=cancel_keyboard
+        )
+        return
+    
+    # Check if confession exists and is approved
+    async with db.acquire() as conn:
+        confession = await conn.fetchrow(
+            "SELECT id, text, status, message_id FROM confessions WHERE id = $1",
+            confession_id
+        )
+    
+    if not confession:
+        await message.answer(
+            f"❌ Confession #{confession_id} not found.",
+            reply_markup=cancel_keyboard
+        )
+        return
+    
+    if confession['status'] != 'approved':
+        await message.answer(
+            f"❌ Confession #{confession_id} is not yet published or was rejected.",
+            reply_markup=cancel_keyboard
+        )
+        return
+    
+    # Clear state and show the confession
+    await state.clear()
+    
+    # Show confession text
+    confession_text = f"<b>Confession #{confession_id}</b>\n\n{html.quote(confession['text'])}"
+    
+    # Create inline keyboard with options
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 View Comments", callback_data=f"browse_{confession_id}")
+    
+    # Add link to channel post if available
+    if confession['message_id']:
+        channel_link = f"https://t.me/{CHANNEL_ID.replace('@', '')}/{confession['message_id']}"
+        builder.button(text="📺 View on Channel", url=channel_link)
+    
+    builder.adjust(1)
+    
+    await message.answer(
+        confession_text,
+        reply_markup=builder.as_markup()
+    )
+    await message.answer(
+        "✅ Confession loaded! Use the buttons above to interact.",
+        reply_markup=keyboard
+    )
 
 
 @dp.callback_query(F.data == "contact_admin_start", StateFilter(None))
