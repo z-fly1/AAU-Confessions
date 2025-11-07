@@ -1284,13 +1284,6 @@ async def build_browse_ui(
         time_clause = "AND c.created_at >= NOW() - INTERVAL '30 days'"
     # "all" has no time clause
     
-    # Category filter
-    category_clause = ""
-    category_params = []
-    if category:
-        category_clause = "AND $1 = ANY(c.categories)"
-        category_params = [category]
-    
     # Sort order
     if sort_by == "popular":
         order_clause = "ORDER BY comment_count DESC, c.created_at DESC"
@@ -1300,28 +1293,45 @@ async def build_browse_ui(
     offset = (page - 1) * BROWSE_PAGE_SIZE
     
     async with db.acquire() as conn:
-        # Build query
-        count_query = f"""
-            SELECT COUNT(DISTINCT c.id)
-            FROM confessions c
-            WHERE c.status = 'approved' {time_clause} {category_clause}
-        """
-        
-        data_query = f"""
-            SELECT c.id, c.text, c.categories, c.message_id, COUNT(cm.id) as comment_count
-            FROM confessions c
-            LEFT JOIN comments cm ON c.id = cm.confession_id
-            WHERE c.status = 'approved' {time_clause} {category_clause}
-            GROUP BY c.id
-            {order_clause}
-            LIMIT $2 OFFSET $3
-        """
-        
-        # Execute queries
-        if category_params:
-            total_count = await conn.fetchval(count_query, *category_params) or 0
-            confessions = await conn.fetch(data_query, *category_params, BROWSE_PAGE_SIZE, offset)
+        # Build query with proper parameter numbering
+        if category:
+            # With category: $1 = category, $2 = LIMIT, $3 = OFFSET
+            count_query = f"""
+                SELECT COUNT(DISTINCT c.id)
+                FROM confessions c
+                WHERE c.status = 'approved' {time_clause} AND $1 = ANY(c.categories)
+            """
+            
+            data_query = f"""
+                SELECT c.id, c.text, c.categories, c.message_id, COUNT(cm.id) as comment_count
+                FROM confessions c
+                LEFT JOIN comments cm ON c.id = cm.confession_id
+                WHERE c.status = 'approved' {time_clause} AND $1 = ANY(c.categories)
+                GROUP BY c.id
+                {order_clause}
+                LIMIT $2 OFFSET $3
+            """
+            
+            total_count = await conn.fetchval(count_query, category) or 0
+            confessions = await conn.fetch(data_query, category, BROWSE_PAGE_SIZE, offset)
         else:
+            # Without category: $1 = LIMIT, $2 = OFFSET
+            count_query = f"""
+                SELECT COUNT(DISTINCT c.id)
+                FROM confessions c
+                WHERE c.status = 'approved' {time_clause}
+            """
+            
+            data_query = f"""
+                SELECT c.id, c.text, c.categories, c.message_id, COUNT(cm.id) as comment_count
+                FROM confessions c
+                LEFT JOIN comments cm ON c.id = cm.confession_id
+                WHERE c.status = 'approved' {time_clause}
+                GROUP BY c.id
+                {order_clause}
+                LIMIT $1 OFFSET $2
+            """
+            
             total_count = await conn.fetchval(count_query) or 0
             confessions = await conn.fetch(data_query, BROWSE_PAGE_SIZE, offset)
     
