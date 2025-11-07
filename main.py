@@ -403,6 +403,17 @@ async def setup():
         """)
         logging.info("Checked/Created 'user_follows' table.")
 
+        # --- User Blocks Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_blocks (
+                blocker_id BIGINT NOT NULL,
+                blocked_id BIGINT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (blocker_id, blocked_id)
+            );
+        """)
+        logging.info("Checked/Created 'user_blocks' table.")
+
 
         # --- Add new columns to user_status if they don't exist ---
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS nickname VARCHAR(32) NULL;")
@@ -3194,6 +3205,11 @@ async def _execute_user_report(
     state: FSMContext,
     message_or_query: Union[types.Message, types.CallbackQuery]
 ):
+    # Get state data before clearing
+    data = await state.get_data()
+    was_in_chat = data.get("was_in_chat", False)
+    chat_partner_id = data.get("chat_partner_id") if was_in_chat else None
+    
     try:
         async with db.acquire() as conn:
             await conn.execute(
@@ -3216,7 +3232,18 @@ async def _execute_user_report(
             await message_or_query.message.edit_text(confirmation_text)
             await message_or_query.answer("Report sent.")
         else:
-            await message_or_query.answer(confirmation_text, reply_markup=get_main_keyboard(reporter_user_id))
+            # Determine the keyboard based on whether they were in chat
+            if was_in_chat and chat_partner_id:
+                chat_keyboard = ReplyKeyboardMarkup(
+                    keyboard=[
+                        [KeyboardButton(text="/leavechat")],
+                        [KeyboardButton(text="🚫 Block"), KeyboardButton(text="⚠️ Report")]
+                    ],
+                    resize_keyboard=True
+                )
+                await message_or_query.answer(confirmation_text, reply_markup=chat_keyboard)
+            else:
+                await message_or_query.answer(confirmation_text, reply_markup=get_main_keyboard(reporter_user_id))
 
     except asyncpg.exceptions.UniqueViolationError:
         error_text = "You have already reported this user."
@@ -3224,7 +3251,16 @@ async def _execute_user_report(
             await message_or_query.answer(error_text, show_alert=True)
             await message_or_query.message.edit_text(error_text)
         else:
-            await message_or_query.answer(error_text, reply_markup=get_main_keyboard(reporter_user_id))
+            keyboard = get_main_keyboard(reporter_user_id)
+            if was_in_chat and chat_partner_id:
+                keyboard = ReplyKeyboardMarkup(
+                    keyboard=[
+                        [KeyboardButton(text="/leavechat")],
+                        [KeyboardButton(text="🚫 Block"), KeyboardButton(text="⚠️ Report")]
+                    ],
+                    resize_keyboard=True
+                )
+            await message_or_query.answer(error_text, reply_markup=keyboard)
 
     except Exception as e:
         logging.error(f"Error processing user report from {reporter_user_id} against {reported_user_id}: {e}")
@@ -3232,9 +3268,23 @@ async def _execute_user_report(
         if isinstance(message_or_query, types.CallbackQuery):
             await message_or_query.answer(error_text, show_alert=True)
         else:
-            await message_or_query.answer(error_text, reply_markup=get_main_keyboard(reporter_user_id))
+            keyboard = get_main_keyboard(reporter_user_id)
+            if was_in_chat and chat_partner_id:
+                keyboard = ReplyKeyboardMarkup(
+                    keyboard=[
+                        [KeyboardButton(text="/leavechat")],
+                        [KeyboardButton(text="🚫 Block"), KeyboardButton(text="⚠️ Report")]
+                    ],
+                    resize_keyboard=True
+                )
+            await message_or_query.answer(error_text, reply_markup=keyboard)
     finally:
-        await state.clear()
+        # Restore chat state if they were in chat
+        if was_in_chat and chat_partner_id:
+            await state.set_state(ChatState.in_chat)
+            await state.update_data(chat_partner_id=chat_partner_id)
+        else:
+            await state.clear()
 
 
 @dp.callback_query(StateFilter(ReportForm.waiting_for_reason), F.data.startswith("report_reason_"))
@@ -3250,7 +3300,14 @@ async def handle_report_reason(callback_query: types.CallbackQuery, state: FSMCo
 
     if action == "cancel":
         await callback_query.message.edit_text("Report cancelled.")
-        await state.clear()
+        # Restore chat state if user was in chat
+        was_in_chat = data.get("was_in_chat", False)
+        chat_partner_id = data.get("chat_partner_id")
+        if was_in_chat and chat_partner_id:
+            await state.set_state(ChatState.in_chat)
+            await state.update_data(chat_partner_id=chat_partner_id)
+        else:
+            await state.clear()
         await callback_query.answer()
         return
 
@@ -3304,6 +3361,16 @@ async def request_chat_callback(callback_query: types.CallbackQuery):
     requester_id = callback_query.from_user.id
 
     async with db.acquire() as conn:
+        # Check if either user has blocked the other
+        block_exists = await conn.fetchval(
+            "SELECT 1 FROM user_blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)",
+            requester_id, recipient_id
+        )
+        
+        if block_exists:
+            await callback_query.answer("⚠️ Unable to send chat request to this user.", show_alert=True)
+            return
+        
         requester_settings = await conn.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", requester_id)
 
         req_id = await conn.fetchval("""
@@ -3370,7 +3437,13 @@ async def start_chat_callback(callback_query: types.CallbackQuery, state: FSMCon
     
     await show_chat_history(callback_query.from_user.id, recipient_id, message_to_edit=callback_query.message)
     
-    chat_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/leavechat")]], resize_keyboard=True)
+    chat_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="/leavechat")],
+            [KeyboardButton(text="🚫 Block"), KeyboardButton(text="⚠️ Report")]
+        ],
+        resize_keyboard=True
+    )
     await callback_query.message.answer(
         f"You are now in a chat with <b>{partner_nickname}</b>. "
         "Any message you send here will be forwarded to them. Use /leavechat to exit.",
@@ -3395,6 +3468,85 @@ async def leave_chat_command(message: types.Message, state: FSMContext):
         await partner_context.clear()
         await safe_send_message(partner_id, "ℹ️ The other user has left the chat. The session has ended.", reply_markup=get_main_keyboard(partner_id))
 
+@dp.message(StateFilter(ChatState.in_chat), F.text == "🚫 Block")
+async def block_chat_user(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    data = await state.get_data()
+    partner_id = data.get("chat_partner_id")
+    keyboard = get_main_keyboard(user_id)
+    
+    if not partner_id:
+        await state.clear()
+        await message.answer("Chat session expired.", reply_markup=keyboard)
+        return
+    
+    # Check if already blocked
+    async with db.acquire() as conn:
+        existing_block = await conn.fetchval(
+            "SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2",
+            user_id, partner_id
+        )
+        
+        if existing_block:
+            await message.answer("⚠️ You have already blocked this user.", reply_markup=keyboard)
+            return
+        
+        # Block the user
+        await conn.execute(
+            "INSERT INTO user_blocks (blocker_id, blocked_id) VALUES ($1, $2)",
+            user_id, partner_id
+        )
+        
+        partner_nickname_row = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", partner_id)
+        partner_nickname = partner_nickname_row['nickname'] or "Anonymous" if partner_nickname_row else "Anonymous"
+    
+    # End chat session
+    await state.clear()
+    await message.answer(
+        f"🚫 You have blocked <b>{html.quote(partner_nickname)}</b>. They will no longer be able to send you messages through the bot. The chat has been ended.",
+        reply_markup=keyboard
+    )
+    
+    # Notify partner
+    partner_key = StorageKey(bot_id=bot.id, chat_id=partner_id, user_id=partner_id)
+    partner_context = FSMContext(storage=dp.storage, key=partner_key)
+    await partner_context.clear()
+    await safe_send_message(partner_id, "ℹ️ The other user has left the chat. The session has ended.", reply_markup=get_main_keyboard(partner_id))
+
+@dp.message(StateFilter(ChatState.in_chat), F.text == "⚠️ Report")
+async def report_chat_user(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    data = await state.get_data()
+    partner_id = data.get("chat_partner_id")
+    
+    if not partner_id:
+        await state.clear()
+        await message.answer("Chat session expired.", reply_markup=get_main_keyboard(user_id))
+        return
+    
+    # Check if trying to report self
+    if partner_id == user_id:
+        await message.answer("You cannot report yourself.", reply_markup=get_main_keyboard(user_id))
+        return
+    
+    # Set state for reporting and redirect to existing report flow
+    await state.set_state(ReportForm.waiting_for_reason)
+    await state.update_data(reported_user_id=partner_id, was_in_chat=True)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Harassment", callback_data="report_reason_harassment")
+    builder.button(text="Spam", callback_data="report_reason_spam")
+    builder.button(text="Inappropriate Content", callback_data="report_reason_inappropriate")
+    builder.button(text="Other", callback_data="report_reason_other")
+    builder.button(text="❌ Cancel", callback_data="report_reason_cancel")
+    builder.adjust(2, 2, 1)
+    
+    await message.answer(
+        "⚠️ <b>Report User</b>\n\n"
+        "Please select a reason for reporting this user, or choose 'Other' to provide your own reason:",
+        reply_markup=builder.as_markup()
+    )
+
 @dp.message(ChatState.in_chat)
 async def forward_chat_message(message: types.Message, state: FSMContext):
     sender_id = message.from_user.id
@@ -3406,6 +3558,21 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Chat session expired. Please start again.", reply_markup=keyboard)
         return
+    
+    # Check if sender is blocked by recipient
+    async with db.acquire() as conn:
+        is_blocked = await conn.fetchval(
+            "SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2",
+            recipient_id, sender_id
+        )
+    
+    if is_blocked:
+        await state.clear()
+        await message.answer(
+            "⚠️ Unable to send message. The chat has been ended.",
+            reply_markup=keyboard
+        )
+        return
 
     recipient_key = StorageKey(bot_id=bot.id, chat_id=recipient_id, user_id=recipient_id)
     recipient_context = FSMContext(storage=dp.storage, key=recipient_key)
@@ -3414,7 +3581,13 @@ async def forward_chat_message(message: types.Message, state: FSMContext):
     if recipient_state != ChatState.in_chat:
         await recipient_context.set_state(ChatState.in_chat)
         await recipient_context.update_data(chat_partner_id=sender_id)
-        chat_keyboard = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="/leavechat")]], resize_keyboard=True)
+        chat_keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="/leavechat")],
+                [KeyboardButton(text="🚫 Block"), KeyboardButton(text="⚠️ Report")]
+            ],
+            resize_keyboard=True
+        )
         await safe_send_message(recipient_id, "You have received a message. You are now in a chat. Send messages here to reply. Use /leavechat to exit.", reply_markup=chat_keyboard)
 
     async with db.acquire() as conn:
