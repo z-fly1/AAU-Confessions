@@ -226,7 +226,7 @@ class AnnouncementForm(StatesGroup):
 db = None
 async def create_db_pool():
     try:
-        pool = await asyncpg.create_pool(DATABASE_URL)
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
         async with pool.acquire() as conn:
             await conn.execute("SELECT 1")
         logging.info("Database pool created successfully.")
