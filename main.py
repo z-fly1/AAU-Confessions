@@ -208,11 +208,9 @@ class ReportForm(StatesGroup):
     waiting_for_reason = State()
 
 class BrowseForm(StatesGroup):
-    selecting_browse_option = State()
-    selecting_category = State()
-    waiting_for_confession_id = State()
-    browsing_popular = State()
-    browsing_by_category = State()
+    browsing = State()  # Main browsing state with filters
+    waiting_for_confession_id = State()  # For ID input
+    selecting_category = State()  # For category selection
 
 
 # --- ADMIN REVIEW --- New state for the review process
@@ -1263,222 +1261,290 @@ async def show_rules_from_help(callback_query: types.CallbackQuery):
 
 
 # --- Browse Confessions Handlers ---
-@dp.message(F.text == "🔍 Browse Confessions", StateFilter(None))
-async def browse_confessions_prompt(message: types.Message, state: FSMContext):
-    """Show menu options for browsing confessions."""
-    await state.set_state(BrowseForm.selecting_browse_option)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔥 Browse by Popular", callback_data="browse_popular")
-    builder.button(text="📂 Browse by Category", callback_data="browse_category")
-    builder.button(text="🔢 Browse by ID", callback_data="browse_by_id")
-    builder.adjust(1)
-    
-    await message.answer(
-        "🔍 <b>Browse Confessions</b>\n\n"
-        "Choose how you want to browse confessions:",
-        reply_markup=builder.as_markup()
-    )
 
-
-# --- Callback handler for browse by popular ---
-@dp.callback_query(F.data.startswith("browse_popular"))
-async def browse_by_popular(callback_query: types.CallbackQuery, state: FSMContext):
-    """Show popular confessions based on comment count with pagination."""
-    await callback_query.answer()
+async def build_browse_ui(
+    sort_by: str = "popular",
+    category: Optional[str] = None,
+    time_filter: str = "all",
+    page: int = 1
+) -> Tuple[str, InlineKeyboardMarkup, int]:
+    """Build the browse confessions UI with filters and pagination.
     
-    # Parse page number from callback data
-    page = 1
-    if "_page_" in callback_query.data:
-        try:
-            page = int(callback_query.data.split("_page_")[1])
-        except (ValueError, IndexError):
-            page = 1
+    Returns: (text, keyboard, total_pages)
+    """
+    # Time filter logic
+    time_clause = ""
+    if time_filter == "today":
+        time_clause = "AND c.created_at >= NOW() - INTERVAL '1 day'"
+    elif time_filter == "yesterday":
+        time_clause = "AND c.created_at >= NOW() - INTERVAL '2 days' AND c.created_at < NOW() - INTERVAL '1 day'"
+    elif time_filter == "7days":
+        time_clause = "AND c.created_at >= NOW() - INTERVAL '7 days'"
+    elif time_filter == "30days":
+        time_clause = "AND c.created_at >= NOW() - INTERVAL '30 days'"
+    # "all" has no time clause
+    
+    # Category filter
+    category_clause = ""
+    category_params = []
+    if category:
+        category_clause = "AND $1 = ANY(c.categories)"
+        category_params = [category]
+    
+    # Sort order
+    if sort_by == "popular":
+        order_clause = "ORDER BY comment_count DESC, c.created_at DESC"
+    else:  # recent
+        order_clause = "ORDER BY c.created_at DESC"
     
     offset = (page - 1) * BROWSE_PAGE_SIZE
     
     async with db.acquire() as conn:
-        # Get total count
-        total_count = await conn.fetchval("""
+        # Build query
+        count_query = f"""
             SELECT COUNT(DISTINCT c.id)
             FROM confessions c
-            WHERE c.status = 'approved'
-        """)
+            WHERE c.status = 'approved' {time_clause} {category_clause}
+        """
         
-        # Get confessions for current page
-        popular_confessions = await conn.fetch("""
-            SELECT c.id, c.text, c.categories, COUNT(cm.id) as comment_count
+        data_query = f"""
+            SELECT c.id, c.text, c.categories, c.message_id, COUNT(cm.id) as comment_count
             FROM confessions c
             LEFT JOIN comments cm ON c.id = cm.confession_id
-            WHERE c.status = 'approved'
+            WHERE c.status = 'approved' {time_clause} {category_clause}
             GROUP BY c.id
-            ORDER BY comment_count DESC, c.created_at DESC
-            LIMIT $1 OFFSET $2
-        """, BROWSE_PAGE_SIZE, offset)
+            {order_clause}
+            LIMIT $2 OFFSET $3
+        """
+        
+        # Execute queries
+        if category_params:
+            total_count = await conn.fetchval(count_query, *category_params) or 0
+            confessions = await conn.fetch(data_query, *category_params, BROWSE_PAGE_SIZE, offset)
+        else:
+            total_count = await conn.fetchval(count_query) or 0
+            confessions = await conn.fetch(data_query, BROWSE_PAGE_SIZE, offset)
     
-    if not popular_confessions:
-        await callback_query.message.edit_text(
-            "❌ No confessions found yet.",
-            reply_markup=None
-        )
-        await state.clear()
-        return
+    if not confessions or total_count == 0:
+        return "❌ No confessions found with the selected filters.", InlineKeyboardMarkup(inline_keyboard=[]), 0
     
     total_pages = (total_count + BROWSE_PAGE_SIZE - 1) // BROWSE_PAGE_SIZE
     
-    text = f"🔥 <b>Popular Confessions</b> (by comments)\n\nPage {page}/{total_pages}\n\n"
+    # Build confession display
+    confession = confessions[0]  # Show first confession on current page
+    
+    # Add filter info header
+    header = "🔍 <b>Browse Confessions</b>"
+    if category:
+        header += f" - {category}"
+    header += "\n\n"
+    
+    text = header + f"<b>Confession #{confession['id']}</b>\n\n{html.quote(confession['text'])}\n\n"
+    text += f"💬 {confession['comment_count']} comments"
+    
+    # Build keyboard
     builder = InlineKeyboardBuilder()
     
-    for conf in popular_confessions:
-        preview = conf['text'][:50] + "..." if len(conf['text']) > 50 else conf['text']
-        comment_count = conf['comment_count']
-        builder.button(
-            text=f"#{conf['id']} - {preview} ({comment_count} 💬)",
-            callback_data=f"view_conf_{conf['id']}"
+    # View on Channel button (wide)
+    if confession['message_id']:
+        channel_link = f"https://t.me/{CHANNEL_ID.replace('@', '')}/{confession['message_id']}"
+        builder.row(InlineKeyboardButton(text="📺 View on Channel", url=channel_link))
+    
+    # View Comments button (wide)
+    builder.row(InlineKeyboardButton(text="💬 View All Comments", callback_data=f"browse_{confession['id']}"))
+    
+    # Sort filters
+    sort_buttons = [
+        InlineKeyboardButton(
+            text="🔥 Popular" if sort_by == "popular" else "Popular",
+            callback_data=f"browse_filter_popular_{category or 'none'}_{time_filter}_{page}"
+        ),
+        InlineKeyboardButton(
+            text=f"📂 {category}" if category else "Category",
+            callback_data="browse_select_category"
+        ),
+        InlineKeyboardButton(
+            text="🔢 By ID",
+            callback_data="browse_by_id"
         )
+    ]
+    builder.row(*sort_buttons)
     
-    builder.adjust(1)
+    # Time filter buttons
+    time_labels = {
+        "all": "All Time",
+        "today": "Today",
+        "yesterday": "Yesterday",
+        "7days": "Last 7d",
+        "30days": "Last 30d"
+    }
     
-    # Add pagination buttons
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton(
-            text="⬅️ Previous",
-            callback_data=f"browse_popular_page_{page - 1}"
+    time_buttons = []
+    for tf, label in time_labels.items():
+        display_label = f"✓ {label}" if tf == time_filter else label
+        time_buttons.append(InlineKeyboardButton(
+            text=display_label,
+            callback_data=f"browse_time_{tf}_{sort_by}_{category or 'none'}_{page}"
         ))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton(
-            text="Next ➡️",
-            callback_data=f"browse_popular_page_{page + 1}"
-        ))
+    builder.row(*time_buttons[:3])  # First row: All Time, Today, Yesterday
+    builder.row(*time_buttons[3:])  # Second row: Last 7d, Last 30d
     
-    if nav_buttons:
-        builder.row(*nav_buttons)
+    # Pagination with page numbers
+    if total_pages > 1:
+        nav_buttons = []
+        
+        # Previous button
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"browse_page_{page-1}_{sort_by}_{category or 'none'}_{time_filter}"
+            ))
+        
+        # Page numbers (show current and nearby pages)
+        start_page = max(1, page - 2)
+        end_page = min(total_pages, page + 2)
+        
+        if start_page > 1:
+            nav_buttons.append(InlineKeyboardButton(text="1", callback_data=f"browse_page_1_{sort_by}_{category or 'none'}_{time_filter}"))
+            if start_page > 2:
+                nav_buttons.append(InlineKeyboardButton(text="...", callback_data="noop"))
+        
+        for p in range(start_page, end_page + 1):
+            label = f"· {p} ·" if p == page else str(p)
+            nav_buttons.append(InlineKeyboardButton(
+                text=label,
+                callback_data=f"browse_page_{p}_{sort_by}_{category or 'none'}_{time_filter}"
+            ))
+        
+        if end_page < total_pages:
+            if end_page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton(text="...", callback_data="noop"))
+            nav_buttons.append(InlineKeyboardButton(
+                text=str(total_pages),
+                callback_data=f"browse_page_{total_pages}_{sort_by}_{category or 'none'}_{time_filter}"
+            ))
+        
+        # Next button
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"browse_page_{page+1}_{sort_by}_{category or 'none'}_{time_filter}"
+            ))
+        
+        # Add navigation buttons in rows of max 5
+        for i in range(0, len(nav_buttons), 5):
+            builder.row(*nav_buttons[i:i+5])
     
-    builder.row(InlineKeyboardButton(text="« Back to Browse Menu", callback_data="back_to_browse_menu"))
-    
-    await callback_query.message.edit_text(
-        text + "Select a confession to view:",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(BrowseForm.browsing_popular)
+    return text, builder.as_markup(), total_pages
 
 
-# --- Callback handler for browse by category ---
-@dp.callback_query(F.data == "browse_category")
-async def browse_by_category_menu(callback_query: types.CallbackQuery, state: FSMContext):
+@dp.message(F.text == "🔍 Browse Confessions", StateFilter(None))
+async def browse_confessions_prompt(message: types.Message, state: FSMContext):
+    """Show browse confessions with default filters (popular, all time)."""
+    await state.set_state(BrowseForm.browsing)
+    
+    text, keyboard, total_pages = await build_browse_ui(sort_by="popular", time_filter="all", page=1)
+    
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+# --- Pagination handler ---
+@dp.callback_query(F.data.startswith("browse_page_"))
+async def handle_browse_pagination(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle pagination in browse view."""
+    await callback_query.answer()
+    
+    # Parse: browse_page_{page}_{sort_by}_{category}_{time_filter}
+    parts = callback_query.data.replace("browse_page_", "").split("_")
+    page = int(parts[0])
+    sort_by = parts[1] if len(parts) > 1 else "popular"
+    category = parts[2] if len(parts) > 2 and parts[2] != "none" else None
+    time_filter = parts[3] if len(parts) > 3 else "all"
+    
+    text, keyboard, _ = await build_browse_ui(sort_by=sort_by, category=category, time_filter=time_filter, page=page)
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
+    await state.set_state(BrowseForm.browsing)
+
+
+# --- Sort filter handler ---
+@dp.callback_query(F.data.startswith("browse_filter_"))
+async def handle_browse_filter(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle sort filter changes."""
+    await callback_query.answer()
+    
+    # Parse: browse_filter_{sort_by}_{category}_{time_filter}_{page}
+    parts = callback_query.data.replace("browse_filter_", "").split("_")
+    sort_by = parts[0]
+    category = parts[1] if len(parts) > 1 and parts[1] != "none" else None
+    time_filter = parts[2] if len(parts) > 2 else "all"
+    page = int(parts[3]) if len(parts) > 3 else 1
+    
+    text, keyboard, _ = await build_browse_ui(sort_by=sort_by, category=category, time_filter=time_filter, page=page)
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
+    await state.set_state(BrowseForm.browsing)
+
+
+# --- Time filter handler ---
+@dp.callback_query(F.data.startswith("browse_time_"))
+async def handle_browse_time_filter(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle time filter changes."""
+    await callback_query.answer()
+    
+    # Parse: browse_time_{time_filter}_{sort_by}_{category}_{page}
+    parts = callback_query.data.replace("browse_time_", "").split("_")
+    time_filter = parts[0]
+    sort_by = parts[1] if len(parts) > 1 else "popular"
+    category = parts[2] if len(parts) > 2 and parts[2] != "none" else None
+    page = int(parts[3]) if len(parts) > 3 else 1
+    
+    text, keyboard, _ = await build_browse_ui(sort_by=sort_by, category=category, time_filter=time_filter, page=1)  # Reset to page 1
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
+    await state.set_state(BrowseForm.browsing)
+
+
+# --- Category selection handler ---
+@dp.callback_query(F.data == "browse_select_category")
+async def browse_select_category(callback_query: types.CallbackQuery, state: FSMContext):
     """Show category selection menu."""
     await callback_query.answer()
     
     builder = InlineKeyboardBuilder()
     for category in CATEGORIES:
         if category:  # Skip empty categories
-            builder.button(text=category, callback_data=f"browse_cat_{category}")
+            builder.button(text=category, callback_data=f"browse_apply_cat_{category}")
     
-    builder.button(text="« Back to Browse Menu", callback_data="back_to_browse_menu")
+    builder.button(text="✖️ Clear Category", callback_data="browse_apply_cat_none")
     builder.adjust(2)
     
     await callback_query.message.edit_text(
-        "📂 <b>Browse by Category</b>\n\n"
-        "Select a category to view confessions:",
+        "📂 <b>Select Category</b>\n\nChoose a category to filter confessions:",
         reply_markup=builder.as_markup()
     )
     await state.set_state(BrowseForm.selecting_category)
 
 
-# --- Callback handler for category selection ---
-@dp.callback_query(F.data.startswith("browse_cat_"))
-async def show_category_confessions(callback_query: types.CallbackQuery, state: FSMContext):
-    """Show confessions for the selected category with pagination."""
+# --- Apply category handler ---
+@dp.callback_query(F.data.startswith("browse_apply_cat_"))
+async def apply_category_filter(callback_query: types.CallbackQuery, state: FSMContext):
+    """Apply selected category filter."""
     await callback_query.answer()
     
-    # Parse category and page from callback data
-    # Format: browse_cat_{category} or browse_cat_{category}_page_{page}
-    data_parts = callback_query.data.replace("browse_cat_", "")
+    category = callback_query.data.replace("browse_apply_cat_", "")
+    category = None if category == "none" else category
     
-    page = 1
-    if "_page_" in data_parts:
-        parts = data_parts.rsplit("_page_", 1)
-        category = parts[0]
-        try:
-            page = int(parts[1])
-        except (ValueError, IndexError):
-            page = 1
-    else:
-        category = data_parts
+    text, keyboard, _ = await build_browse_ui(sort_by="popular", category=category, time_filter="all", page=1)
     
-    offset = (page - 1) * BROWSE_PAGE_SIZE
-    
-    async with db.acquire() as conn:
-        # Get total count for this category
-        total_count = await conn.fetchval("""
-            SELECT COUNT(DISTINCT c.id)
-            FROM confessions c
-            WHERE c.status = 'approved' AND $1 = ANY(c.categories)
-        """, category)
-        
-        # Get confessions for current page
-        confessions = await conn.fetch("""
-            SELECT c.id, c.text, c.categories, COUNT(cm.id) as comment_count
-            FROM confessions c
-            LEFT JOIN comments cm ON c.id = cm.confession_id
-            WHERE c.status = 'approved' AND $1 = ANY(c.categories)
-            GROUP BY c.id
-            ORDER BY c.created_at DESC
-            LIMIT $2 OFFSET $3
-        """, category, BROWSE_PAGE_SIZE, offset)
-    
-    if not confessions:
-        await callback_query.message.edit_text(
-            f"❌ No confessions found in the <b>{category}</b> category.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="« Back", callback_data="browse_category")
-            ]])
-        )
-        return
-    
-    total_pages = (total_count + BROWSE_PAGE_SIZE - 1) // BROWSE_PAGE_SIZE
-    
-    text = f"📂 <b>{category} Confessions</b>\n\nPage {page}/{total_pages}\n\n"
-    builder = InlineKeyboardBuilder()
-    
-    for conf in confessions:
-        preview = conf['text'][:50] + "..." if len(conf['text']) > 50 else conf['text']
-        comment_count = conf['comment_count']
-        builder.button(
-            text=f"#{conf['id']} - {preview} ({comment_count} 💬)",
-            callback_data=f"view_conf_{conf['id']}"
-        )
-    
-    builder.adjust(1)
-    
-    # Add pagination buttons
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton(
-            text="⬅️ Previous",
-            callback_data=f"browse_cat_{category}_page_{page - 1}"
-        ))
-    if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton(
-            text="Next ➡️",
-            callback_data=f"browse_cat_{category}_page_{page + 1}"
-        ))
-    
-    if nav_buttons:
-        builder.row(*nav_buttons)
-    
-    builder.row(InlineKeyboardButton(text="« Back to Categories", callback_data="browse_category"))
-    
-    await callback_query.message.edit_text(
-        text + "Select a confession to view:",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(BrowseForm.browsing_by_category)
+    await callback_query.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
+    await state.set_state(BrowseForm.browsing)
+
+
 
 
 # --- Callback handler for browse by ID ---
-@dp.callback_query(F.data == "browse_by_id", BrowseForm.selecting_browse_option)
+@dp.callback_query(F.data == "browse_by_id")
 async def browse_by_id_prompt(callback_query: types.CallbackQuery, state: FSMContext):
     """Prompt user to enter confession ID."""
     await callback_query.answer()
@@ -1494,24 +1560,6 @@ async def browse_by_id_prompt(callback_query: types.CallbackQuery, state: FSMCon
     await state.set_state(BrowseForm.waiting_for_confession_id)
 
 
-# --- Back to browse menu handler ---
-@dp.callback_query(F.data == "back_to_browse_menu")
-async def back_to_browse_menu(callback_query: types.CallbackQuery, state: FSMContext):
-    """Return to the main browse menu."""
-    await callback_query.answer()
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔥 Browse by Popular", callback_data="browse_popular")
-    builder.button(text="📂 Browse by Category", callback_data="browse_category")
-    builder.button(text="🔢 Browse by ID", callback_data="browse_by_id")
-    builder.adjust(1)
-    
-    await callback_query.message.edit_text(
-        "🔍 <b>Browse Confessions</b>\n\n"
-        "Choose how you want to browse confessions:",
-        reply_markup=builder.as_markup()
-    )
-    await state.set_state(BrowseForm.selecting_browse_option)
 
 
 # --- Handler for confession ID input ---
