@@ -1210,9 +1210,10 @@ async def handle_accept_rules(callback_query: types.CallbackQuery):
     await callback_query.answer("Rules accepted!")
 
 
-@dp.message(Command("help"), StateFilter(None))
-@dp.message(F.text == "ℹ️ Help", StateFilter(None))
-async def show_help(message: types.Message):
+@dp.message(Command("help"))
+@dp.message(F.text == "ℹ️ Help")
+async def show_help(message: types.Message, state: FSMContext):
+    await state.clear()  # Clear any active state
     help_text = (
         "<b>Welcome to the Confession Bot!</b>\n\n"
         "Here's how to use the bot:\n"
@@ -1448,9 +1449,10 @@ async def build_browse_ui(
     return text, builder.as_markup(), total_pages
 
 
-@dp.message(F.text == "🔍 Browse Confessions", StateFilter(None))
+@dp.message(F.text == "🔍 Browse Confessions")
 async def browse_confessions_prompt(message: types.Message, state: FSMContext):
     """Show browse confessions with default filters (popular, all time)."""
+    await state.clear()  # Clear any previous state
     await state.set_state(BrowseForm.browsing)
     
     text, keyboard, total_pages = await build_browse_ui(sort_by="popular", time_filter="all", page=1)
@@ -1701,8 +1703,9 @@ async def start_contact_admin_callback(callback_query: types.CallbackQuery, stat
         reply_markup=cancel_keyboard
     )
 
-@dp.message(Command("privacy"), StateFilter(None))
-async def show_privacy(message: types.Message):
+@dp.message(Command("privacy"))
+async def show_privacy(message: types.Message, state: FSMContext):
+    await state.clear()  # Clear any active state
     privacy_policy_url = "https://telegra.ph/Privacy-Policy-for-AAU-Confessions-Bot-10-28"
     privacy_text = (
     "<b>Privacy Information</b>\n\n"
@@ -2688,10 +2691,10 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
 
 # --- NEW CONFESSION SUBMISSION FLOW ---
 
-@dp.message(Command("confess"), StateFilter(None))
-@dp.message(F.text == "✍️ Confess", StateFilter(None))
+@dp.message(Command("confess"))
+@dp.message(F.text == "✍️ Confess")
 async def start_confession(message: types.Message, state: FSMContext):
-    await state.clear()
+    await state.clear()  # Clear any active state
     await state.set_state(ConfessionForm.waiting_for_text)
     await message.answer(
         "Please send the text of your confession. You will be able to review, edit, or enhance it next",
@@ -3151,8 +3154,9 @@ async def _update_review_queue_and_display(conf_id: int, state: FSMContext, mess
 
 
 # --- ADMIN REVIEW --- Handler to start the review process
-@dp.message(F.text == "📬 Review Pending", F.from_user.id == ADMIN_ID, StateFilter(None))
+@dp.message(F.text == "📬 Review Pending", F.from_user.id == ADMIN_ID)
 async def admin_start_review(message: types.Message, state: FSMContext):
+    await state.clear()  # Clear any active state
     async with db.acquire() as conn:
         # --- MODIFICATION --- Changed order to DESC to show newest first
         pending_confessions = await conn.fetch("SELECT id FROM confessions WHERE status = 'pending' ORDER BY id DESC")
