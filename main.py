@@ -1487,6 +1487,10 @@ async def browse_by_id_prompt(callback_query: types.CallbackQuery, state: FSMCon
         "Please enter the confession ID you want to view.\n"
         "Example: <code>123</code>"
     )
+    await callback_query.message.answer(
+        "Use the cancel exit.",
+        reply_markup=cancel_keyboard
+    )
     await state.set_state(BrowseForm.waiting_for_confession_id)
 
 
@@ -1574,7 +1578,7 @@ async def handle_confession_id_input(message: types.Message, state: FSMContext):
         reply_markup=builder.as_markup()
     )
     await message.answer(
-        "✅ Confession loaded! Use the buttons above to interact.",
+        " ",
         reply_markup=keyboard
     )
 
@@ -1624,7 +1628,7 @@ async def view_selected_confession(callback_query: types.CallbackQuery, state: F
     user_id = callback_query.from_user.id
     keyboard = get_main_keyboard(user_id)
     await callback_query.message.answer(
-        "✅ Confession loaded! Use the buttons above to interact.",
+        " ",
         reply_markup=keyboard
     )
 
@@ -1760,7 +1764,6 @@ async def _render_customization_menu(user_id: int) -> Tuple[str, InlineKeyboardM
         [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="settings_change_nickname")],
         [InlineKeyboardButton(text="📝 Set/Update Bio", callback_data="settings_change_bio")],
         [InlineKeyboardButton(text="ℹ️ Edit Profile Details & Visibility", callback_data="profile_details_menu")],
-        [InlineKeyboardButton(text="⚙️ General Settings", callback_data="profile_menu_settings")],
         [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
     ])
     return settings_text, keyboard
@@ -1785,7 +1788,7 @@ async def _render_general_settings_menu(user_id: int) -> Tuple[str, InlineKeyboa
         [InlineKeyboardButton(text="🔔 Notification Settings", callback_data="notification_settings_menu")],
         [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
         [InlineKeyboardButton(text=f"📬 Toggle Chat Requests ({'Off' if allow_contact else 'On'})", callback_data="settings_toggle_contact")],
-        [InlineKeyboardButton(text="⬅️ Back to Customization", callback_data="profile_menu_customization_1")]
+        [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
     ])
     return settings_text, keyboard
 
@@ -1810,11 +1813,49 @@ async def user_profile(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     points = await get_user_points(user_id)
-
-    profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points:</b> {points}"
+    
+    # Get user profile data
+    async with db.acquire() as conn:
+        profile_data = await conn.fetchrow(
+            "SELECT nickname, profile_emoji, bio FROM user_status WHERE user_id = $1",
+            user_id
+        )
+        follower_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_follows WHERE following_id = $1", user_id
+        ) or 0
+        following_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", user_id
+        ) or 0
+    
+    # Extract profile information
+    nickname = profile_data.get('nickname') if profile_data else None
+    profile_emoji = profile_data.get('profile_emoji') if profile_data else '👤'
+    bio = profile_data.get('bio') if profile_data else None
+    
+    # Build profile text
+    profile_text = (
+        f"{profile_emoji} <b>{html.quote(nickname or 'Anonymous')}</b>\n\n"
+        f"⚡︎ <b>Aura Points:</b> {points}\n"
+        f"👥 <b>Followers:</b> {follower_count} | <b>Following:</b> {following_count}\n\n"
+    )
+    
+    if bio:
+        profile_text += f"📝 <b>Bio:</b>\n<i>{html.quote(bio)}</i>"
+    else:
+        profile_text += "<i>No bio set yet.</i>"
+    
+    # Build new keyboard layout
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
-        [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
+        [InlineKeyboardButton(text="✏️ Edit Profile", callback_data="profile_menu_customization_1")],
+        [
+            InlineKeyboardButton(text="📜 My Confessions", callback_data="profile_menu_confessions_1"),
+            InlineKeyboardButton(text="💬 My Comments", callback_data="profile_menu_comments_1")
+        ],
+        [
+            InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
+            InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")
+        ],
+        [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings")],
         [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
     ])
     await message.answer(profile_text, reply_markup=keyboard)
@@ -1830,22 +1871,53 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
     try:
         if action == "main":
             points = await get_user_points(user_id)
-            profile_text = f"👤 <b>Your Profile</b>\n\n⚡︎ <b>Aura Points :</b> {points}"
+            
+            # Get user profile data
+            async with db.acquire() as conn:
+                profile_data = await conn.fetchrow(
+                    "SELECT nickname, profile_emoji, bio FROM user_status WHERE user_id = $1",
+                    user_id
+                )
+                follower_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM user_follows WHERE following_id = $1", user_id
+                ) or 0
+                following_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", user_id
+                ) or 0
+            
+            # Extract profile information
+            nickname = profile_data.get('nickname') if profile_data else None
+            profile_emoji = profile_data.get('profile_emoji') if profile_data else '👤'
+            bio = profile_data.get('bio') if profile_data else None
+            
+            # Build profile text
+            profile_text = (
+                f"{profile_emoji} <b>Your Profile</b>\n\n"
+                f"<b>Nickname:</b> {html.quote(nickname or 'Anonymous')}\n"
+                f"⚡︎ <b>Aura Points:</b> {points}\n"
+                f"👥 <b>Followers:</b> {follower_count} | <b>Following:</b> {following_count}\n\n"
+            )
+            
+            if bio:
+                profile_text += f"📝 <b>Bio:</b>\n<i>{html.quote(bio)}</i>"
+            else:
+                profile_text += "<i>No bio set yet.</i>"
+            
+            # Build new keyboard layout
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📜 History", callback_data="profile_menu_history_1")],
-                [InlineKeyboardButton(text="🎨 Customization", callback_data="profile_menu_customization_1")],
+                [InlineKeyboardButton(text="✏️ Edit Profile", callback_data="profile_menu_customization_1")],
+                [
+                    InlineKeyboardButton(text="📜 My Confessions", callback_data="profile_menu_confessions_1"),
+                    InlineKeyboardButton(text="💬 My Comments", callback_data="profile_menu_comments_1")
+                ],
+                [
+                    InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
+                    InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")
+                ],
+                [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings")],
                 [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
             ])
             await callback_query.message.edit_text(profile_text, reply_markup=keyboard)
-
-        elif action == "history":
-            history_text = "📜 <b>History</b>\n\nSelect which history you would like to view."
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="My Confessions", callback_data="profile_menu_confessions_1")],
-                [InlineKeyboardButton(text="My Comments", callback_data="profile_menu_comments_1")],
-                [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
-            ])
-            await callback_query.message.edit_text(history_text, reply_markup=keyboard)
 
         elif action == "confessions":
             async with db.acquire() as conn:
@@ -1868,7 +1940,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
                 if conf['status'] in ['approved', 'pending']:
                     builder.row(InlineKeyboardButton(text=f"Request Deletion for #{conf['id']}", callback_data=f"req_del_conf_{conf['id']}"))
 
-            nav_keyboard = create_profile_pagination_keyboard("profile_menu_confessions", page, total_pages, "profile_menu_history_1")
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_confessions", page, total_pages, "profile_menu_main_1")
             final_markup = builder.attach(InlineKeyboardBuilder.from_markup(nav_keyboard)).as_markup()
             await callback_query.message.edit_text(response_text, reply_markup=final_markup)
 
@@ -1893,7 +1965,7 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
                 link = f"https://t.me/{bot_info.username}?start=view_{comm['confession_id']}"
                 response_text += f"On Confession <a href='{link}'>#{comm['confession_id']}</a>:\n<i>\"{snippet}\"</i>\n\n"
 
-            nav_keyboard = create_profile_pagination_keyboard("profile_menu_comments", page, total_pages, "profile_menu_history_1")
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_comments", page, total_pages, "profile_menu_main_1")
             await callback_query.message.edit_text(response_text, reply_markup=nav_keyboard, disable_web_page_preview=True)
         
         elif action == "customization":
@@ -1904,6 +1976,90 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             settings_text, keyboard = await _render_general_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
             
+        elif action == "following":
+            async with db.acquire() as conn:
+                total_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", user_id
+                ) or 0
+                
+                if total_count == 0:
+                    await callback_query.answer("You are not following anyone yet.", show_alert=True)
+                    return
+                
+                total_pages = (total_count + 10 - 1) // 10
+                page = max(1, min(page, total_pages))
+                offset = (page - 1) * 10
+                
+                following_users = await conn.fetch("""
+                    SELECT us.user_id, us.nickname, us.profile_emoji
+                    FROM user_follows uf
+                    JOIN user_status us ON uf.following_id = us.user_id
+                    WHERE uf.follower_id = $1
+                    ORDER BY uf.created_at DESC
+                    LIMIT 10 OFFSET $2
+                """, user_id, offset)
+            
+            response_text = f"<b>👥 Following ({total_count}) - Page {page}/{total_pages}</b>\n\n"
+            builder = InlineKeyboardBuilder()
+            
+            for user in following_users:
+                user_nickname = html.quote(user['nickname'] or 'Anonymous')
+                user_emoji = user['profile_emoji'] or '👤'
+                response_text += f"{user_emoji} <b>{user_nickname}</b>\n"
+                
+                # Add button to view their profile
+                profile_token = await get_or_create_profile_token(user['user_id'])
+                builder.row(InlineKeyboardButton(
+                    text=f"View {user_nickname}'s Profile",
+                    callback_data=f"view_profile_{profile_token}"
+                ))
+            
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_following", page, total_pages, "profile_menu_main_1")
+            final_markup = builder.attach(InlineKeyboardBuilder.from_markup(nav_keyboard)).as_markup()
+            await callback_query.message.edit_text(response_text, reply_markup=final_markup)
+        
+        elif action == "followers":
+            async with db.acquire() as conn:
+                total_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM user_follows WHERE following_id = $1", user_id
+                ) or 0
+                
+                if total_count == 0:
+                    await callback_query.answer("You don't have any followers yet.", show_alert=True)
+                    return
+                
+                total_pages = (total_count + 10 - 1) // 10
+                page = max(1, min(page, total_pages))
+                offset = (page - 1) * 10
+                
+                follower_users = await conn.fetch("""
+                    SELECT us.user_id, us.nickname, us.profile_emoji
+                    FROM user_follows uf
+                    JOIN user_status us ON uf.follower_id = us.user_id
+                    WHERE uf.following_id = $1
+                    ORDER BY uf.created_at DESC
+                    LIMIT 10 OFFSET $2
+                """, user_id, offset)
+            
+            response_text = f"<b>👥 Followers ({total_count}) - Page {page}/{total_pages}</b>\n\n"
+            builder = InlineKeyboardBuilder()
+            
+            for user in follower_users:
+                user_nickname = html.quote(user['nickname'] or 'Anonymous')
+                user_emoji = user['profile_emoji'] or '👤'
+                response_text += f"{user_emoji} <b>{user_nickname}</b>\n"
+                
+                # Add button to view their profile
+                profile_token = await get_or_create_profile_token(user['user_id'])
+                builder.row(InlineKeyboardButton(
+                    text=f"View {user_nickname}'s Profile",
+                    callback_data=f"view_profile_{profile_token}"
+                ))
+            
+            nav_keyboard = create_profile_pagination_keyboard("profile_menu_followers", page, total_pages, "profile_menu_main_1")
+            final_markup = builder.attach(InlineKeyboardBuilder.from_markup(nav_keyboard)).as_markup()
+            await callback_query.message.edit_text(response_text, reply_markup=final_markup)
+        
         elif action == "chats":
             await show_my_chats(callback_query, state)
 
