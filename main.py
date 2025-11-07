@@ -1577,8 +1577,9 @@ async def handle_confession_id_input(message: types.Message, state: FSMContext):
         confession_text,
         reply_markup=builder.as_markup()
     )
+    # Remove cancel keyboard by replacing with main menu keyboard
     await message.answer(
-        " ",
+        "✅ Confession loaded!",
         reply_markup=keyboard
     )
 
