@@ -165,6 +165,15 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# --- CONTACT ADMIN --- Keyboard for contact admin
+contact_admin_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📢 Post Ads")],
+        [KeyboardButton(text="✍️ Confess")],
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+    ],
+    resize_keyboard=True
+)
 
 cancel_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="❌ Cancel")]],
@@ -206,6 +215,11 @@ class ReportForm(StatesGroup):
 # --- ADMIN REVIEW --- New state for the review process
 class AdminReview(StatesGroup):
     reviewing = State()
+
+# --- AD MANAGEMENT --- States for ad posting
+class AdManagement(StatesGroup):
+    selecting_package = State()
+    waiting_for_ad_content = State()
 
 # --- Database ---
 db = None
@@ -454,6 +468,28 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_followed_user_activity BOOLEAN NOT NULL DEFAULT TRUE;")
         logging.info("Ensured all notification preference columns exist in 'user_status'.")
 
+        # --- Ad Management Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ads (
+                id SERIAL PRIMARY KEY,
+                package_type VARCHAR(20) NOT NULL, -- basic, standard, high_reach
+                message_id BIGINT NULL, -- Channel message ID
+                posted_by BIGINT NOT NULL, -- Contact admin user ID
+                posted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                featured_until TIMESTAMP WITH TIME ZONE NOT NULL, -- When featured period ends (2 hours)
+                expires_at TIMESTAMP WITH TIME ZONE NOT NULL, -- When ad should be deleted
+                is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                repost_time TIME NULL, -- Time of day to repost (for standard package)
+                last_repost_date DATE NULL, -- Last date the ad was reposted
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                message_text TEXT NULL,
+                message_entities JSONB NULL -- Store message entities for formatting
+            );
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_active ON ads(is_active);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_featured_until ON ads(featured_until);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_expires_at ON ads(expires_at);")
+        logging.info("Checked/Created 'ads' table.")
 
         logging.info("Database tables setup complete.")
 
@@ -533,6 +569,8 @@ def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     """Returns the appropriate main menu keyboard for a user."""
     if user_id == ADMIN_ID:
         return admin_main_menu_keyboard
+    elif user_id == CONTACT_ADMIN_ID:
+        return contact_admin_keyboard
     return main_menu_keyboard
 
 
@@ -2540,6 +2578,23 @@ async def _update_review_queue_and_display(conf_id: int, state: FSMContext, mess
 # --- ADMIN REVIEW --- Handler to start the review process
 @dp.message(F.text == "📬 Review Pending", F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_start_review(message: types.Message, state: FSMContext):
+    # Check if there's an active featured ad blocking approvals
+    active_ad = await get_active_featured_ad()
+    if active_ad:
+        time_left = active_ad['featured_until'] - datetime.now(timezone.utc)
+        minutes_left = int(time_left.total_seconds() / 60)
+        package_name = active_ad['package_type'].replace('_', ' ').title()
+        
+        await message.answer(
+            f"⚠️ <b>Ad Featured Period Active</b>\n\n"
+            f"An ad ({package_name} package) is currently featured.\n"
+            f"Confession approvals are blocked during this time.\n\n"
+            f"<b>Time Remaining:</b> {minutes_left} minutes\n\n"
+            f"Please try again after the featured period ends.",
+            reply_markup=get_main_keyboard(ADMIN_ID)
+        )
+        return
+    
     async with db.acquire() as conn:
         # --- MODIFICATION --- Changed order to DESC to show newest first
         pending_confessions = await conn.fetch("SELECT id FROM confessions WHERE status = 'pending' ORDER BY id DESC")
@@ -2623,6 +2678,17 @@ async def admin_process_review_reject_wr(callback_query: types.CallbackQuery, st
 # --- FIX: New helper function for handling approvals to avoid mutation
 async def _admin_handle_approval(conf_id: int, callback_query: types.CallbackQuery, state: FSMContext) -> bool:
     """Handles the logic for approving a confession."""
+    # Check if there's an active featured ad blocking approvals
+    active_ad = await get_active_featured_ad()
+    if active_ad:
+        time_left = active_ad['featured_until'] - datetime.now(timezone.utc)
+        minutes_left = int(time_left.total_seconds() / 60)
+        await callback_query.answer(
+            f"⚠️ Ad featured period active! Approvals blocked for {minutes_left} more minutes.",
+            show_alert=True
+        )
+        return False
+    
     async with db.acquire() as conn:
         conf = await conn.fetchrow("SELECT id, text, user_id, categories, status, parent_confession_id FROM confessions WHERE id = $1", conf_id)
         if not conf or conf['status'] != 'pending':
@@ -3836,6 +3902,296 @@ async def show_chat_history(user_id: int, partner_id: int, message_to_edit: type
         await safe_send_message(user_id, history_text)
 
 
+# ==================== AD MANAGEMENT SYSTEM ====================
+
+# --- Helper function to check if ads are currently featured ---
+async def get_active_featured_ad() -> Optional[Dict[str, Any]]:
+    """Check if there's an ad currently in featured period (blocking approvals)."""
+    async with db.acquire() as conn:
+        ad = await conn.fetchrow("""
+            SELECT id, package_type, featured_until, posted_at
+            FROM ads
+            WHERE is_active = TRUE 
+            AND featured_until > NOW()
+            ORDER BY posted_at DESC
+            LIMIT 1
+        """)
+        return dict(ad) if ad else None
+
+@dp.message(F.text == "📢 Post Ads", StateFilter(None))
+async def start_ad_posting(message: types.Message, state: FSMContext):
+    """Handle Post Ads button - only for contact admin."""
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    await state.set_state(AdManagement.selecting_package)
+    
+    # Create ad package selection keyboard
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📦 Basic Package (24h)", callback_data="ad_package_basic")
+    builder.button(text="⭐ Standard Package (3 days)", callback_data="ad_package_standard")
+    builder.button(text="🚀 High Reach Package", callback_data="ad_package_high_reach")
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="ad_cancel"))
+    
+    package_info = (
+        "<b>📢 Ad Package Selection</b>\n\n"
+        "<b>📦 Basic Package:</b>\n"
+        "  • Posted for 24 hours\n"
+        "  • Featured for 2 hours (no approvals during this time)\n"
+        "  • Auto-deleted after 24h\n\n"
+        "<b>⭐ Standard Package:</b>\n"
+        "  • Posted for 3 days\n"
+        "  • Featured for 2 hours (no approvals during this time)\n"
+        "  • Pinned on channel\n"
+        "  • Reposted daily at the same time\n"
+        "  • Auto-deleted after 3 days\n\n"
+        "<b>🚀 High Reach Package:</b>\n"
+        "  • Currently under construction\n\n"
+        "Select a package below:"
+    )
+    
+    await message.answer(package_info, reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("ad_package_"), AdManagement.selecting_package)
+async def handle_ad_package_selection(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle ad package selection."""
+    if callback_query.from_user.id != CONTACT_ADMIN_ID:
+        await callback_query.answer("Unauthorized", show_alert=True)
+        return
+    
+    package = callback_query.data.replace("ad_package_", "")
+    
+    if package == "high_reach":
+        await callback_query.answer("This package is currently under construction! 🚧", show_alert=True)
+        return
+    
+    if package not in ["basic", "standard"]:
+        await callback_query.answer("Invalid package", show_alert=True)
+        return
+    
+    # Save package choice
+    await state.update_data(package=package)
+    await state.set_state(AdManagement.waiting_for_ad_content)
+    
+    package_name = "Basic" if package == "basic" else "Standard"
+    await callback_query.message.edit_text(
+        f"<b>✅ {package_name} Package Selected</b>\n\n"
+        "Now send me the ad message or forward a message to post as the ad.\n\n"
+        "You can include text, photos, videos, or any media.\n\n"
+        "Use /cancel to abort.",
+        reply_markup=None
+    )
+    await callback_query.answer()
+
+@dp.callback_query(F.data == "ad_cancel")
+async def cancel_ad_posting(callback_query: types.CallbackQuery, state: FSMContext):
+    """Cancel ad posting process."""
+    if callback_query.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    await state.clear()
+    await callback_query.message.edit_text("❌ Ad posting cancelled.")
+    await callback_query.answer()
+
+@dp.message(AdManagement.waiting_for_ad_content)
+async def receive_ad_content(message: types.Message, state: FSMContext):
+    """Receive and post the ad content."""
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    data = await state.get_data()
+    package = data.get("package")
+    
+    if not package:
+        await message.answer("❌ Error: Package not selected. Please start over.")
+        await state.clear()
+        return
+    
+    # Check if there's already an active featured ad
+    active_ad = await get_active_featured_ad()
+    if active_ad:
+        time_left = active_ad['featured_until'] - datetime.now(timezone.utc)
+        minutes_left = int(time_left.total_seconds() / 60)
+        await message.answer(
+            f"⚠️ An ad is currently in featured period.\n"
+            f"Time remaining: {minutes_left} minutes\n\n"
+            f"Please wait before posting a new ad."
+        )
+        await state.clear()
+        return
+    
+    try:
+        # Post the ad to the channel
+        if message.text:
+            sent_msg = await bot.send_message(CHANNEL_ID, message.text, entities=message.entities)
+        elif message.photo:
+            sent_msg = await bot.send_photo(CHANNEL_ID, message.photo[-1].file_id, 
+                                           caption=message.caption, caption_entities=message.caption_entities)
+        elif message.video:
+            sent_msg = await bot.send_video(CHANNEL_ID, message.video.file_id,
+                                           caption=message.caption, caption_entities=message.caption_entities)
+        elif message.document:
+            sent_msg = await bot.send_document(CHANNEL_ID, message.document.file_id,
+                                              caption=message.caption, caption_entities=message.caption_entities)
+        elif message.animation:
+            sent_msg = await bot.send_animation(CHANNEL_ID, message.animation.file_id,
+                                               caption=message.caption, caption_entities=message.caption_entities)
+        else:
+            await message.answer("❌ Unsupported message type. Please send text, photo, video, or document.")
+            return
+        
+        # Calculate timing based on package
+        now = datetime.now(timezone.utc)
+        featured_until = now + timedelta(hours=2)  # Featured period: 2 hours
+        
+        if package == "basic":
+            expires_at = now + timedelta(hours=24)  # 24 hours
+            is_pinned = False
+            repost_time = None
+        else:  # standard
+            expires_at = now + timedelta(days=3)  # 3 days
+            is_pinned = True
+            repost_time = now.time()  # Save current time for daily reposts
+            # Pin the message
+            await bot.pin_chat_message(CHANNEL_ID, sent_msg.message_id)
+        
+        # Store message content for reposts (standard package)
+        message_text = message.text or message.caption
+        message_entities = None
+        if message.entities:
+            message_entities = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.entities]
+        elif message.caption_entities:
+            message_entities = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.caption_entities]
+        
+        # Save to database
+        async with db.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO ads (
+                    package_type, message_id, posted_by, featured_until, 
+                    expires_at, is_pinned, repost_time, message_text, message_entities
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """, package, sent_msg.message_id, CONTACT_ADMIN_ID, featured_until, 
+                expires_at, is_pinned, repost_time, message_text, message_entities)
+        
+        package_name = "Basic" if package == "basic" else "Standard"
+        duration = "24 hours" if package == "basic" else "3 days"
+        
+        await message.answer(
+            f"✅ <b>Ad Posted Successfully!</b>\n\n"
+            f"<b>Package:</b> {package_name}\n"
+            f"<b>Duration:</b> {duration}\n"
+            f"<b>Featured Until:</b> {featured_until.strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"<b>Expires At:</b> {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            f"{'📌 Message pinned on channel' if is_pinned else '📝 Message posted'}\n"
+            f"{'🔄 Will repost daily' if package == 'standard' else ''}",
+            reply_markup=contact_admin_keyboard
+        )
+        
+        # Notify main admin about the ad
+        await safe_send_message(
+            ADMIN_ID,
+            f"📢 <b>New Ad Posted</b>\n\n"
+            f"<b>Package:</b> {package_name}\n"
+            f"<b>Duration:</b> {duration}\n"
+            f"<b>Featured Period:</b> 2 hours (no approvals allowed)\n"
+            f"<b>Featured Until:</b> {featured_until.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            f"You cannot approve confessions during the featured period."
+        )
+        
+    except Exception as e:
+        logging.error(f"Error posting ad: {e}", exc_info=True)
+        await message.answer(f"❌ Error posting ad: {e}")
+    
+    await state.clear()
+
+# --- Background task to handle ad cleanup and reposts ---
+async def ad_management_task():
+    """Background task to delete expired ads and repost standard ads daily."""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            
+            if not db:
+                continue
+            
+            now = datetime.now(timezone.utc)
+            
+            async with db.acquire() as conn:
+                # Delete expired ads
+                expired_ads = await conn.fetch("""
+                    SELECT id, message_id, is_pinned
+                    FROM ads
+                    WHERE is_active = TRUE AND expires_at <= $1
+                """, now)
+                
+                for ad in expired_ads:
+                    try:
+                        # Unpin if needed
+                        if ad['is_pinned']:
+                            await bot.unpin_chat_message(CHANNEL_ID, ad['message_id'])
+                        
+                        # Delete the message
+                        await bot.delete_message(CHANNEL_ID, ad['message_id'])
+                        
+                        # Mark as inactive
+                        await conn.execute("""
+                            UPDATE ads SET is_active = FALSE WHERE id = $1
+                        """, ad['id'])
+                        
+                        logging.info(f"Deleted expired ad {ad['id']}")
+                    except Exception as e:
+                        logging.error(f"Error deleting ad {ad['id']}: {e}")
+                
+                # Handle daily reposts for standard package
+                standard_ads = await conn.fetch("""
+                    SELECT id, message_text, message_entities, repost_time, last_repost_date, message_id, is_pinned
+                    FROM ads
+                    WHERE is_active = TRUE 
+                    AND package_type = 'standard'
+                    AND repost_time IS NOT NULL
+                    AND expires_at > $1
+                """, now)
+                
+                for ad in standard_ads:
+                    # Check if we need to repost (once per day at the specified time)
+                    current_time = now.time()
+                    repost_time = ad['repost_time']
+                    last_repost = ad['last_repost_date']
+                    current_date = now.date()
+                    
+                    # If it's past the repost time and we haven't reposted today
+                    if current_time >= repost_time and (not last_repost or last_repost < current_date):
+                        try:
+                            # Unpin old message
+                            if ad['is_pinned']:
+                                await bot.unpin_chat_message(CHANNEL_ID, ad['message_id'])
+                            
+                            # Delete old message
+                            await bot.delete_message(CHANNEL_ID, ad['message_id'])
+                            
+                            # Repost the ad
+                            new_msg = await bot.send_message(CHANNEL_ID, ad['message_text'])
+                            
+                            # Pin the new message
+                            await bot.pin_chat_message(CHANNEL_ID, new_msg.message_id)
+                            
+                            # Update database with new message_id and last_repost_date
+                            await conn.execute("""
+                                UPDATE ads 
+                                SET message_id = $1, last_repost_date = $2
+                                WHERE id = $3
+                            """, new_msg.message_id, current_date, ad['id'])
+                            
+                            logging.info(f"Reposted standard ad {ad['id']}")
+                        except Exception as e:
+                            logging.error(f"Error reposting ad {ad['id']}: {e}")
+        
+        except Exception as e:
+            logging.error(f"Error in ad_management_task: {e}", exc_info=True)
+
+# ==================== END AD MANAGEMENT SYSTEM ====================
+
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
 async def handle_text_without_state(message: types.Message):
@@ -3874,11 +4230,14 @@ async def main():
         await bot.set_my_commands(commands)
         await bot.set_my_commands(admin_commands, scope=types.BotCommandScopeChat(chat_id=ADMIN_ID))
 
-        tasks = [asyncio.create_task(dp.start_polling(bot, skip_updates=True))]
+        tasks = [
+            asyncio.create_task(dp.start_polling(bot, skip_updates=True)),
+            asyncio.create_task(ad_management_task())
+        ]
         if HTTP_PORT_STR:
             tasks.append(asyncio.create_task(start_dummy_server()))
         
-        logging.info("Starting bot...")
+        logging.info("Starting bot with ad management...")
         await asyncio.gather(*tasks)
 
     except Exception as e:
