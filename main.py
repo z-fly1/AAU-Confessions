@@ -102,6 +102,7 @@ PROFILE_OPTIONS_PAGE_SIZE = 8 # Number of items for profile selection pagination
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKENS")
 ADMIN_ID_STR = os.getenv("ADMIN_ID") # Load as string first for validation
+CONTACT_ADMIN_ID_STR = os.getenv("CONTACT_ADMIN_ID") # Admin that ONLY receives contact messages
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "15"))  # Number of items per page for pagination
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -116,6 +117,7 @@ GEMINI_API_KEYS = [key.strip() for key in (GEMINI_API_KEYS_STR or "").split(',')
 # Validate essential environment variables before proceeding
 if not BOT_TOKEN: raise ValueError("FATAL: BOT_TOKEN environment variable not set!")
 if not ADMIN_ID_STR: raise ValueError("FATAL: ADMIN_ID environment variable not set!")
+if not CONTACT_ADMIN_ID_STR: raise ValueError("FATAL: CONTACT_ADMIN_ID environment variable not set!")
 if not CHANNEL_ID: raise ValueError("FATAL: CHANNEL_ID environment variable not set!")
 if not DATABASE_URL: raise ValueError("FATAL: DATABASE_URL environment variable not set!")
 if not GEMINI_API_KEYS: raise ValueError("FATAL: GEMINI_API_KEYS environment variable not set or empty!")
@@ -125,6 +127,11 @@ try:
     ADMIN_ID = int(ADMIN_ID_STR)
 except ValueError:
     raise ValueError("FATAL: ADMIN_ID environment variable must be a valid integer!")
+
+try:
+    CONTACT_ADMIN_ID = int(CONTACT_ADMIN_ID_STR)
+except ValueError:
+    raise ValueError("FATAL: CONTACT_ADMIN_ID environment variable must be a valid integer!")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1132,13 +1139,18 @@ async def receive_admin_message(message: types.Message, state: FSMContext):
         f"<b>Message:</b>\n{html.quote(message_text)}"
         f"\n\n---\nReply to this message to respond to User ID <code>{user_id}</code>." )
     try:
-        await bot.send_message(ADMIN_ID, admin_message)
+        # Send ONLY to contact admin
+        await bot.send_message(CONTACT_ADMIN_ID, admin_message)
         await message.answer("✅ Your message has been sent to the admin.", reply_markup=get_main_keyboard(user_id))
     except Exception as e: logging.error(f"Failed forward msg from {user_id} to admin: {e}"); await message.answer("❌ Error sending message.")
     finally: await state.clear()
 
-@dp.message(F.from_user.id == ADMIN_ID, F.reply_to_message)
+@dp.message(F.reply_to_message)
 async def handle_admin_reply(message: types.Message, state: FSMContext):
+    # Only allow contact admin to reply to contact messages
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
     if await state.get_state() is not None: return
     replied_to = message.reply_to_message
     if replied_to and replied_to.text and ("⚠️ New Comment Report" in replied_to.text or "⚠️ New User Report" in replied_to.text): return
