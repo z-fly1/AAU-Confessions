@@ -23,6 +23,7 @@ from typing import Optional, Tuple, Dict, Any, List, Set, Union
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
 import secrets # <-- NEW: For generating secure tokens
+import json
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -4071,9 +4072,11 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
         message_text = message.text or message.caption
         message_entities = None
         if message.entities:
-            message_entities = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.entities]
+            entities_list = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.entities]
+            message_entities = json.dumps(entities_list)
         elif message.caption_entities:
-            message_entities = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.caption_entities]
+            entities_list = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.caption_entities]
+            message_entities = json.dumps(entities_list)
         
         # Save to database
         async with db.acquire() as conn:
