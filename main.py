@@ -486,6 +486,8 @@ async def setup():
                 message_entities JSONB NULL -- Store message entities for formatting
             );
         """)
+        # Add column for tracking bot message sends for high reach package
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS last_bot_send_date DATE NULL;")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_active ON ads(is_active);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_featured_until ON ads(featured_until);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_expires_at ON ads(expires_at);")
@@ -3947,7 +3949,12 @@ async def start_ad_posting(message: types.Message, state: FSMContext):
         "  • Reposted daily at the same time\n"
         "  • Auto-deleted after 3 days\n\n"
         "<b>🚀 High Reach Package:</b>\n"
-        "  • Currently under construction\n\n"
+        "  • Posted for 3 days\n"
+        "  • Featured on top for 3 hours (no approvals during this time)\n"
+        "  • Pinned on channel\n"
+        "  • Reposted once every day\n"
+        "  • 📱 <b>Sent through the bot to all users daily</b>\n"
+        "  • Auto-deleted after 3 days\n\n"
         "Select a package below:"
     )
     
@@ -3962,11 +3969,7 @@ async def handle_ad_package_selection(callback_query: types.CallbackQuery, state
     
     package = callback_query.data.replace("ad_package_", "")
     
-    if package == "high_reach":
-        await callback_query.answer("This package is currently under construction! 🚧", show_alert=True)
-        return
-    
-    if package not in ["basic", "standard"]:
+    if package not in ["basic", "standard", "high_reach"]:
         await callback_query.answer("Invalid package", show_alert=True)
         return
     
@@ -3974,7 +3977,7 @@ async def handle_ad_package_selection(callback_query: types.CallbackQuery, state
     await state.update_data(package=package)
     await state.set_state(AdManagement.waiting_for_ad_content)
     
-    package_name = "Basic" if package == "basic" else "Standard"
+    package_name = "Basic" if package == "basic" else ("Standard" if package == "standard" else "High Reach")
     await callback_query.message.edit_text(
         f"<b>✅ {package_name} Package Selected</b>\n\n"
         "Now send me the ad message or forward a message to post as the ad.\n\n"
@@ -4043,13 +4046,21 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
         
         # Calculate timing based on package
         now = datetime.now(timezone.utc)
-        featured_until = now + timedelta(hours=2)  # Featured period: 2 hours
         
         if package == "basic":
+            featured_until = now + timedelta(hours=2)  # Featured period: 2 hours
             expires_at = now + timedelta(hours=24)  # 24 hours
             is_pinned = False
             repost_time = None
-        else:  # standard
+        elif package == "standard":
+            featured_until = now + timedelta(hours=2)  # Featured period: 2 hours
+            expires_at = now + timedelta(days=3)  # 3 days
+            is_pinned = True
+            repost_time = now.time()  # Save current time for daily reposts
+            # Pin the message
+            await bot.pin_chat_message(CHANNEL_ID, sent_msg.message_id)
+        else:  # high_reach
+            featured_until = now + timedelta(hours=3)  # Featured period: 3 hours
             expires_at = now + timedelta(days=3)  # 3 days
             is_pinned = True
             repost_time = now.time()  # Save current time for daily reposts
@@ -4074,17 +4085,20 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
             """, package, sent_msg.message_id, CONTACT_ADMIN_ID, featured_until, 
                 expires_at, is_pinned, repost_time, message_text, message_entities)
         
-        package_name = "Basic" if package == "basic" else "Standard"
+        package_name = "Basic" if package == "basic" else ("Standard" if package == "standard" else "High Reach")
         duration = "24 hours" if package == "basic" else "3 days"
+        featured_hours = "2 hours" if package != "high_reach" else "3 hours"
         
         await message.answer(
             f"✅ <b>Ad Posted Successfully!</b>\n\n"
             f"<b>Package:</b> {package_name}\n"
             f"<b>Duration:</b> {duration}\n"
+            f"<b>Featured Period:</b> {featured_hours}\n"
             f"<b>Featured Until:</b> {featured_until.strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"<b>Expires At:</b> {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
             f"{'📌 Message pinned on channel' if is_pinned else '📝 Message posted'}\n"
-            f"{'🔄 Will repost daily' if package == 'standard' else ''}",
+            f"{'🔄 Will repost daily' if package in ['standard', 'high_reach'] else ''}\n"
+            f"{'📱 Will be sent to all users daily via bot' if package == 'high_reach' else ''}",
             reply_markup=contact_admin_keyboard
         )
         
@@ -4094,7 +4108,7 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
             f"📢 <b>New Ad Posted</b>\n\n"
             f"<b>Package:</b> {package_name}\n"
             f"<b>Duration:</b> {duration}\n"
-            f"<b>Featured Period:</b> 2 hours (no approvals allowed)\n"
+            f"<b>Featured Period:</b> {featured_hours} (no approvals allowed)\n"
             f"<b>Featured Until:</b> {featured_until.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
             f"You cannot approve confessions during the featured period."
         )
@@ -4143,17 +4157,18 @@ async def ad_management_task():
                     except Exception as e:
                         logging.error(f"Error deleting ad {ad['id']}: {e}")
                 
-                # Handle daily reposts for standard package
-                standard_ads = await conn.fetch("""
-                    SELECT id, message_text, message_entities, repost_time, last_repost_date, message_id, is_pinned
+                # Handle daily reposts for standard and high_reach packages
+                repostable_ads = await conn.fetch("""
+                    SELECT id, package_type, message_text, message_entities, repost_time, last_repost_date, 
+                           last_bot_send_date, message_id, is_pinned
                     FROM ads
                     WHERE is_active = TRUE 
-                    AND package_type = 'standard'
+                    AND package_type IN ('standard', 'high_reach')
                     AND repost_time IS NOT NULL
                     AND expires_at > $1
                 """, now)
                 
-                for ad in standard_ads:
+                for ad in repostable_ads:
                     # Check if we need to repost (once per day at the specified time)
                     current_time = now.time()
                     repost_time = ad['repost_time']
@@ -4183,9 +4198,72 @@ async def ad_management_task():
                                 WHERE id = $3
                             """, new_msg.message_id, current_date, ad['id'])
                             
-                            logging.info(f"Reposted standard ad {ad['id']}")
+                            logging.info(f"Reposted {ad['package_type']} ad {ad['id']}")
                         except Exception as e:
                             logging.error(f"Error reposting ad {ad['id']}: {e}")
+                
+                # Handle daily bot message broadcasts for high_reach package
+                high_reach_ads = await conn.fetch("""
+                    SELECT id, message_text, message_entities, repost_time, last_bot_send_date
+                    FROM ads
+                    WHERE is_active = TRUE 
+                    AND package_type = 'high_reach'
+                    AND repost_time IS NOT NULL
+                    AND expires_at > $1
+                """, now)
+                
+                for ad in high_reach_ads:
+                    current_time = now.time()
+                    repost_time = ad['repost_time']
+                    last_bot_send = ad['last_bot_send_date']
+                    current_date = now.date()
+                    
+                    # If it's past the repost time and we haven't sent via bot today
+                    if current_time >= repost_time and (not last_bot_send or last_bot_send < current_date):
+                        try:
+                            # Get all users who have accepted rules
+                            users = await conn.fetch("""
+                                SELECT user_id FROM user_status 
+                                WHERE has_accepted_rules = TRUE 
+                                AND is_blocked = FALSE
+                            """)
+                            
+                            success_count = 0
+                            fail_count = 0
+                            
+                            # Send ad to all users via bot
+                            for user_row in users:
+                                user_id = user_row['user_id']
+                                try:
+                                    await bot.send_message(
+                                        user_id, 
+                                        f"📢 <b>Sponsored Message</b>\n\n{ad['message_text']}"
+                                    )
+                                    success_count += 1
+                                    await asyncio.sleep(0.05)  # Rate limiting
+                                except Exception as e:
+                                    fail_count += 1
+                                    logging.debug(f"Failed to send ad to user {user_id}: {e}")
+                            
+                            # Update last_bot_send_date
+                            await conn.execute("""
+                                UPDATE ads 
+                                SET last_bot_send_date = $1
+                                WHERE id = $2
+                            """, current_date, ad['id'])
+                            
+                            logging.info(f"Sent high_reach ad {ad['id']} via bot to {success_count} users ({fail_count} failed)")
+                            
+                            # Notify contact admin about broadcast
+                            await safe_send_message(
+                                CONTACT_ADMIN_ID,
+                                f"📱 <b>High Reach Ad Broadcast Complete</b>\n\n"
+                                f"Ad ID: {ad['id']}\n"
+                                f"✅ Sent to: {success_count} users\n"
+                                f"❌ Failed: {fail_count} users"
+                            )
+                        except Exception as e:
+                            logging.error(f"Error broadcasting high_reach ad {ad['id']}: {e}")
         
         except Exception as e:
             logging.error(f"Error in ad_management_task: {e}", exc_info=True)
