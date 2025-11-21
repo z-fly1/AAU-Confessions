@@ -804,6 +804,116 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 
     await safe_send_message(user_id, end_txt, reply_markup=nav_keyboard)
 
+async def show_comment_thread(user_id: int, confession_id: int, parent_comment_id: int):
+    """Shows only a specific comment thread (parent comment and its replies)."""
+    async with db.acquire() as conn:
+        conf_data = await conn.fetchrow("SELECT status, user_id FROM confessions WHERE id = $1", confession_id)
+        if not conf_data or conf_data['status'] != 'approved':
+            await safe_send_message(user_id, f"Confession #{confession_id} not found or not approved.")
+            return
+
+        confession_owner_id = conf_data['user_id']
+        
+        # Fetch the parent comment
+        parent_comment = await conn.fetchrow("""
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.created_at,
+                   COALESCE(up.points, 0) as user_points,
+                   us.nickname,
+                   us.profile_emoji
+            FROM comments c
+            LEFT JOIN user_points up ON c.user_id = up.user_id
+            LEFT JOIN user_status us ON c.user_id = us.user_id
+            WHERE c.id = $1 AND c.confession_id = $2
+        """, parent_comment_id, confession_id)
+        
+        if not parent_comment:
+            await safe_send_message(user_id, "The comment you're looking for was not found or has been deleted.")
+            return
+        
+        # Fetch all replies to this parent comment
+        replies = await conn.fetch("""
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.created_at,
+                   COALESCE(up.points, 0) as user_points,
+                   us.nickname,
+                   us.profile_emoji
+            FROM comments c
+            LEFT JOIN user_points up ON c.user_id = up.user_id
+            LEFT JOIN user_status us ON c.user_id = us.user_id
+            WHERE c.parent_comment_id = $1 AND c.confession_id = $2
+            ORDER BY c.created_at ASC
+        """, parent_comment_id, confession_id)
+
+    # Display thread header
+    await safe_send_message(user_id, f"<b>📌 Comment Thread in Confession #{confession_id}</b>\n\n<i>Showing the original comment and all replies in this thread.</i>")
+    
+    db_id_to_message_id: Dict[int, int] = {}
+    
+    # Display parent comment
+    async def display_comment(c_data, is_parent=False):
+        db_id, commenter_uid = c_data['id'], c_data['user_id']
+        medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
+        nickname = c_data.get('nickname') or "Anonymous"
+        
+        profile_token = await get_or_create_profile_token(commenter_uid)
+        profile_url = f"https://t.me/{bot_info.username}?start=profile_{profile_token}"
+        
+        if commenter_uid == confession_owner_id:
+            tag = f"<a href='{profile_url}'>✅ Confession Author</a>"
+        elif commenter_uid == user_id:
+            tag = f"<a href='{profile_url}'>(You)</a>"
+        else:
+            tag = f"<a href='{profile_url}'>{html.quote(nickname)}</a>"
+
+        profile_emoji = c_data.get('profile_emoji') or '👤'
+        admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID else ""
+        display_tag = f" {profile_emoji} {tag}{medal_str}"
+
+        reply_to_msg_id = None
+        text_reply_prefix = ""
+        
+        # For replies, add a reference to the parent
+        if not is_parent and parent_comment_id in db_id_to_message_id:
+            reply_to_msg_id = db_id_to_message_id[parent_comment_id]
+
+        metadata_text = f"<i>{display_tag}{admin_info}</i>"
+        keyboard = await build_comment_keyboard(db_id, commenter_uid, user_id, confession_owner_id)
+        
+        sent_message = None
+        try:
+            if c_data['sticker_file_id']:
+                sent_message = await bot.send_sticker(user_id, sticker=c_data['sticker_file_id'], reply_to_message_id=reply_to_msg_id)
+                await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+            elif c_data['animation_file_id']:
+                sent_message = await bot.send_animation(user_id, animation=c_data['animation_file_id'], reply_to_message_id=reply_to_msg_id)
+                await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+            elif c_data['text']:
+                full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
+                sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
+            
+            if sent_message:
+                db_id_to_message_id[db_id] = sent_message.message_id
+
+        except Exception as e:
+            logging.warning(f"Could not send comment to {user_id}: {e}")
+            await safe_send_message(user_id, f"⚠️ Error displaying comment.")
+        await asyncio.sleep(0.1)
+    
+    # Display parent comment first
+    await display_comment(dict(parent_comment), is_parent=True)
+    
+    # Display all replies
+    for reply_row in replies:
+        await display_comment(dict(reply_row), is_parent=False)
+    
+    # Add navigation buttons
+    total_count = 1 + len(replies)
+    nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 View All Comments", callback_data=f"browse_{confession_id}")],
+        [InlineKeyboardButton(text="➕ Add Reply", callback_data=f"reply_{parent_comment_id}")]
+    ])
+    
+    await safe_send_message(user_id, f"<i>End of thread ({total_count} message{'s' if total_count != 1 else ''} displayed)</i>", reply_markup=nav_keyboard)
+
 # --- Public Profile Viewer ---
 async def show_public_profile(viewer_user_id: int, profile_user_id: int):
     async with db.acquire() as conn:
@@ -1043,6 +1153,17 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
                 builder.button(text=f"💬 Browse Comments ({comm_count})", callback_data=f"browse_{conf_id}")
                 builder.adjust(1, 1)
                 await message.answer(txt, reply_markup=builder.as_markup())
+            
+            elif deep_link_args.startswith("thread_"):
+                # Handle thread view: thread_{confession_id}_{parent_comment_id}
+                parts = deep_link_args.split("_")
+                if len(parts) >= 3:
+                    conf_id = int(parts[1])
+                    parent_comment_id = int(parts[2])
+                    logging.info(f"User {user_id} deep linked to thread: confession {conf_id}, parent comment {parent_comment_id}")
+                    await show_comment_thread(user_id, conf_id, parent_comment_id)
+                else:
+                    await message.answer("Invalid thread link.", reply_markup=keyboard)
             
             elif deep_link_args.startswith("profile_"):
                 # --- FIX IS HERE ---
@@ -3173,7 +3294,8 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 should_notify_parent = await conn_notify.fetchval("SELECT notify_on_comment_reply FROM user_status WHERE user_id = $1", parent_data['user_id'])
             
             if should_notify_parent is not False: # Default to True
-                link = f"https://t.me/{bot_info.username}?start=view_{conf_id}"
+                # Use thread link to show only the specific comment and its replies
+                link = f"https://t.me/{bot_info.username}?start=thread_{conf_id}_{parent_id}"
                 
                 async with db.acquire() as conn_info:
                     user_settings = await conn_info.fetchrow("SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1", user_id)
