@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AAU Confessions - Chats</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-spinner"></div>
+        <p>Loading your chats...</p>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="app" class="app-container" style="display: none;">
+        <!-- Chat List Panel -->
+        <div id="chat-list-panel" class="chat-list-panel">
+            <div class="panel-header">
+                <h1>💬 Chats</h1>
+                <div class="header-actions">
+                    <button id="refresh-btn" class="icon-btn" title="Refresh">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            
+            <div id="chat-list" class="chat-list">
+                <!-- Chat items will be inserted here -->
+            </div>
+            
+            <!-- Empty State -->
+            <div id="empty-chats" class="empty-state" style="display: none;">
+                <div class="empty-icon">💬</div>
+                <h3>No Chats Yet</h3>
+                <p>Start a conversation by requesting to chat with someone through the bot!</p>
+            </div>
+        </div>
+
+        <!-- Conversation Panel -->
+        <div id="conversation-panel" class="conversation-panel">
+            <!-- Welcome State -->
+            <div id="welcome-state" class="welcome-state">
+                <div class="welcome-icon">✨</div>
+                <h2>Welcome to AAU Chats</h2>
+                <p>Select a chat from the list to start messaging</p>
+            </div>
+
+            <!-- Active Conversation -->
+            <div id="active-conversation" style="display: none;">
+                <div class="conversation-header">
+                    <button id="back-btn" class="back-btn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 12H5M12 19l-7-7 7-7"/>
+                        </svg>
+                    </button>
+                    <div class="partner-info">
+                        <div class="partner-avatar" id="partner-emoji">👤</div>
+                        <div class="partner-details">
+                            <h3 id="partner-name">Loading...</h3>
+                            <p id="partner-status">Active</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="messages-container" class="messages-container">
+                    <!-- Messages will be inserted here -->
+                </div>
+
+                <!-- Empty Messages State -->
+                <div id="empty-messages" class="empty-state" style="display: none;">
+                    <div class="empty-icon">💬</div>
+                    <h3>No Messages Yet</h3>
+                    <p>Start the conversation!</p>
+                </div>
+
+                <div class="message-input-container">
+                    <div class="message-input-wrapper">
+                        <textarea 
+                            id="message-input" 
+                            placeholder="Type a message..." 
+                            rows="1"
+                            maxlength="4000"
+                        ></textarea>
+                        <button id="send-btn" class="send-btn" disabled>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Toast -->
+    <div id="error-toast" class="error-toast" style="display: none;">
+        <span id="error-message"></span>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

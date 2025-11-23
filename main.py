@@ -24,6 +24,7 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 import itertools
 import secrets # <-- NEW: For generating secure tokens
 import json
+from chat.start_chat_api import start_chat_api
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -239,6 +240,7 @@ async def setup():
     global db, bot_info
     db = await create_db_pool()
     bot_info = await bot.get_me()
+    start_chat_api(db)
     logging.info(f"Bot started: @{bot_info.username}")
     
     # --- MODIFICATION: No initial Gemini configuration needed here ---
