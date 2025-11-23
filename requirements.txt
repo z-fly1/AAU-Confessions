@@ -58,3 +58,5 @@ Unidecode==1.4.0
 uritemplate==4.2.0
 urllib3==2.5.0
 yarl==1.19.0
+Flask==3.0.0
+Flask-CORS==4.0.0
