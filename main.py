@@ -844,7 +844,7 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
         """, parent_comment_id, confession_id)
 
     # Display thread header
-    await safe_send_message(user_id, f"<b>📌 Comment Thread in Confession #{confession_id}</b>\n\n<i>Showing the original comment and all replies in this thread.</i>")
+    await safe_send_message(user_id, f"<b>📌 Comment Thread in Confession #{confession_id}</b>")
     
     db_id_to_message_id: Dict[int, int] = {}
     
