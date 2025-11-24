@@ -36,6 +36,7 @@ const elements = {
     messageInput: document.getElementById('message-input'),
     sendBtn: document.getElementById('send-btn'),
     refreshBtn: document.getElementById('refresh-btn'),
+    blockBtn: document.getElementById('block-btn'),
     backBtn: document.getElementById('back-btn'),
     errorToast: document.getElementById('error-toast'),
     errorMessage: document.getElementById('error-message'),
@@ -441,6 +442,60 @@ elements.refreshBtn.addEventListener('click', async () => {
         await loadMessages(state.currentChat.partnerId);
     }
 });
+
+/**
+ * Handle block button
+ */
+elements.blockBtn.addEventListener('click', async () => {
+    if (!state.currentChat) return;
+
+    const partnerName = state.currentChat.partnerName;
+
+    // Use Telegram WebApp to show confirm dialog if available
+    if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.showConfirm) {
+        window.Telegram.WebApp.showConfirm(
+            `Block ${partnerName}? You won't be able to send or receive messages from them.`,
+            async (confirmed) => {
+                if (confirmed) {
+                    await blockUser(state.currentChat.partnerId);
+                }
+            }
+        );
+    } else {
+        // Fallback for non-Telegram environments
+        if (confirm(`Block ${partnerName}? You won't be able to send or receive messages from them.`)) {
+            await blockUser(state.currentChat.partnerId);
+        }
+    }
+});
+
+/**
+ * Block a user
+ */
+async function blockUser(partnerId) {
+    try {
+        await apiRequest(`/chats/${partnerId}/block`, {
+            method: 'POST'
+        });
+
+        // Show success message
+        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.showAlert) {
+            window.Telegram.WebApp.showAlert('User blocked successfully');
+        } else {
+            alert('User blocked successfully');
+        }
+
+        // Go back to chat list
+        goBackToList();
+
+        // Reload chats to remove blocked chat
+        await loadChats();
+
+    } catch (error) {
+        showError('Failed to block user');
+        console.error('Error blocking user:', error);
+    }
+}
 
 /**
  * Handle back button (mobile)

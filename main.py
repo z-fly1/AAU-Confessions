@@ -1482,7 +1482,10 @@ async def user_profile(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
          InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")],
         [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")],
-        [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
+        [InlineKeyboardButton(
+            text="💬 My Chats", 
+            web_app=types.WebAppInfo(url=os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app"))
+        )]
     ])
     
     await message.answer(profile_text, reply_markup=keyboard)
@@ -1539,7 +1542,10 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
                 [InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
                  InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")],
                 [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")],
-                [InlineKeyboardButton(text="💬 My Chats", callback_data="profile_menu_chats_1")]
+                [InlineKeyboardButton(
+                    text="💬 My Chats",
+                    web_app=types.WebAppInfo(url=os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app"))
+                )]
             ])
             await callback_query.message.edit_text(profile_text, reply_markup=keyboard)
         
@@ -1665,14 +1671,10 @@ async def handle_profile_menu(callback_query: types.CallbackQuery, state: FSMCon
             nav_keyboard = create_profile_pagination_keyboard("profile_menu_followers", page, total_pages, "profile_menu_main_1")
             final_markup = builder.attach(InlineKeyboardBuilder.from_markup(nav_keyboard)).as_markup()
             await callback_query.message.edit_text(response_text, reply_markup=final_markup)
-
         elif action == "settings":
             settings_text, keyboard = await _render_general_settings_menu(user_id)
             await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
             
-        elif action == "chats":
-            await show_my_chats(callback_query, state)
-
     except TelegramBadRequest as e:
         if "message is not modified" in str(e).lower():
             logging.info("Content for profile menu was not modified.")

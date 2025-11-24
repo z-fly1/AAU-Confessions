@@ -516,6 +516,65 @@ def get_partner_info(partner_id):
         return jsonify({"error": "Internal server error"}), 500
 
 
+@app.route('/api/chats/<int:partner_id>/block', methods=['POST'])
+@require_auth
+def block_user(partner_id):
+    """Block a chat partner"""
+    try:
+        user_id = request.user_id
+        
+        async def block_partner():
+            async with db_pool.acquire() as conn:
+                # Verify chat exists
+                chat_exists = await conn.fetchval("""
+                    SELECT 1 FROM chat_requests
+                    WHERE ((requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1))
+                    AND status = 'accepted'
+                """, user_id, partner_id)
+                
+                if not chat_exists:
+                    return None
+                
+                # Check if already blocked
+                already_blocked = await conn.fetchval("""
+                    SELECT 1 FROM user_blocks
+                    WHERE blocker_id = $1 AND blocked_id = $2
+                """, user_id, partner_id)
+                
+                if already_blocked:
+                    return {"already_blocked": True}
+                
+                # Block the user
+                await conn.execute("""
+                    INSERT INTO user_blocks (blocker_id, blocked_id)
+                    VALUES ($1, $2)
+                """, user_id, partner_id)
+                
+                # End the chat by setting status to 'blocked'
+                await conn.execute("""
+                    UPDATE chat_requests
+                    SET status = 'blocked'
+                    WHERE ((requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1))
+                    AND status = 'accepted'
+                """, user_id, partner_id)
+                
+                return {"success": True}
+        
+        result = run_async(block_partner())
+        
+        if result is None:
+            return jsonify({"error": "Chat not found"}), 404
+        
+        if result.get("already_blocked"):
+            return jsonify({"message": "User already blocked"}), 200
+        
+        return jsonify({"message": "User blocked successfully"})
+        
+    except Exception as e:
+        logger.error(f"Error blocking user: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
