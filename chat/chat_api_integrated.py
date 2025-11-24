@@ -48,7 +48,7 @@ CORS(app, resources={
 })
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKENS")  # Note: Uses BOT_TOKENS to match main.py
 PORT = int(os.getenv("CHAT_API_PORT", "5001"))
 
 # Development mode - set to True for local testing without Telegram
