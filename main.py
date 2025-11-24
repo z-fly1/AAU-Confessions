@@ -240,7 +240,7 @@ async def setup():
     global db, bot_info
     db = await create_db_pool()
     bot_info = await bot.get_me()
-    start_chat_api(db)
+    start_chat_api(db, bot)  # Pass bot instance for notifications
     logging.info(f"Bot started: @{bot_info.username}")
     
     # --- MODIFICATION: No initial Gemini configuration needed here ---

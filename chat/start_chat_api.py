@@ -6,12 +6,13 @@ Add this to your main.py to enable the chat web app
 import threading
 import logging
 
-def start_chat_api(db_pool):
+def start_chat_api(db_pool, bot):
     """
     Start the chat API server in a separate thread
     
     Args:
         db_pool: The asyncpg connection pool from main bot
+        bot: The bot instance for sending notifications
     """
     try:
         import asyncio
@@ -20,10 +21,10 @@ def start_chat_api(db_pool):
         # Get the current event loop (bot's event loop)
         event_loop = asyncio.get_event_loop()
         
-        # Run Flask in a separate thread, passing both pool and event loop
+        # Run Flask in a separate thread, passing pool, event loop, and bot
         chat_thread = threading.Thread(
             target=run_api_server,
-            args=(db_pool, event_loop),
+            args=(db_pool, event_loop, bot),
             daemon=True
         )
         chat_thread.start()

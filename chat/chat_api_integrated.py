@@ -20,9 +20,10 @@ from dotenv import load_dotenv
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# We'll access the db pool after it's initialized
+# We'll access the db pool and bot instance after they're initialized
 db_pool = None
-
+main_event_loop = None
+bot_instance = None  # Will store reference to the bot for sending notifications
 # Load environment variables
 load_dotenv()
 
@@ -60,12 +61,13 @@ if DEV_MODE:
     logger.warning("⚠️  Set CHAT_API_DEV_MODE=false in production!")
 
 
-def set_db_pool(pool, event_loop):
-    """Set the database pool and event loop from main bot"""
-    global db_pool, main_event_loop
+def set_db_pool(pool, event_loop, bot):
+    """Set the database pool, event loop, and bot instance from main bot"""
+    global db_pool, main_event_loop, bot_instance
     db_pool = pool
     main_event_loop = event_loop
-    logger.info("Database pool and event loop set from main bot")
+    bot_instance = bot
+    logger.info("Database pool, event loop, and bot instance set from main bot")
 
 
 def run_async(coro):
@@ -185,17 +187,26 @@ def get_chats():
         
         async def fetch_chats():
             async with db_pool.acquire() as conn:
-                # Get all accepted chat requests
+                # Get all accepted chat requests with last message time
                 chats = await conn.fetch("""
                     SELECT
                         CASE
-                            WHEN requester_id = $1 THEN recipient_id
-                            ELSE requester_id
+                            WHEN cr.requester_id = $1 THEN cr.recipient_id
+                            ELSE cr.requester_id
                         END AS partner_id,
-                        created_at
-                    FROM chat_requests
-                    WHERE (requester_id = $1 OR recipient_id = $1) AND status = 'accepted'
-                    ORDER BY created_at DESC
+                        cr.created_at,
+                        (
+                            SELECT MAX(cm.created_at)
+                            FROM chat_messages cm
+                            WHERE (cm.sender_id = $1 AND cm.recipient_id = (
+                                CASE WHEN cr.requester_id = $1 THEN cr.recipient_id ELSE cr.requester_id END
+                            )) OR (cm.sender_id = (
+                                CASE WHEN cr.requester_id = $1 THEN cr.recipient_id ELSE cr.requester_id END
+                            ) AND cm.recipient_id = $1)
+                        ) AS last_message_time
+                    FROM chat_requests cr
+                    WHERE (cr.requester_id = $1 OR cr.recipient_id = $1) AND cr.status = 'accepted'
+                    ORDER BY last_message_time DESC NULLS LAST, cr.created_at DESC
                 """, user_id)
                 
                 chat_list = []
@@ -371,6 +382,12 @@ def send_message(partner_id):
                     RETURNING id, created_at
                 """, user_id, partner_id, text)
                 
+                # Get sender info for notification
+                sender_info = await conn.fetchrow(
+                    "SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1",
+                    user_id
+                )
+                
                 return {
                     "id": message['id'],
                     "senderId": user_id,
@@ -378,7 +395,9 @@ def send_message(partner_id):
                     "text": text,
                     "hasSticker": False,
                     "hasAnimation": False,
-                    "timestamp": message['created_at'].isoformat()
+                    "timestamp": message['created_at'].isoformat(),
+                    "senderName": sender_info['nickname'] if sender_info else "Someone",
+                    "senderEmoji": sender_info['profile_emoji'] if sender_info else "👤"
                 }
         
         result = run_async(save_message())
@@ -388,6 +407,43 @@ def send_message(partner_id):
         
         if isinstance(result, dict) and result.get("error") == "blocked":
             return jsonify({"error": "You have been blocked"}), 403
+        
+        # Send notification to recipient
+        if bot_instance:
+            try:
+                sender_name = result.pop("senderName")
+                sender_emoji = result.pop("senderEmoji")
+                
+                async def send_notification():
+                    # Import here to avoid circular dependency
+                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+                    
+                    # Get web app URL from environment or config
+                    web_app_url = os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app")
+                    
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="💬 Open Chat App",
+                            web_app=WebAppInfo(url=web_app_url)
+                        )]
+                    ])
+                    
+                    notification_text = f"{sender_emoji} <b>{sender_name}</b> sent you a message:\n\n{text[:100]}{'...' if len(text) > 100 else ''}"
+                    
+                    try:
+                        await bot_instance.send_message(
+                            partner_id,
+                            notification_text,
+                            reply_markup=keyboard
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send notification to {partner_id}: {e}")
+                
+                # Run notification in bot's event loop
+                asyncio.run_coroutine_threadsafe(send_notification(), main_event_loop)
+                
+            except Exception as e:
+                logger.error(f"Error sending notification: {e}")
         
         return jsonify({"message": result})
         
@@ -455,9 +511,9 @@ def health():
     return jsonify({"status": "ok"})
 
 
-def run_api_server(db, event_loop):
-    """Run the Flask API server with the provided database pool and event loop"""
-    set_db_pool(db, event_loop)
+def run_api_server(db, event_loop, bot):
+    """Run the Flask API server with the provided database pool, event loop, and bot instance"""
+    set_db_pool(db, event_loop, bot)
     logger.info(f"Starting Chat API server on port {PORT}")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
