@@ -228,12 +228,23 @@ def get_chats():
                         LIMIT 1
                     """, user_id, partner_id)
                     
+                    # Count unread messages (messages from partner that are newer than user's last login)
+                    # For simplicity, we'll count messages from partner in the last 7 days
+                    # In a production system, you'd track last_read_time per chat
+                    unread_count = await conn.fetchval("""
+                        SELECT COUNT(*)
+                        FROM chat_messages
+                        WHERE sender_id = $1 AND recipient_id = $2
+                        AND created_at > CURRENT_TIMESTAMP - INTERVAL '7 days'
+                    """, partner_id, user_id)
+                    
                     chat_item = {
                         "partnerId": partner_id,
                         "partnerName": partner_info['nickname'] if partner_info else "Anonymous",
                         "partnerEmoji": partner_info['profile_emoji'] if partner_info else "👤",
                         "lastMessage": None,
-                        "lastMessageTime": None
+                        "lastMessageTime": None,
+                        "unreadCount": unread_count or 0
                     }
                     
                     if last_message:

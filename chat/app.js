@@ -107,6 +107,14 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+/**
+ * Truncate text
+ */
+function truncate(text, maxLength) {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+}
+
 // ==================== API FUNCTIONS ====================
 
 /**
@@ -251,19 +259,25 @@ function renderChats() {
             chatItem.classList.add('active');
         }
 
-        const lastMessage = chat.lastMessage || 'No messages yet';
-        const messagePreview = lastMessage.length > 50
-            ? lastMessage.substring(0, 50) + '...'
-            : lastMessage;
+        const lastMessagePreview = chat.lastMessage
+            ? (chat.isOwn ? 'You: ' : '') + truncate(chat.lastMessage, 30)
+            : 'No messages yet';
+
+        const unreadBadge = chat.unreadCount > 0
+            ? `<span class="unread-badge">${chat.unreadCount}</span>`
+            : '';
+
+        const timeStr = chat.lastMessageTime ? `<div class="chat-time">${formatTime(chat.lastMessageTime)}</div>` : '';
 
         chatItem.innerHTML = `
             <div class="chat-avatar">${chat.partnerEmoji}</div>
-            <div class="chat-content">
-                <div class="chat-header">
-                    <div class="chat-name">${escapeHtml(chat.partnerName)}</div>
-                    ${chat.lastMessageTime ? `<div class="chat-time">${formatTime(chat.lastMessageTime)}</div>` : ''}
-                </div>
-                <div class="chat-preview ${chat.isOwn ? 'own-message' : ''}">${escapeHtml(messagePreview)}</div>
+            <div class="chat-info">
+                <div class="chat-name">${escapeHtml(chat.partnerName)}</div>
+                <div class="chat-preview">${escapeHtml(lastMessagePreview)}</div>
+            </div>
+            <div class="chat-meta">
+                ${timeStr}
+                ${unreadBadge}
             </div>
         `;
 
