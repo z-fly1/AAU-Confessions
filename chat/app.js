@@ -16,7 +16,8 @@ let state = {
     currentChat: null,
     messages: [],
     pollingInterval: null,
-    isLoading: false
+    isLoading: false,
+    replyingToMessage: null  // Track the message being replied to
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -40,7 +41,10 @@ const elements = {
     backBtn: document.getElementById('back-btn'),
     errorToast: document.getElementById('error-toast'),
     errorMessage: document.getElementById('error-message'),
-    chatListPanel: document.querySelector('.chat-list-panel')
+    chatListPanel: document.querySelector('.chat-list-panel'),
+    replyPreview: document.getElementById('reply-preview'),
+    replyPreviewMessage: document.getElementById('reply-preview-message'),
+    cancelReplyBtn: document.getElementById('cancel-reply-btn')
 };
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -189,17 +193,25 @@ async function sendMessage(text) {
     elements.sendBtn.disabled = true;
 
     try {
+        const payload = { text };
+
+        // Include reply_to_message_id if replying
+        if (state.replyingToMessage) {
+            payload.reply_to_message_id = state.replyingToMessage.id;
+        }
+
         const data = await apiRequest(`/chats/${state.currentChat.partnerId}/messages`, {
             method: 'POST',
-            body: JSON.stringify({ text })
+            body: JSON.stringify(payload)
         });
 
         // Add message to state
         state.messages.push(data.message);
 
-        // Clear input
+        // Clear input and reply state
         elements.messageInput.value = '';
         elements.messageInput.style.height = 'auto';
+        clearReply();
 
         // Re-render messages
         renderMessages();
@@ -238,6 +250,40 @@ async function pollMessages() {
     }
 }
 
+// ==================== REPLY FUNCTIONS ====================
+
+/**
+ * Set a message as replying to
+ */
+function setReplyingTo(message) {
+    state.replyingToMessage = message;
+
+    // Show reply preview
+    let previewText = '';
+    if (message.text) {
+        previewText = message.text.length > 50 ? message.text.substring(0, 50) + '...' : message.text;
+    } else if (message.hasSticker) {
+        previewText = '🎨 Sticker';
+    } else if (message.hasAnimation) {
+        previewText = '🎬 GIF';
+    }
+
+    elements.replyPreviewMessage.textContent = previewText;
+    elements.replyPreview.style.display = 'flex';
+
+    // Focus on input
+    elements.messageInput.focus();
+}
+
+/**
+ * Clear the reply state
+ */
+function clearReply() {
+    state.replyingToMessage = null;
+    elements.replyPreview.style.display = 'none';
+    elements.replyPreviewMessage.textContent = '';
+}
+
 // ==================== RENDER FUNCTIONS ====================
 
 /**
@@ -270,10 +316,14 @@ function renderChats() {
 
         const timeStr = chat.lastMessageTime ? `<div class="chat-time">${formatTime(chat.lastMessageTime)}</div>` : '';
 
+        // Apply default values
+        const partnerEmoji = chat.partnerEmoji || '👤';
+        const partnerName = chat.partnerName || 'Anonymous';
+
         chatItem.innerHTML = `
-            <div class="chat-avatar">${chat.partnerEmoji}</div>
+            <div class="chat-avatar">${partnerEmoji}</div>
             <div class="chat-info">
-                <div class="chat-name">${escapeHtml(chat.partnerName)}</div>
+                <div class="chat-name">${escapeHtml(partnerName)}</div>
                 <div class="chat-preview">${escapeHtml(lastMessagePreview)}</div>
             </div>
             <div class="chat-meta">
@@ -304,14 +354,38 @@ function renderMessages() {
     state.messages.forEach(message => {
         const messageEl = document.createElement('div');
         messageEl.className = `message ${message.isOwn ? 'own' : 'other'}`;
+        messageEl.dataset.messageId = message.id;
 
         let messageContent = '';
+
+        // Add replied message preview if this is a reply
+        if (message.repliedMessage) {
+            let repliedText = '';
+            if (message.repliedMessage.text) {
+                repliedText = escapeHtml(message.repliedMessage.text.length > 50
+                    ? message.repliedMessage.text.substring(0, 50) + '...'
+                    : message.repliedMessage.text);
+            } else if (message.repliedMessage.hasSticker) {
+                repliedText = '<span class="replied-message-placeholder">🎨 Sticker</span>';
+            } else if (message.repliedMessage.hasAnimation) {
+                repliedText = '<span class="replied-message-placeholder">🎬 GIF</span>';
+            }
+
+            const repliedLabel = message.repliedMessage.isOwn ? 'You' : (state.currentChat?.partnerName || 'Partner');
+            messageContent += `
+                <div class="replied-message-preview">
+                    <div class="replied-message-preview-label">${repliedLabel}</div>
+                    <div class="replied-message-preview-text">${repliedText}</div>
+                </div>
+            `;
+        }
+
         if (message.text) {
-            messageContent = escapeHtml(message.text);
+            messageContent += escapeHtml(message.text);
         } else if (message.hasSticker) {
-            messageContent = '<span class="message-placeholder">🎨 Sticker</span>';
+            messageContent += '<span class="message-placeholder">🎨 Sticker</span>';
         } else if (message.hasAnimation) {
-            messageContent = '<span class="message-placeholder">🎬 GIF</span>';
+            messageContent += '<span class="message-placeholder">🎬 GIF</span>';
         }
 
         messageEl.innerHTML = `
@@ -321,7 +395,20 @@ function renderMessages() {
                     <span class="message-time">${formatMessageTime(message.timestamp)}</span>
                 </div>
             </div>
+            <button class="reply-btn" title="Reply">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 10l-5 5 5 5"/>
+                    <path d="M20 4v7a4 4 0 0 1-4 4H4"/>
+                </svg>
+            </button>
         `;
+
+        // Add reply button click handler
+        const replyBtn = messageEl.querySelector('.reply-btn');
+        replyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setReplyingTo(message);
+        });
 
         elements.messagesContainer.appendChild(messageEl);
     });
@@ -345,14 +432,17 @@ async function selectChat(partnerId) {
         clearInterval(state.pollingInterval);
     }
 
+    // Clear reply state when switching chats
+    clearReply();
+
     // Load messages
     await loadMessages(partnerId);
 
-    // Update UI
+    // Update UI with default values applied
     elements.welcomeState.style.display = 'none';
     elements.activeConversation.style.display = 'flex';
-    elements.partnerEmoji.textContent = state.currentChat.partnerEmoji;
-    elements.partnerName.textContent = state.currentChat.partnerName;
+    elements.partnerEmoji.textContent = state.currentChat.partnerEmoji || '👤';
+    elements.partnerName.textContent = state.currentChat.partnerName || 'Anonymous';
 
     // Update active chat in list
     renderChats();
@@ -378,6 +468,9 @@ function goBackToList() {
     if (state.pollingInterval) {
         clearInterval(state.pollingInterval);
     }
+
+    // Clear reply state
+    clearReply();
 
     // Mobile: hide conversation panel
     elements.conversationPanel.classList.remove('active');
@@ -501,6 +594,11 @@ async function blockUser(partnerId) {
  * Handle back button (mobile)
  */
 elements.backBtn.addEventListener('click', goBackToList);
+
+/**
+ * Handle cancel reply button
+ */
+elements.cancelReplyBtn.addEventListener('click', clearReply);
 
 // ==================== INITIALIZATION ====================
 

@@ -94,6 +94,24 @@
                 </div>
 
                 <div class="message-input-container">
+                    <!-- Reply Preview Bar -->
+                    <div id="reply-preview" class="reply-preview" style="display: none;">
+                        <div class="reply-preview-content">
+                            <div class="reply-preview-icon">↩️</div>
+                            <div class="reply-preview-text">
+                                <div class="reply-preview-label">Replying to:</div>
+                                <div id="reply-preview-message" class="reply-preview-message"></div>
+                            </div>
+                        </div>
+                        <button id="cancel-reply-btn" class="cancel-reply-btn" title="Cancel reply">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+
                     <div class="message-input-wrapper">
                         <textarea id="message-input" placeholder="Type a message..." rows="1"
                             maxlength="4000"></textarea>

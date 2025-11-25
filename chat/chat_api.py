@@ -191,10 +191,14 @@ def get_chats():
                 """, (user_id, partner_id, partner_id, user_id))
                 last_message = cursor.fetchone()
                 
+                # Apply default values for partner info
+                partner_name = partner_info['nickname'] if partner_info and partner_info['nickname'] else "Anonymous"
+                partner_emoji = partner_info['profile_emoji'] if partner_info and partner_info['profile_emoji'] else "👤"
+                
                 chat_item = {
                     "partnerId": partner_id,
-                    "partnerName": partner_info['nickname'] if partner_info else "Anonymous",
-                    "partnerEmoji": partner_info['profile_emoji'] if partner_info else "👤",
+                    "partnerName": partner_name,
+                    "partnerEmoji": partner_emoji,
                     "lastMessage": None,
                     "lastMessageTime": None
                 }
@@ -247,7 +251,7 @@ def get_messages(partner_id):
             
             # Get messages
             query = """
-                SELECT id, sender_id, recipient_id, text, sticker_file_id, animation_file_id, created_at
+                SELECT id, sender_id, recipient_id, text, sticker_file_id, animation_file_id, reply_to_message_id, created_at
                 FROM chat_messages
                 WHERE (sender_id = %s AND recipient_id = %s) OR (sender_id = %s AND recipient_id = %s)
             """
@@ -279,16 +283,39 @@ def get_messages(partner_id):
                     "text": msg['text'],
                     "hasSticker": msg['sticker_file_id'] is not None,
                     "hasAnimation": msg['animation_file_id'] is not None,
-                    "timestamp": msg['created_at'].isoformat()
+                    "timestamp": msg['created_at'].isoformat(),
+                    "replyToMessageId": msg['reply_to_message_id']
                 }
+                
+                # If this message is a reply, fetch the replied-to message details
+                if msg['reply_to_message_id']:
+                    cursor.execute("""
+                        SELECT text, sticker_file_id, animation_file_id, sender_id
+                        FROM chat_messages
+                        WHERE id = %s
+                    """, (msg['reply_to_message_id'],))
+                    replied_msg = cursor.fetchone()
+                    
+                    if replied_msg:
+                        message_item['repliedMessage'] = {
+                            "text": replied_msg['text'],
+                            "hasSticker": replied_msg['sticker_file_id'] is not None,
+                            "hasAnimation": replied_msg['animation_file_id'] is not None,
+                            "isOwn": replied_msg['sender_id'] == user_id
+                        }
+                
                 message_list.append(message_item)
+            
+            # Apply default values for partner info
+            partner_name = partner_info['nickname'] if partner_info and partner_info['nickname'] else "Anonymous"
+            partner_emoji = partner_info['profile_emoji'] if partner_info and partner_info['profile_emoji'] else "👤"
             
             result = {
                 "messages": message_list,
                 "partner": {
                     "id": partner_id,
-                    "name": partner_info['nickname'] if partner_info else "Anonymous",
-                    "emoji": partner_info['profile_emoji'] if partner_info else "👤"
+                    "name": partner_name,
+                    "emoji": partner_emoji
                 }
             }
             
@@ -309,6 +336,7 @@ def send_message(partner_id):
         user_id = request.user_id
         data = request.get_json()
         text = data.get('text', '').strip()
+        reply_to_message_id = data.get('reply_to_message_id')
         
         if not text:
             return jsonify({"error": "Message text is required"}), 400
@@ -341,12 +369,24 @@ def send_message(partner_id):
             if is_blocked:
                 return jsonify({"error": "You have been blocked"}), 403
             
+            # Validate reply_to_message_id if provided
+            if reply_to_message_id:
+                cursor.execute("""
+                    SELECT 1 FROM chat_messages
+                    WHERE id = %s 
+                    AND ((sender_id = %s AND recipient_id = %s) OR (sender_id = %s AND recipient_id = %s))
+                """, (reply_to_message_id, user_id, partner_id, partner_id, user_id))
+                reply_exists = cursor.fetchone()
+                
+                if not reply_exists:
+                    return jsonify({"error": "Reply target message not found"}), 400
+            
             # Save message
             cursor.execute("""
-                INSERT INTO chat_messages (sender_id, recipient_id, text)
-                VALUES (%s, %s, %s)
+                INSERT INTO chat_messages (sender_id, recipient_id, text, reply_to_message_id)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id, created_at
-            """, (user_id, partner_id, text))
+            """, (user_id, partner_id, text, reply_to_message_id))
             message = cursor.fetchone()
             conn.commit()
             
@@ -357,8 +397,26 @@ def send_message(partner_id):
                 "text": text,
                 "hasSticker": False,
                 "hasAnimation": False,
-                "timestamp": message['created_at'].isoformat()
+                "timestamp": message['created_at'].isoformat(),
+                "replyToMessageId": reply_to_message_id
             }
+            
+            # If this is a reply, include the replied message info
+            if reply_to_message_id:
+                cursor.execute("""
+                    SELECT text, sticker_file_id, animation_file_id, sender_id
+                    FROM chat_messages
+                    WHERE id = %s
+                """, (reply_to_message_id,))
+                replied_msg = cursor.fetchone()
+                
+                if replied_msg:
+                    result['repliedMessage'] = {
+                        "text": replied_msg['text'],
+                        "hasSticker": replied_msg['sticker_file_id'] is not None,
+                        "hasAnimation": replied_msg['animation_file_id'] is not None,
+                        "isOwn": replied_msg['sender_id'] == user_id
+                    }
             
             return jsonify({"message": result})
         finally:

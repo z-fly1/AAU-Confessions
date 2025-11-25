@@ -586,6 +586,169 @@ body {
     cursor: not-allowed;
 }
 
+/* ==================== REPLY UI ==================== */
+/* Reply Preview Bar */
+.reply-preview {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: rgba(139, 92, 246, 0.1);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--spacing-sm);
+    animation: slideDown var(--transition-base);
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.reply-preview-content {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex: 1;
+    min-width: 0;
+}
+
+.reply-preview-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.reply-preview-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.reply-preview-label {
+    font-size: 12px;
+    color: var(--text-accent);
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.reply-preview-message {
+    font-size: 14px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cancel-reply-btn {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-base);
+    flex-shrink: 0;
+}
+
+.cancel-reply-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+/* Reply Button on Messages */
+.message {
+    position: relative;
+}
+
+.reply-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    color: white;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    z-index: 10;
+}
+
+.message:hover .reply-btn {
+    display: flex;
+}
+
+.reply-btn:hover {
+    background: rgba(139, 92, 246, 0.8);
+    transform: scale(1.1);
+}
+
+.reply-btn:active {
+    transform: scale(0.95);
+}
+
+/* Replied Message Preview Inside Message */
+.replied-message-preview {
+    padding: var(--spacing-sm);
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 3px solid rgba(139, 92, 246, 0.6);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--spacing-sm);
+    font-size: 13px;
+}
+
+.message.own .replied-message-preview {
+    background: rgba(255, 255, 255, 0.15);
+    border-left-color: rgba(255, 255, 255, 0.5);
+}
+
+.replied-message-preview-label {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.message.other .replied-message-preview-label {
+    color: var(--text-tertiary);
+}
+
+.replied-message-preview-text {
+    color: rgba(255, 255, 255, 0.8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.message.other .replied-message-preview-text {
+    color: var(--text-secondary);
+}
+
+.replied-message-placeholder {
+    font-style: italic;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.message.other .replied-message-placeholder {
+    color: var(--text-tertiary);
+}
+
+
 /* ==================== EMPTY STATE ==================== */
 .empty-state {
     flex: 1;

@@ -383,11 +383,19 @@ async def setup():
                 text TEXT NULL,
                 sticker_file_id TEXT NULL,
                 animation_file_id TEXT NULL,
+                reply_to_message_id INTEGER NULL REFERENCES chat_messages(id) ON DELETE SET NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT one_chat_content_type CHECK (num_nonnulls(text, sticker_file_id, animation_file_id) = 1)
             );
         """)
-        logging.info("Checked/Created 'chat_messages' table.")
+        
+        # Add reply_to_message_id column if it doesn't exist (for backward compatibility)
+        await conn.execute("""
+            ALTER TABLE chat_messages 
+            ADD COLUMN IF NOT EXISTS reply_to_message_id INTEGER NULL REFERENCES chat_messages(id) ON DELETE SET NULL;
+        """)
+        logging.info("Checked/Created 'chat_messages' table with reply support.")
+
 
 
         # --- Deletion Requests Table ---
