@@ -733,15 +733,18 @@ async def apply_voice_effect(input_path: str, effect: str) -> str:
 async def upload_voice_file(file_path: str, chat_id: int) -> str:
     """Upload voice file to Telegram and return file_id."""
     try:
-        with open(file_path, 'rb') as voice_file:
-            sent_message = await bot.send_voice(chat_id, voice_file)
-            file_id = sent_message.voice.file_id
-            logging.info(f"Uploaded voice file, got file_id: {file_id}")
-            
-            # Delete the sent message immediately (we just needed the file_id)
-            await bot.delete_message(chat_id, sent_message.message_id)
-            
-            return file_id
+        from aiogram.types import FSInputFile
+        
+        # Create FSInputFile from the file path
+        voice_file = FSInputFile(file_path)
+        sent_message = await bot.send_voice(chat_id, voice_file)
+        file_id = sent_message.voice.file_id
+        logging.info(f"Uploaded voice file, got file_id: {file_id}")
+        
+        # Delete the sent message immediately (we just needed the file_id)
+        await bot.delete_message(chat_id, sent_message.message_id)
+        
+        return file_id
     except Exception as e:
         logging.error(f"Error uploading voice file: {e}", exc_info=True)
         raise
