@@ -287,12 +287,21 @@ async def setup():
                 text TEXT NULL,
                 sticker_file_id TEXT NULL,
                 animation_file_id TEXT NULL,
+                voice_file_id TEXT NULL,
                 parent_comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT one_content_type CHECK (num_nonnulls(text, sticker_file_id, animation_file_id) = 1)
+                CONSTRAINT one_content_type CHECK (num_nonnulls(text, sticker_file_id, animation_file_id, voice_file_id) = 1)
             );
         """)
-        logging.info("Checked/Created 'comments' table.")
+        # Add voice_file_id column if it doesn't exist (for backward compatibility)
+        await conn.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS voice_file_id TEXT NULL;")
+        # Drop old constraint and add new one that includes voice
+        await conn.execute("ALTER TABLE comments DROP CONSTRAINT IF EXISTS one_content_type;")
+        await conn.execute("""
+            ALTER TABLE comments ADD CONSTRAINT one_content_type 
+            CHECK (num_nonnulls(text, sticker_file_id, animation_file_id, voice_file_id) = 1);
+        """)
+        logging.info("Checked/Created 'comments' table with voice support.")
 
         # --- Reactions Table ---
         await conn.execute("""
@@ -469,6 +478,10 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS profile_token VARCHAR(16) NULL;")
         await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_status_profile_token ON user_status(profile_token);")
         logging.info("Ensured 'profile_token' column and index exist in 'user_status'.")
+        
+        # --- NEW: Add voice_effect_preset column ---
+        await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS voice_effect_preset VARCHAR(20) NULL DEFAULT 'original';")
+        logging.info("Ensured 'voice_effect_preset' column exists in 'user_status'.")
 
         logging.info("Ensured all customizable profile columns exist in 'user_status'.")
 
@@ -632,6 +645,144 @@ async def update_user_points(conn: asyncpg.Connection, user_id: int, delta: int)
     await conn.execute("INSERT INTO user_points (user_id, points) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET points = user_points.points + $2", user_id, delta)
     logging.debug(f"Updated points for user {user_id} by {delta}")
 
+# --- Voice Processing Functions ---
+import subprocess
+import tempfile
+import aiofiles
+
+async def download_voice_file(file_id: str) -> str:
+    """Download voice file from Telegram and save to temp location."""
+    try:
+        file = await bot.get_file(file_id)
+        file_path = file.file_path
+        
+        # Create temp file with .ogg extension
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.ogg')
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # Download file
+        await bot.download_file(file_path, temp_path)
+        logging.info(f"Downloaded voice file {file_id} to {temp_path}")
+        return temp_path
+    except Exception as e:
+        logging.error(f"Error downloading voice file: {e}", exc_info=True)
+        raise
+
+async def apply_voice_effect(input_path: str, effect: str) -> str:
+    """Apply voice effect using ffmpeg and return path to modified file."""
+    if effect == 'original':
+        # No modification needed
+        return input_path
+    
+    # Create output temp file
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.ogg')
+    output_path = temp_file.name
+    temp_file.close()
+    
+    # Define ffmpeg filters for each effect
+    effect_filters = {
+        'manly': 'asetrate=44100*0.8,aresample=44100',  # Lower pitch
+        'female': 'asetrate=44100*1.2,aresample=44100',  # Higher pitch
+        'chipmunk': 'asetrate=44100*1.5,aresample=44100,atempo=1.25'  # Very high pitch + fast
+    }
+    
+    audio_filter = effect_filters.get(effect)
+    if not audio_filter:
+        logging.warning(f"Unknown effect '{effect}', using original")
+        return input_path
+    
+    try:
+        # Run ffmpeg command
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-af', audio_filter,
+            '-y',  # Overwrite output file
+            output_path
+        ]
+        
+        logging.info(f"Applying '{effect}' effect with command: {' '.join(cmd)}")
+        
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr.decode('utf-8', errors='ignore')
+            logging.error(f"ffmpeg failed: {error_msg}")
+            raise Exception(f"ffmpeg processing failed: {error_msg[:200]}")
+        
+        logging.info(f"Applied '{effect}' effect successfully")
+        return output_path
+        
+    except subprocess.TimeoutExpired:
+        logging.error("ffmpeg processing timed out")
+        raise Exception("Voice processing timed out")
+    except Exception as e:
+        logging.error(f"Error applying voice effect: {e}", exc_info=True)
+        # Clean up output file if it was created
+        try:
+            os.remove(output_path)
+        except:
+            pass
+        raise
+
+async def upload_voice_file(file_path: str, chat_id: int) -> str:
+    """Upload voice file to Telegram and return file_id."""
+    try:
+        with open(file_path, 'rb') as voice_file:
+            sent_message = await bot.send_voice(chat_id, voice_file)
+            file_id = sent_message.voice.file_id
+            logging.info(f"Uploaded voice file, got file_id: {file_id}")
+            
+            # Delete the sent message immediately (we just needed the file_id)
+            await bot.delete_message(chat_id, sent_message.message_id)
+            
+            return file_id
+    except Exception as e:
+        logging.error(f"Error uploading voice file: {e}", exc_info=True)
+        raise
+
+async def process_voice_with_effect(voice_file_id: str, effect: str, user_id: int) -> str:
+    """
+    Download voice, apply effect, upload modified version, clean up temp files.
+    Returns the file_id of the processed voice.
+    """
+    input_path = None
+    output_path = None
+    
+    try:
+        # Download original voice
+        input_path = await download_voice_file(voice_file_id)
+        
+        # Apply effect (may return same path if effect is 'original')
+        output_path = await apply_voice_effect(input_path, effect)
+        
+        # Upload modified voice
+        new_file_id = await upload_voice_file(output_path, user_id)
+        
+        return new_file_id
+        
+    finally:
+        # Clean up temporary files
+        if input_path:
+            try:
+                os.remove(input_path)
+                logging.debug(f"Cleaned up input file: {input_path}")
+            except Exception as e:
+                logging.warning(f"Failed to clean up input file: {e}")
+        
+        if output_path and output_path != input_path:
+            try:
+                os.remove(output_path)
+                logging.debug(f"Cleaned up output file: {output_path}")
+            except Exception as e:
+                logging.warning(f"Failed to clean up output file: {e}")
+
+
 async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
     likes, dislikes = await get_comment_reactions(comment_id)
     builder = InlineKeyboardBuilder()
@@ -711,7 +862,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         limit = page_size_to_use if use_pagination else None
 
         query = """
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.parent_comment_id, c.created_at,
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.parent_comment_id, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
                    us.profile_emoji
@@ -765,7 +916,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 else: 
                     async with db.acquire() as conn_for_quote:
                         parent_comment_data = await conn_for_quote.fetchrow(
-                            "SELECT text, sticker_file_id, animation_file_id FROM comments WHERE id = $1", parent_db_id
+                            "SELECT text, sticker_file_id, animation_file_id, voice_file_id FROM comments WHERE id = $1", parent_db_id
                         )
                     if parent_comment_data:
                         if parent_comment_data['text']:
@@ -774,6 +925,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                             quoted_text = "<i>[Sticker]</i>"
                         elif parent_comment_data['animation_file_id']:
                              quoted_text = "<i>[GIF]</i>"
+                        elif parent_comment_data['voice_file_id']:
+                             quoted_text = "<i>[Voice Message]</i>"
                         else:
                             quoted_text = "<i>[Original message]</i>"
                         
@@ -793,6 +946,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 elif c_data['animation_file_id']:
                     sent_message = await bot.send_animation(user_id, animation=c_data['animation_file_id'], reply_to_message_id=reply_to_msg_id)
                     await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+                elif c_data['voice_file_id']:
+                    sent_message = await bot.send_voice(user_id, voice=c_data['voice_file_id'], reply_to_message_id=reply_to_msg_id)
+                    await bot.send_message(user_id, f"{text_reply_prefix}🎙️ Voice Message\n\n{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data['text']:
                     full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
                     sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
@@ -1970,13 +2126,23 @@ async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboar
     """Helper to build the profile details & visibility menu."""
     async with db.acquire() as conn:
         settings = await conn.fetchrow("""
-            SELECT gender, campus, year, department, interests,
+            SELECT gender, campus, year, department, interests, voice_effect_preset,
                    show_gender, show_campus, show_year, show_department, show_interests
             FROM user_status WHERE user_id = $1
         """, user_id)
 
     def get_status_emoji(is_shown):
         return "✅" if is_shown else "❌"
+
+    # Map voice effect to display name
+    voice_effect_display = {
+        'original': '🎤 Original',
+        'manly': '💪 Manly',
+        'female': '👩 Female',
+        'chipmunk': '🐿️ Chipmunk'
+    }
+    current_voice_effect = settings.get('voice_effect_preset') or 'original'
+    voice_effect_text = voice_effect_display.get(current_voice_effect, '🎤 Original')
 
     menu_text = "<b>ℹ️ Edit Profile Details & Visibility</b>\n\nSet your details and toggle whether they appear on your public profile."
     
@@ -1986,6 +2152,7 @@ async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboar
     builder.button(text=f"Year: {settings.get('year') or 'Not Set'}", callback_data="set_detail_year_1")
     builder.button(text=f"Department: {settings.get('department') or 'Not Set'}", callback_data="set_detail_department_1")
     builder.button(text=f"Select Interests ({len(settings.get('interests') or [])}/{MAX_INTERESTS})", callback_data="set_detail_interests_1")
+    builder.button(text=f"Voice Effect: {voice_effect_text}", callback_data="set_voice_effect")
     builder.adjust(1)
 
     builder.row(
@@ -2196,6 +2363,77 @@ async def toggle_profile_detail_visibility(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
     await callback_query.answer(f"{field.capitalize()} visibility toggled.")
 
+
+# --- Voice Effect Selection Handlers ---
+@dp.callback_query(F.data == "set_voice_effect")
+async def show_voice_effect_selection(callback_query: types.CallbackQuery):
+    """Show voice effect selection menu."""
+    async with db.acquire() as conn:
+        current_effect = await conn.fetchval(
+            "SELECT voice_effect_preset FROM user_status WHERE user_id = $1",
+            callback_query.from_user.id
+        ) or 'original'
+    
+    builder = InlineKeyboardBuilder()
+    effects = [
+        ('original', '🎤 Original'),
+        ('manly', '💪 Manly'),
+        ('female', '👩 Female'),
+        ('chipmunk', '🐿️ Chipmunk')
+    ]
+    
+    for effect_id, effect_name in effects:
+        prefix = "✅ " if effect_id == current_effect else ""
+        builder.button(
+            text=f"{prefix}{effect_name}",
+            callback_data=f"select_voice_effect_{effect_id}"
+        )
+    
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="profile_details_menu"))
+    
+    await callback_query.message.edit_text(
+        "<b>🎤 Voice Effect Selection</b>\n\n"
+        "Choose how your voice messages will sound in comments:\n\n"
+        "🎤 <b>Original</b> - No effect applied\n"
+        "💪 <b>Manly</b> - Deeper, lower pitch\n"
+        "👩 <b>Female</b> - Higher pitch\n"
+        "🐿️ <b>Chipmunk</b> - Very high pitch and fast\n\n"
+        "Your selection will be applied to all voice comments you send.",
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith("select_voice_effect_"))
+async def set_voice_effect(callback_query: types.CallbackQuery):
+    """Save user's voice effect selection."""
+    effect = callback_query.data.replace("select_voice_effect_", "")
+    user_id = callback_query.from_user.id
+    
+    valid_effects = ['original', 'manly', 'female', 'chipmunk']
+    if effect not in valid_effects:
+        await callback_query.answer("Invalid effect selected.", show_alert=True)
+        return
+    
+    effect_names = {
+        'original': '🎤 Original',
+        'manly': '💪 Manly',
+        'female': '👩 Female',
+        'chipmunk': '🐿️ Chipmunk'
+    }
+    
+    async with db.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_status (user_id, voice_effect_preset) VALUES ($1, $2)
+               ON CONFLICT (user_id) DO UPDATE SET voice_effect_preset = $2""",
+            user_id, effect
+        )
+    
+    await callback_query.answer(f"Voice effect set to {effect_names[effect]}!", show_alert=True)
+    
+    # Return to profile details menu
+    menu_text, keyboard = await _render_profile_details_menu(user_id)
+    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
 
 
 # --- Deletion Request Handlers ---
@@ -3178,7 +3416,7 @@ async def check_and_handle_spam(message: types.Message, state: FSMContext) -> bo
 
     return False  # No spam found
 
-@dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation))
+@dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation | F.voice))
 async def receive_comment(message: types.Message, state: FSMContext):
     # --- MODIFIED: Spam Check at the beginning ---
     if await check_and_handle_spam(message, state):
@@ -3191,18 +3429,56 @@ async def receive_comment(message: types.Message, state: FSMContext):
     keyboard = get_main_keyboard(user_id)
     if not conf_id: await message.answer("⚠️ Error: Context lost. Please try again."); return
     
-    comm_text, sticker_id, animation_id, log_type = None, None, None, "Unknown"
-    if message.text: comm_text, log_type = message.text.strip(), "Text"
-    elif message.sticker: sticker_id, log_type = message.sticker.file_id, "Sticker"
-    elif message.animation: animation_id, log_type = message.animation.file_id, "GIF"
-    else: await message.answer("Invalid content. Please send text, sticker, or GIF."); return
+    comm_text, sticker_id, animation_id, voice_id, log_type = None, None, None, None, "Unknown"
+    
+    if message.text: 
+        comm_text, log_type = message.text.strip(), "Text"
+    elif message.sticker: 
+        sticker_id, log_type = message.sticker.file_id, "Sticker"
+    elif message.animation: 
+        animation_id, log_type = message.animation.file_id, "GIF"
+    elif message.voice:
+        log_type = "Voice"
+        # Get user's voice effect preset
+        async with db.acquire() as conn:
+            voice_effect = await conn.fetchval(
+                "SELECT voice_effect_preset FROM user_status WHERE user_id = $1",
+                user_id
+            ) or 'original'
+        
+        # Show processing message
+        processing_msg = await message.answer("🎙️ Processing voice message...")
+        
+        try:
+            # Process voice with effect
+            voice_id = await process_voice_with_effect(
+                message.voice.file_id,
+                voice_effect,
+                user_id
+            )
+            # Delete processing message
+            await bot.delete_message(user_id, processing_msg.message_id)
+        except Exception as e:
+            logging.error(f"Error processing voice: {e}", exc_info=True)
+            await bot.delete_message(user_id, processing_msg.message_id)
+            await message.answer(
+                "❌ Failed to process voice message. Please try again or contact support if the issue persists.",
+                reply_markup=keyboard
+            )
+            return
+    else: 
+        await message.answer("Invalid content. Please send text, sticker, GIF, or voice message."); 
+        return
 
     try:
         async with db.acquire() as conn:
             async with conn.transaction():
                 conf_owner_id = await conn.fetchval("SELECT user_id FROM confessions WHERE id = $1 AND status = 'approved'", conf_id)
                 if not conf_owner_id: raise Exception("Confession not found or approved.")
-                new_comm_id = await conn.fetchval("INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", conf_id, user_id, comm_text, sticker_id, animation_id)
+                new_comm_id = await conn.fetchval(
+                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id", 
+                    conf_id, user_id, comm_text, sticker_id, animation_id, voice_id
+                )
         await message.answer("💬 Your comment has been added!", reply_markup=keyboard);
         await update_channel_post_button(conf_id)
         
@@ -3218,6 +3494,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
         
         # --- NEW: Notify followers ---
         await notify_followers_of_comment(user_id, conf_id, preview)
+
 
         await show_comments_for_confession(user_id, conf_id)
     except Exception as e:
@@ -3266,7 +3543,7 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
         await callback_query.answer("Could not start reply process.", show_alert=True)
         await state.clear()
 
-@dp.message(CommentForm.waiting_for_reply, (F.text | F.sticker | F.animation))
+@dp.message(CommentForm.waiting_for_reply, (F.text | F.sticker | F.animation | F.voice))
 async def receive_reply(message: types.Message, state: FSMContext):
     # --- MODIFIED: Spam Check at the beginning ---
     if await check_and_handle_spam(message, state):
@@ -3283,11 +3560,46 @@ async def receive_reply(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    reply_text, sticker_id, animation_id, log_type = None, None, None, "Unknown"
-    if message.text: reply_text, log_type = message.text.strip(), "Text Reply"
-    elif message.sticker: sticker_id, log_type = message.sticker.file_id, "Sticker Reply"
-    elif message.animation: animation_id, log_type = message.animation.file_id, "GIF Reply"
-    else: await message.answer("Invalid content type for a reply."); return
+    reply_text, sticker_id, animation_id, voice_id, log_type = None, None, None, None, "Unknown"
+    
+    if message.text: 
+        reply_text, log_type = message.text.strip(), "Text Reply"
+    elif message.sticker: 
+        sticker_id, log_type = message.sticker.file_id, "Sticker Reply"
+    elif message.animation: 
+        animation_id, log_type = message.animation.file_id, "GIF Reply"
+    elif message.voice:
+        log_type = "Voice Reply"
+        # Get user's voice effect preset
+        async with db.acquire() as conn:
+            voice_effect = await conn.fetchval(
+                "SELECT voice_effect_preset FROM user_status WHERE user_id = $1",
+                user_id
+            ) or 'original'
+        
+        # Show processing message
+        processing_msg = await message.answer("🎙️ Processing voice message...")
+        
+        try:
+            # Process voice with effect
+            voice_id = await process_voice_with_effect(
+                message.voice.file_id,
+                voice_effect,
+                user_id
+            )
+            # Delete processing message
+            await bot.delete_message(user_id, processing_msg.message_id)
+        except Exception as e:
+            logging.error(f"Error processing voice reply: {e}", exc_info=True)
+            await bot.delete_message(user_id, processing_msg.message_id)
+            await message.answer(
+                "❌ Failed to process voice message. Please try again or contact support if the issue persists.",
+                reply_markup=keyboard
+            )
+            return
+    else: 
+        await message.answer("Invalid content type for a reply."); 
+        return
     
     try:
         async with db.acquire() as conn:
@@ -3297,8 +3609,8 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 conf_data = await conn.fetchrow("SELECT user_id FROM confessions WHERE id = $1", conf_id)
                 
                 await conn.execute(
-                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6)",
-                    conf_id, user_id, reply_text, sticker_id, animation_id, parent_id
+                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    conf_id, user_id, reply_text, sticker_id, animation_id, voice_id, parent_id
                 )
 
         await message.answer("↪️ Your reply has been sent!", reply_markup=keyboard)
