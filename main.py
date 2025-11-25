@@ -499,6 +499,12 @@ async def setup():
         """)
         # Add column for tracking bot message sends for high reach package
         await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS last_bot_send_date DATE NULL;")
+        # Add columns for media support
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS photo_file_id TEXT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS video_file_id TEXT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS document_file_id TEXT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS animation_file_id TEXT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS caption TEXT NULL;")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_active ON ads(is_active);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_featured_until ON ads(featured_until);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_expires_at ON ads(expires_at);")
@@ -4202,8 +4208,10 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
             # Pin the message
             await bot.pin_chat_message(CHANNEL_ID, sent_msg.message_id)
         
+        
         # Store message content for reposts (standard package)
         message_text = message.text or message.caption
+        caption = message.caption if message.caption else None
         message_entities = None
         if message.entities:
             entities_list = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.entities]
@@ -4212,15 +4220,24 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
             entities_list = [{"type": e.type, "offset": e.offset, "length": e.length} for e in message.caption_entities]
             message_entities = json.dumps(entities_list)
         
+        # Extract media file IDs
+        photo_file_id = message.photo[-1].file_id if message.photo else None
+        video_file_id = message.video.file_id if message.video else None
+        document_file_id = message.document.file_id if message.document else None
+        animation_file_id = message.animation.file_id if message.animation else None
+        
         # Save to database
         async with db.acquire() as conn:
             await conn.execute("""
                 INSERT INTO ads (
                     package_type, message_id, posted_by, featured_until, 
-                    expires_at, is_pinned, repost_time, message_text, message_entities
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    expires_at, is_pinned, repost_time, message_text, message_entities,
+                    photo_file_id, video_file_id, document_file_id, animation_file_id, caption
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             """, package, sent_msg.message_id, CONTACT_ADMIN_ID, featured_until, 
-                expires_at, is_pinned, repost_time, message_text, message_entities)
+                expires_at, is_pinned, repost_time, message_text, message_entities,
+                photo_file_id, video_file_id, document_file_id, animation_file_id, caption)
+
         
         package_name = "Basic" if package == "basic" else ("Standard" if package == "standard" else "High Reach")
         duration = "24 hours" if package == "basic" else "3 days"
@@ -4297,7 +4314,8 @@ async def ad_management_task():
                 # Handle daily reposts for standard and high_reach packages
                 repostable_ads = await conn.fetch("""
                     SELECT id, package_type, message_text, message_entities, repost_time, last_repost_date, 
-                           last_bot_send_date, message_id, is_pinned
+                           last_bot_send_date, message_id, is_pinned, caption,
+                           photo_file_id, video_file_id, document_file_id, animation_file_id
                     FROM ads
                     WHERE is_active = TRUE 
                     AND package_type IN ('standard', 'high_reach')
@@ -4322,8 +4340,34 @@ async def ad_management_task():
                             # Delete old message
                             await bot.delete_message(CHANNEL_ID, ad['message_id'])
                             
-                            # Repost the ad
-                            new_msg = await bot.send_message(CHANNEL_ID, ad['message_text'])
+                            # Repost the ad based on media type
+                            if ad['photo_file_id']:
+                                new_msg = await bot.send_photo(
+                                    CHANNEL_ID, 
+                                    photo=ad['photo_file_id'],
+                                    caption=ad['caption']
+                                )
+                            elif ad['video_file_id']:
+                                new_msg = await bot.send_video(
+                                    CHANNEL_ID,
+                                    video=ad['video_file_id'],
+                                    caption=ad['caption']
+                                )
+                            elif ad['document_file_id']:
+                                new_msg = await bot.send_document(
+                                    CHANNEL_ID,
+                                    document=ad['document_file_id'],
+                                    caption=ad['caption']
+                                )
+                            elif ad['animation_file_id']:
+                                new_msg = await bot.send_animation(
+                                    CHANNEL_ID,
+                                    animation=ad['animation_file_id'],
+                                    caption=ad['caption']
+                                )
+                            else:
+                                # Text-only ad
+                                new_msg = await bot.send_message(CHANNEL_ID, ad['message_text'])
                             
                             # Pin the new message
                             await bot.pin_chat_message(CHANNEL_ID, new_msg.message_id)
@@ -4341,7 +4385,8 @@ async def ad_management_task():
                 
                 # Handle daily bot message broadcasts for high_reach package
                 high_reach_ads = await conn.fetch("""
-                    SELECT id, message_text, message_entities, repost_time, last_bot_send_date
+                    SELECT id, message_text, message_entities, repost_time, last_bot_send_date,
+                           caption, photo_file_id, video_file_id, document_file_id, animation_file_id
                     FROM ads
                     WHERE is_active = TRUE 
                     AND package_type = 'high_reach'
@@ -4372,10 +4417,44 @@ async def ad_management_task():
                             for user_row in users:
                                 user_id = user_row['user_id']
                                 try:
-                                    await bot.send_message(
-                                        user_id, 
-                                        f"📢 <b>Sponsored Message</b>\n\n{ad['message_text']}"
-                                    )
+                                    # Send based on media type
+                                    sponsored_header = "📢 <b>Sponsored Message</b>\n\n"
+                                    
+                                    if ad['photo_file_id']:
+                                        # For photos, add header to caption
+                                        caption_text = sponsored_header + (ad['caption'] or "")
+                                        await bot.send_photo(
+                                            user_id,
+                                            photo=ad['photo_file_id'],
+                                            caption=caption_text
+                                        )
+                                    elif ad['video_file_id']:
+                                        caption_text = sponsored_header + (ad['caption'] or "")
+                                        await bot.send_video(
+                                            user_id,
+                                            video=ad['video_file_id'],
+                                            caption=caption_text
+                                        )
+                                    elif ad['document_file_id']:
+                                        caption_text = sponsored_header + (ad['caption'] or "")
+                                        await bot.send_document(
+                                            user_id,
+                                            document=ad['document_file_id'],
+                                            caption=caption_text
+                                        )
+                                    elif ad['animation_file_id']:
+                                        caption_text = sponsored_header + (ad['caption'] or "")
+                                        await bot.send_animation(
+                                            user_id,
+                                            animation=ad['animation_file_id'],
+                                            caption=caption_text
+                                        )
+                                    else:
+                                        # Text-only ad
+                                        await bot.send_message(
+                                            user_id, 
+                                            f"{sponsored_header}{ad['message_text']}"
+                                        )
                                     success_count += 1
                                     await asyncio.sleep(0.05)  # Rate limiting
                                 except Exception as e:
