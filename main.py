@@ -1572,22 +1572,37 @@ async def _render_customization_menu(user_id: int) -> Tuple[str, InlineKeyboardM
 async def _render_general_settings_menu(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
     """Helper function to build the general settings submenu."""
     async with db.acquire() as conn:
-        settings = await conn.fetchrow("SELECT comments_per_page, allow_contact FROM user_status WHERE user_id = $1", user_id)
+        settings = await conn.fetchrow(
+            "SELECT comments_per_page, allow_contact, voice_effect_preset FROM user_status WHERE user_id = $1", 
+            user_id
+        )
 
     current_page_size = settings.get('comments_per_page') if settings else None
     allow_contact = settings.get('allow_contact', True) if settings else True
     cpp_display = "All" if current_page_size == 0 else (current_page_size if current_page_size is not None else f'Default ({PAGE_SIZE})')
     contact_status = "✅ On" if allow_contact else "❌ Off"
+    
+    # Map voice effect to display name
+    voice_effect_display = {
+        'original': '🎤 Original',
+        'manly': '💪 Manly',
+        'female': '👩 Female',
+        'chipmunk': '🐿️ Chipmunk'
+    }
+    current_voice_effect = settings.get('voice_effect_preset') if settings else 'original'
+    voice_effect_text = voice_effect_display.get(current_voice_effect or 'original', '🎤 Original')
 
     settings_text = (
         "<b>⚙️ General Settings</b>\n\n"
         f"<b>Comments Per Page:</b> {cpp_display}\n"
-        f"<b>Allow Chat Requests:</b> {contact_status}"
+        f"<b>Allow Chat Requests:</b> {contact_status}\n"
+        f"<b>Voice Effect:</b> {voice_effect_text}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔔 Notification Settings", callback_data="notification_settings_menu")],
         [InlineKeyboardButton(text="🔢 Set Comments Per Page", callback_data="settings_change_cpp")],
         [InlineKeyboardButton(text=f"📬 Toggle Chat Requests ({'Off' if allow_contact else 'On'})", callback_data="settings_toggle_contact")],
+        [InlineKeyboardButton(text=f"🎤 Change Voice Effect", callback_data="set_voice_effect")],
         [InlineKeyboardButton(text="⬅️ Back to Profile", callback_data="profile_menu_main_1")]
     ])
     return settings_text, keyboard
@@ -2129,23 +2144,13 @@ async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboar
     """Helper to build the profile details & visibility menu."""
     async with db.acquire() as conn:
         settings = await conn.fetchrow("""
-            SELECT gender, campus, year, department, interests, voice_effect_preset,
+            SELECT gender, campus, year, department, interests,
                    show_gender, show_campus, show_year, show_department, show_interests
             FROM user_status WHERE user_id = $1
         """, user_id)
 
     def get_status_emoji(is_shown):
         return "✅" if is_shown else "❌"
-
-    # Map voice effect to display name
-    voice_effect_display = {
-        'original': '🎤 Original',
-        'manly': '💪 Manly',
-        'female': '👩 Female',
-        'chipmunk': '🐿️ Chipmunk'
-    }
-    current_voice_effect = settings.get('voice_effect_preset') or 'original'
-    voice_effect_text = voice_effect_display.get(current_voice_effect, '🎤 Original')
 
     menu_text = "<b>ℹ️ Edit Profile Details & Visibility</b>\n\nSet your details and toggle whether they appear on your public profile."
     
@@ -2155,7 +2160,6 @@ async def _render_profile_details_menu(user_id: int) -> Tuple[str, InlineKeyboar
     builder.button(text=f"Year: {settings.get('year') or 'Not Set'}", callback_data="set_detail_year_1")
     builder.button(text=f"Department: {settings.get('department') or 'Not Set'}", callback_data="set_detail_department_1")
     builder.button(text=f"Select Interests ({len(settings.get('interests') or [])}/{MAX_INTERESTS})", callback_data="set_detail_interests_1")
-    builder.button(text=f"Voice Effect: {voice_effect_text}", callback_data="set_voice_effect")
     builder.adjust(1)
 
     builder.row(
@@ -2393,7 +2397,7 @@ async def show_voice_effect_selection(callback_query: types.CallbackQuery):
         )
     
     builder.adjust(1)
-    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="profile_details_menu"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back to Settings", callback_data="profile_menu_settings_1"))
     
     await callback_query.message.edit_text(
         "<b>🎤 Voice Effect Selection</b>\n\n"
@@ -2434,9 +2438,9 @@ async def set_voice_effect(callback_query: types.CallbackQuery):
     
     await callback_query.answer(f"Voice effect set to {effect_names[effect]}!", show_alert=True)
     
-    # Return to profile details menu
-    menu_text, keyboard = await _render_profile_details_menu(user_id)
-    await callback_query.message.edit_text(menu_text, reply_markup=keyboard)
+    # Return to general settings menu
+    settings_text, keyboard = await _render_general_settings_menu(user_id)
+    await callback_query.message.edit_text(settings_text, reply_markup=keyboard)
 
 
 # --- Deletion Request Handlers ---
