@@ -1582,8 +1582,8 @@ async def start_music_recommendation(callback_query: types.CallbackQuery, state:
     await state.set_state(MusicRecommendationForm.waiting_for_music)
     await callback_query.answer("Send your music recommendation")
     await callback_query.message.answer(
-        "🎵 <b>Recommend Music</b>\n\n"
-        "Please send the music file you'd like to recommend to the admin.\n\n"
+        "📻 <b>Friday Radio</b>\n\n"
+        "Please send the music file you'd like to share on Friday Radio.\n\n"
         "You can send audio files in any format.",
         reply_markup=cancel_keyboard
     )
@@ -1606,7 +1606,7 @@ async def receive_music_recommendation(message: types.Message, state: FSMContext
     
     # Build caption with user details
     caption = (
-        f"🎵 <b>Music Recommendation</b>\n\n"
+        f"📻 <b>Friday Radio Submission</b>\n\n"
         f"<b>From:</b> {emoji} {html.quote(nickname or 'Anonymous')}\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
         f"<b>Username:</b> @{user_info.username if user_info.username else 'Not Set'}"
@@ -1620,7 +1620,7 @@ async def receive_music_recommendation(message: types.Message, state: FSMContext
             caption=caption
         )
         await message.answer(
-            "✅ Your music recommendation has been sent to the admin!",
+            "✅ Your music has been submitted to Friday Radio!",
             reply_markup=get_main_keyboard(user_id)
         )
     except Exception as e:
@@ -1795,7 +1795,7 @@ async def user_profile(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
          InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")],
         [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")],
-        [InlineKeyboardButton(text="🎵 Recommend Music", callback_data="recommend_music_start")],
+        [InlineKeyboardButton(text="📻 Friday Radio", callback_data="recommend_music_start")],
         [InlineKeyboardButton(
             text="💬 My Chats", 
             web_app=types.WebAppInfo(url=os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app"))
