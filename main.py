@@ -152,7 +152,8 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="📻 Friday Radio")]
     ],
     resize_keyboard=True
 )
@@ -1576,17 +1577,23 @@ async def handle_admin_reply(message: types.Message, state: FSMContext):
         else: await message.reply("⚠️ Failed to send reply. User may have blocked the bot.")
 
 # --- MUSIC RECOMMENDATION --- Handlers for music recommendation feature
+@dp.message(F.text == "📻 Friday Radio", StateFilter(None))
 @dp.callback_query(F.data == "recommend_music_start", StateFilter(None))
-async def start_music_recommendation(callback_query: types.CallbackQuery, state: FSMContext):
-    """Handle 'Recommend Music' button press."""
+async def start_music_recommendation(event: Union[types.Message, types.CallbackQuery], state: FSMContext):
+    """Handle 'Friday Radio' button press from main menu or profile."""
     await state.set_state(MusicRecommendationForm.waiting_for_music)
-    await callback_query.answer("Send your music recommendation")
-    await callback_query.message.answer(
+    
+    message_text = (
         "📻 <b>Friday Radio</b>\n\n"
         "Please send the music file you'd like to share on Friday Radio.\n\n"
-        "You can send audio files in any format.",
-        reply_markup=cancel_keyboard
+        "You can send audio files in any format."
     )
+    
+    if isinstance(event, types.CallbackQuery):
+        await event.answer("Send your music recommendation")
+        await event.message.answer(message_text, reply_markup=cancel_keyboard)
+    else:
+        await event.answer(message_text, reply_markup=cancel_keyboard)
 
 @dp.message(MusicRecommendationForm.waiting_for_music, F.audio)
 async def receive_music_recommendation(message: types.Message, state: FSMContext):
@@ -1795,7 +1802,6 @@ async def user_profile(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
          InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")],
         [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")],
-        [InlineKeyboardButton(text="📻 Friday Radio", callback_data="recommend_music_start")],
         [InlineKeyboardButton(
             text="💬 My Chats", 
             web_app=types.WebAppInfo(url=os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app"))
