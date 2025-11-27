@@ -295,13 +295,16 @@ async def setup():
         """)
         # Add voice_file_id column if it doesn't exist (for backward compatibility)
         await conn.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS voice_file_id TEXT NULL;")
-        # Drop old constraint and add new one that includes voice
+        # Add photo columns for photo comments with captions
+        await conn.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS photo_file_id TEXT NULL;")
+        await conn.execute("ALTER TABLE comments ADD COLUMN IF NOT EXISTS photo_caption TEXT NULL;")
+        # Drop old constraint and add new one that includes voice and photo
         await conn.execute("ALTER TABLE comments DROP CONSTRAINT IF EXISTS one_content_type;")
         await conn.execute("""
             ALTER TABLE comments ADD CONSTRAINT one_content_type 
-            CHECK (num_nonnulls(text, sticker_file_id, animation_file_id, voice_file_id) = 1);
+            CHECK (num_nonnulls(text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id) = 1);
         """)
-        logging.info("Checked/Created 'comments' table with voice support.")
+        logging.info("Checked/Created 'comments' table with voice and photo support.")
 
         # --- Reactions Table ---
         await conn.execute("""
@@ -865,7 +868,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
         limit = page_size_to_use if use_pagination else None
 
         query = """
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.parent_comment_id, c.created_at,
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
                    us.profile_emoji
@@ -919,7 +922,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 else: 
                     async with db.acquire() as conn_for_quote:
                         parent_comment_data = await conn_for_quote.fetchrow(
-                            "SELECT text, sticker_file_id, animation_file_id, voice_file_id FROM comments WHERE id = $1", parent_db_id
+                            "SELECT text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption FROM comments WHERE id = $1", parent_db_id
                         )
                     if parent_comment_data:
                         if parent_comment_data['text']:
@@ -930,6 +933,12 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                              quoted_text = "<i>[GIF]</i>"
                         elif parent_comment_data['voice_file_id']:
                              quoted_text = "<i>[Voice Message]</i>"
+                        elif parent_comment_data.get('photo_file_id'):
+                             if parent_comment_data.get('photo_caption'):
+                                 caption_preview = html.quote(parent_comment_data['photo_caption'][:50])
+                                 quoted_text = f"<i>[Photo: {caption_preview}...]</i>"
+                             else:
+                                 quoted_text = "<i>[Photo]</i>"
                         else:
                             quoted_text = "<i>[Original message]</i>"
                         
@@ -952,6 +961,34 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                 elif c_data['voice_file_id']:
                     sent_message = await bot.send_voice(user_id, voice=c_data['voice_file_id'], reply_to_message_id=reply_to_msg_id)
                     await bot.send_message(user_id, f"{text_reply_prefix}🎙️ Voice Message\n\n{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+                elif c_data.get('photo_file_id'):
+                    # Send photo with caption if available
+                    caption_text = ""
+                    if c_data.get('photo_caption'):
+                        caption_text = f"📷 {html.quote(c_data['photo_caption'])}\n\n{metadata_text}"
+                    else:
+                        caption_text = f"📷 Photo\n\n{metadata_text}"
+                    
+                    sent_message = await bot.send_photo(
+                        user_id, 
+                        photo=c_data['photo_file_id'], 
+                        caption=caption_text,
+                        reply_to_message_id=reply_to_msg_id
+                    )
+                    # Send keyboard in separate message if there's reply prefix
+                    if text_reply_prefix:
+                        await bot.send_message(user_id, text_reply_prefix, reply_markup=keyboard, disable_web_page_preview=True)
+                    else:
+                        # Edit the photo message to add keyboard
+                        try:
+                            await bot.edit_message_reply_markup(
+                                chat_id=user_id,
+                                message_id=sent_message.message_id,
+                                reply_markup=keyboard
+                            )
+                        except:
+                            # If editing fails, send keyboard in separate message
+                            await bot.send_message(user_id, "⬆️", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data['text']:
                     full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
                     sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
@@ -991,7 +1028,7 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
         
         # Fetch the parent comment
         parent_comment = await conn.fetchrow("""
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.created_at,
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
                    us.profile_emoji
@@ -1007,7 +1044,7 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
         
         # Fetch all replies to this parent comment
         replies = await conn.fetch("""
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.created_at,
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
                    us.profile_emoji
@@ -1061,6 +1098,33 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
             elif c_data['animation_file_id']:
                 sent_message = await bot.send_animation(user_id, animation=c_data['animation_file_id'], reply_to_message_id=reply_to_msg_id)
                 await bot.send_message(user_id, f"{text_reply_prefix}{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+            elif c_data.get('voice_file_id'):
+                sent_message = await bot.send_voice(user_id, voice=c_data['voice_file_id'], reply_to_message_id=reply_to_msg_id)
+                await bot.send_message(user_id, f"{text_reply_prefix}🎙️ Voice Message\n\n{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
+            elif c_data.get('photo_file_id'):
+                # Send photo with caption if available
+                caption_text = ""
+                if c_data.get('photo_caption'):
+                    caption_text = f"📷 {html.quote(c_data['photo_caption'])}\n\n{metadata_text}"
+                else:
+                    caption_text = f"📷 Photo\n\n{metadata_text}"
+                
+                sent_message = await bot.send_photo(
+                    user_id, 
+                    photo=c_data['photo_file_id'], 
+                    caption=caption_text,
+                    reply_to_message_id=reply_to_msg_id
+                )
+                # Try to add keyboard to photo message
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=user_id,
+                        message_id=sent_message.message_id,
+                        reply_markup=keyboard
+                    )
+                except:
+                    # If editing fails, send keyboard in separate message
+                    await bot.send_message(user_id, "⬆️", reply_markup=keyboard, disable_web_page_preview=True)
             elif c_data['text']:
                 full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
                 sent_message = await bot.send_message(user_id, full_text, reply_markup=keyboard, disable_web_page_preview=True, reply_to_message_id=reply_to_msg_id)
@@ -3423,7 +3487,7 @@ async def check_and_handle_spam(message: types.Message, state: FSMContext) -> bo
 
     return False  # No spam found
 
-@dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation | F.voice))
+@dp.message(CommentForm.waiting_for_comment, (F.text | F.sticker | F.animation | F.voice | F.photo))
 async def receive_comment(message: types.Message, state: FSMContext):
     # --- MODIFIED: Spam Check at the beginning ---
     if await check_and_handle_spam(message, state):
@@ -3473,8 +3537,13 @@ async def receive_comment(message: types.Message, state: FSMContext):
                 reply_markup=keyboard
             )
             return
+    elif message.photo:
+        photo_id = message.photo[-1].file_id  # Get highest resolution
+        photo_caption = message.caption or None
+        log_type = "Photo"
+        comm_text = photo_caption  # Store caption in comm_text for preview
     else: 
-        await message.answer("Invalid content. Please send text, sticker, GIF, or voice message."); 
+        await message.answer("Invalid content. Please send text, sticker, GIF, voice message, or photo."); 
         return
 
     try:
@@ -3482,10 +3551,18 @@ async def receive_comment(message: types.Message, state: FSMContext):
             async with conn.transaction():
                 conf_owner_id = await conn.fetchval("SELECT user_id FROM confessions WHERE id = $1 AND status = 'approved'", conf_id)
                 if not conf_owner_id: raise Exception("Confession not found or approved.")
-                new_comm_id = await conn.fetchval(
-                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id", 
-                    conf_id, user_id, comm_text, sticker_id, animation_id, voice_id
-                )
+                
+                # Prepare values for insertion
+                if message.photo:
+                    new_comm_id = await conn.fetchval(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id", 
+                        conf_id, user_id, None, None, None, None, photo_id, photo_caption
+                    )
+                else:
+                    new_comm_id = await conn.fetchval(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id", 
+                        conf_id, user_id, comm_text, sticker_id, animation_id, voice_id, None, None
+                    )
         await message.answer("💬 Your comment has been added!", reply_markup=keyboard);
         await update_channel_post_button(conf_id)
         
@@ -3513,7 +3590,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
 async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMContext):
     parent_id = int(callback_query.data.split("_", 1)[1])
     async with db.acquire() as conn:
-        comm_data = await conn.fetchrow("SELECT confession_id, text, sticker_file_id, animation_file_id, user_id FROM comments WHERE id = $1", parent_id)
+        comm_data = await conn.fetchrow("SELECT confession_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, user_id FROM comments WHERE id = $1", parent_id)
     if not comm_data: await callback_query.answer("Comment no longer exists.", show_alert=True); return
     if callback_query.from_user.id == comm_data['user_id']: await callback_query.answer("You cannot reply to yourself.", show_alert=True); return
 
@@ -3525,6 +3602,14 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
             reply_preview_message += "<i>[Sticker]</i>"
         elif comm_data['animation_file_id']:
             reply_preview_message += "<i>[GIF]</i>"
+        elif comm_data.get('voice_file_id'):
+            reply_preview_message += "<i>[Voice Message]</i>"
+        elif comm_data.get('photo_file_id'):
+            if comm_data.get('photo_caption'):
+                caption_preview = html.quote(comm_data['photo_caption'][:50])
+                reply_preview_message += f"<i>[Photo: {caption_preview}...]</i>"
+            else:
+                reply_preview_message += "<i>[Photo]</i>"
 
         await safe_send_message(
             callback_query.from_user.id,
@@ -3534,7 +3619,7 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
         
         await bot.send_message(
             callback_query.from_user.id,
-            "⬆️ Please send your reply now (text, sticker, or GIF).",
+            "⬆️ Please send your reply now (text, sticker, GIF, voice, or photo).",
             reply_markup=cancel_keyboard
         )
         
@@ -3550,7 +3635,7 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
         await callback_query.answer("Could not start reply process.", show_alert=True)
         await state.clear()
 
-@dp.message(CommentForm.waiting_for_reply, (F.text | F.sticker | F.animation | F.voice))
+@dp.message(CommentForm.waiting_for_reply, (F.text | F.sticker | F.animation | F.voice | F.photo))
 async def receive_reply(message: types.Message, state: FSMContext):
     # --- MODIFIED: Spam Check at the beginning ---
     if await check_and_handle_spam(message, state):
@@ -3567,7 +3652,7 @@ async def receive_reply(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    reply_text, sticker_id, animation_id, voice_id, log_type = None, None, None, None, "Unknown"
+    reply_text, sticker_id, animation_id, voice_id, photo_id, photo_caption, log_type = None, None, None, None, None, None, "Unknown"
     
     if message.text: 
         reply_text, log_type = message.text.strip(), "Text Reply"
@@ -3604,6 +3689,11 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 reply_markup=keyboard
             )
             return
+    elif message.photo:
+        photo_id = message.photo[-1].file_id  # Get highest resolution
+        photo_caption = message.caption or None
+        log_type = "Photo Reply"
+        reply_text = photo_caption  # Store caption in reply_text for preview
     else: 
         await message.answer("Invalid content type for a reply."); 
         return
@@ -3615,10 +3705,16 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 if not parent_data: await message.answer("⚠️ The comment you were replying to has been deleted."); await state.clear(); return
                 conf_data = await conn.fetchrow("SELECT user_id FROM confessions WHERE id = $1", conf_id)
                 
-                await conn.execute(
-                    "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    conf_id, user_id, reply_text, sticker_id, animation_id, voice_id, parent_id
-                )
+                if message.photo:
+                    await conn.execute(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                        conf_id, user_id, None, None, None, None, photo_id, photo_caption, parent_id
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                        conf_id, user_id, reply_text, sticker_id, animation_id, voice_id, None, None, parent_id
+                    )
 
         await message.answer("↪️ Your reply has been sent!", reply_markup=keyboard)
         await update_channel_post_button(conf_id)
