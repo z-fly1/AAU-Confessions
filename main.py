@@ -223,6 +223,10 @@ class AdManagement(StatesGroup):
     selecting_package = State()
     waiting_for_ad_content = State()
 
+# --- MUSIC RECOMMENDATION --- States for music recommendation
+class MusicRecommendationForm(StatesGroup):
+    waiting_for_music = State()
+
 # --- Database ---
 db = None
 async def create_db_pool():
@@ -1571,6 +1575,63 @@ async def handle_admin_reply(message: types.Message, state: FSMContext):
         if sent: await message.reply("✅ Reply sent to the user.")
         else: await message.reply("⚠️ Failed to send reply. User may have blocked the bot.")
 
+# --- MUSIC RECOMMENDATION --- Handlers for music recommendation feature
+@dp.callback_query(F.data == "recommend_music_start", StateFilter(None))
+async def start_music_recommendation(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle 'Recommend Music' button press."""
+    await state.set_state(MusicRecommendationForm.waiting_for_music)
+    await callback_query.answer("Send your music recommendation")
+    await callback_query.message.answer(
+        "🎵 <b>Recommend Music</b>\n\n"
+        "Please send the music file you'd like to recommend to the admin.\n\n"
+        "You can send audio files in any format.",
+        reply_markup=cancel_keyboard
+    )
+
+@dp.message(MusicRecommendationForm.waiting_for_music, F.audio)
+async def receive_music_recommendation(message: types.Message, state: FSMContext):
+    """Handle music file sent by user and forward to contact admin."""
+    user_id = message.from_user.id
+    user_info = message.from_user
+    
+    # Get user's nickname from database
+    async with db.acquire() as conn:
+        profile_data = await conn.fetchrow(
+            "SELECT nickname, profile_emoji FROM user_status WHERE user_id = $1",
+            user_id
+        )
+    
+    nickname = profile_data.get('nickname') if profile_data else None
+    emoji = profile_data.get('profile_emoji') if profile_data else '👤'
+    
+    # Build caption with user details
+    caption = (
+        f"🎵 <b>Music Recommendation</b>\n\n"
+        f"<b>From:</b> {emoji} {html.quote(nickname or 'Anonymous')}\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Username:</b> @{user_info.username if user_info.username else 'Not Set'}"
+    )
+    
+    try:
+        # Forward music to contact admin with caption
+        await bot.send_audio(
+            CONTACT_ADMIN_ID,
+            message.audio.file_id,
+            caption=caption
+        )
+        await message.answer(
+            "✅ Your music recommendation has been sent to the admin!",
+            reply_markup=get_main_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"Failed to forward music from {user_id} to admin: {e}")
+        await message.answer(
+            "❌ Error sending music. Please try again later.",
+            reply_markup=get_main_keyboard(user_id)
+        )
+    finally:
+        await state.clear()
+
 @dp.message(Command("id"))
 async def get_user_info_command(message: types.Message, command: CommandObject):
     if not message.from_user or message.from_user.id != ADMIN_ID: return
@@ -1734,6 +1795,7 @@ async def user_profile(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="👥 Following", callback_data="profile_menu_following_1"),
          InlineKeyboardButton(text="👥 Followers", callback_data="profile_menu_followers_1")],
         [InlineKeyboardButton(text="⚙️ Settings", callback_data="profile_menu_settings_1")],
+        [InlineKeyboardButton(text="🎵 Recommend Music", callback_data="recommend_music_start")],
         [InlineKeyboardButton(
             text="💬 My Chats", 
             web_app=types.WebAppInfo(url=os.getenv("CHAT_WEB_APP_URL", "https://aau-chat-app.vercel.app"))
