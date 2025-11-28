@@ -789,6 +789,70 @@ async def process_voice_with_effect(voice_file_id: str, effect: str, user_id: in
                 logging.warning(f"Failed to clean up output file: {e}")
 
 
+async def forward_voice_to_admin(user_id: int, voice_file_id: str, confession_id: int, is_reply: bool = False):
+    """
+    Forward the original voice message to contact admin with user details.
+    
+    Args:
+        user_id: The user who sent the voice message
+        voice_file_id: The original voice file_id from Telegram
+        confession_id: The confession ID this voice comment is for
+        is_reply: Whether this is a reply to another comment (default: False)
+    """
+    try:
+        # Get user details from database
+        async with db.acquire() as conn:
+            user_data = await conn.fetchrow(
+                "SELECT nickname, profile_emoji, profile_token FROM user_status WHERE user_id = $1",
+                user_id
+            )
+        
+        # Get user aura points
+        aura_points = await get_user_points(user_id)
+        
+        # Get Telegram user info
+        try:
+            chat_info = await bot.get_chat(user_id)
+            username = chat_info.username or "Not Set"
+            first_name = chat_info.first_name or "N/A"
+        except Exception as e:
+            logging.warning(f"Could not fetch Telegram info for user {user_id}: {e}")
+            username = "Not Set"
+            first_name = "N/A"
+        
+        # Get user's nickname and emoji
+        nickname = user_data.get('nickname') if user_data else None
+        emoji = user_data.get('profile_emoji') if user_data else '👤'
+        profile_token = user_data.get('profile_token') if user_data else None
+        
+        # Create profile link
+        profile_link = f"https://t.me/{bot_info.username}?start=profile_{profile_token}" if profile_token else "N/A"
+        
+        # Build admin message
+        comment_type = "reply" if is_reply else "comment"
+        admin_message = (
+            f"🎙️ <b>New Voice {comment_type.capitalize()} on Confession #{confession_id}</b>\n\n"
+            f"<b>User Details:</b>\n"
+            f"  • <b>User ID:</b> <code>{user_id}</code>\n"
+            f"  • <b>Username:</b> @{username}\n"
+            f"  • <b>First Name:</b> {html.quote(first_name)}\n"
+            f"  • <b>Nickname:</b> {html.quote(nickname or 'Anonymous')} {emoji}\n"
+            f"  • <b>Aura:</b> ⚡︎ {aura_points}\n"
+            f"  • <b>Profile Link:</b> {profile_link}\n\n"
+            f"<b>Original Voice Message:</b> ⬇️ (see below)"
+        )
+        
+        # Send message with voice file
+        await bot.send_message(CONTACT_ADMIN_ID, admin_message, disable_web_page_preview=True)
+        await bot.send_voice(CONTACT_ADMIN_ID, voice=voice_file_id)
+        
+        logging.info(f"Forwarded voice {comment_type} from user {user_id} to contact admin for confession {confession_id}")
+        
+    except Exception as e:
+        logging.error(f"Error forwarding voice to admin: {e}", exc_info=True)
+        # Don't raise - we don't want to block the user's comment if forwarding fails
+
+
 async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
     likes, dislikes = await get_comment_reactions(comment_id)
     builder = InlineKeyboardBuilder()
@@ -3510,6 +3574,10 @@ async def receive_comment(message: types.Message, state: FSMContext):
         animation_id, log_type = message.animation.file_id, "GIF"
     elif message.voice:
         log_type = "Voice"
+        
+        # Forward original voice message to contact admin BEFORE processing
+        await forward_voice_to_admin(user_id, message.voice.file_id, conf_id, is_reply=False)
+        
         # Get user's voice effect preset
         async with db.acquire() as conn:
             voice_effect = await conn.fetchval(
@@ -3662,6 +3730,10 @@ async def receive_reply(message: types.Message, state: FSMContext):
         animation_id, log_type = message.animation.file_id, "GIF Reply"
     elif message.voice:
         log_type = "Voice Reply"
+        
+        # Forward original voice message to contact admin BEFORE processing
+        await forward_voice_to_admin(user_id, message.voice.file_id, conf_id, is_reply=True)
+        
         # Get user's voice effect preset
         async with db.acquire() as conn:
             voice_effect = await conn.fetchval(
