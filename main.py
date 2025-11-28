@@ -163,7 +163,8 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="📻 Friday Radio")]
     ],
     resize_keyboard=True
 )
@@ -173,7 +174,8 @@ contact_admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📢 Post Ads")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="📻 Friday Radio")]
     ],
     resize_keyboard=True
 )
