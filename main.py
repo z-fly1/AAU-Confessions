@@ -3568,6 +3568,15 @@ async def receive_comment(message: types.Message, state: FSMContext):
     
     if message.text: 
         comm_text, log_type = message.text.strip(), "Text"
+        
+        # Reject accidental button text messages
+        if comm_text in ["✍️ Confess", "📬 Review Pending"]:
+            await message.answer(
+                "Comment NOT sent.",
+                reply_markup=keyboard
+            )
+            await state.clear()
+            return
     elif message.sticker: 
         sticker_id, log_type = message.sticker.file_id, "Sticker"
     elif message.animation: 
@@ -3724,6 +3733,15 @@ async def receive_reply(message: types.Message, state: FSMContext):
     
     if message.text: 
         reply_text, log_type = message.text.strip(), "Text Reply"
+        
+        # Reject accidental button text messages
+        if reply_text in ["✍️ Confess", "📬 Review Pending"]:
+            await message.answer(
+                "⚠️ It looks like you accidentally sent a button text instead of clicking the button. Please try again.",
+                reply_markup=keyboard
+            )
+            await state.clear()
+            return
     elif message.sticker: 
         sticker_id, log_type = message.sticker.file_id, "Sticker Reply"
     elif message.animation: 
