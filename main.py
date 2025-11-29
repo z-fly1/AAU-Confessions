@@ -4982,21 +4982,44 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
             for user_row in users:
                 user_id = user_row['user_id']
                 try:
-                    # Send based on media type
-                    if message.text:
-                        await bot.send_message(user_id, f"{sponsored_header}{message.text}", entities=message.entities)
-                    elif message.photo:
+                    # Send based on media type - EXACTLY like high_reach package
+                    sponsored_header = "📢 <b>Sponsored Message</b>\n\n"
+                    
+                    if message.photo:
+                        # For photos, add header to caption
                         caption_text = sponsored_header + (message.caption or "")
-                        await bot.send_photo(user_id, photo=message.photo[-1].file_id, caption=caption_text, caption_entities=message.caption_entities)
+                        await bot.send_photo(
+                            user_id,
+                            photo=message.photo[-1].file_id,
+                            caption=caption_text
+                        )
                     elif message.video:
                         caption_text = sponsored_header + (message.caption or "")
-                        await bot.send_video(user_id, video=message.video.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                        await bot.send_video(
+                            user_id,
+                            video=message.video.file_id,
+                            caption=caption_text
+                        )
                     elif message.document:
                         caption_text = sponsored_header + (message.caption or "")
-                        await bot.send_document(user_id, document=message.document.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                        await bot.send_document(
+                            user_id,
+                            document=message.document.file_id,
+                            caption=caption_text
+                        )
                     elif message.animation:
                         caption_text = sponsored_header + (message.caption or "")
-                        await bot.send_animation(user_id, animation=message.animation.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                        await bot.send_animation(
+                            user_id,
+                            animation=message.animation.file_id,
+                            caption=caption_text
+                        )
+                    else:
+                        # Text-only ad
+                        await bot.send_message(
+                            user_id, 
+                            f"{sponsored_header}{message.text}"
+                        )
                     
                     success_count += 1
                     await asyncio.sleep(0.05)  # Rate limiting
