@@ -4682,6 +4682,7 @@ async def start_ad_posting(message: types.Message, state: FSMContext):
     builder.button(text="📦 Basic Package (24h)", callback_data="ad_package_basic")
     builder.button(text="⭐ Standard Package (3 days)", callback_data="ad_package_standard")
     builder.button(text="🚀 High Reach Package", callback_data="ad_package_high_reach")
+    builder.button(text="📱 Bot-Only Broadcast", callback_data="ad_package_bot_only")
     builder.button(text="📢 Channel Join Ad", callback_data="ad_package_channel_join")
     builder.adjust(1)
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="ad_cancel"))
@@ -4705,6 +4706,11 @@ async def start_ad_posting(message: types.Message, state: FSMContext):
         "  • Reposted once every day\n"
         "  • 📱 <b>Sent through the bot to all users daily</b>\n"
         "  • Auto-deleted after 3 days\n\n"
+        "<b>📱 Bot-Only Broadcast:</b>\n"
+        "  • NOT posted to the channel\n"
+        "  • <b>Sent directly through the bot to all users immediately</b>\n"
+        "  • One-time broadcast\n"
+        "  • No channel posting, no reposts\n\n"
         "<b>📢 Channel Join Ad:</b>\n"
         "  • Custom duration (you specify)\n"
         "  • Requires ALL users to join a specific channel\n"
@@ -4725,7 +4731,7 @@ async def handle_ad_package_selection(callback_query: types.CallbackQuery, state
     
     package = callback_query.data.replace("ad_package_", "")
     
-    if package not in ["basic", "standard", "high_reach", "channel_join"]:
+    if package not in ["basic", "standard", "high_reach", "bot_only", "channel_join"]:
         await callback_query.answer("Invalid package", show_alert=True)
         return
     
@@ -4956,7 +4962,67 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Check if there's already an active featured ad
+    # Bot-only package: send immediately to all users, no channel posting
+    if package == "bot_only":
+        try:
+            # Get all users who have accepted rules
+            async with db.acquire() as conn:
+                users = await conn.fetch("""
+                    SELECT user_id FROM user_status 
+                    WHERE has_accepted_rules = TRUE 
+                    AND is_blocked = FALSE
+                """)
+            
+            success_count = 0
+            fail_count = 0
+            
+            # Send ad to all users via bot
+            sponsored_header = "📢 <b>Sponsored Message</b>\n\n"
+            
+            for user_row in users:
+                user_id = user_row['user_id']
+                try:
+                    # Send based on media type
+                    if message.text:
+                        await bot.send_message(user_id, f"{sponsored_header}{message.text}", entities=message.entities)
+                    elif message.photo:
+                        caption_text = sponsored_header + (message.caption or "")
+                        await bot.send_photo(user_id, photo=message.photo[-1].file_id, caption=caption_text, caption_entities=message.caption_entities)
+                    elif message.video:
+                        caption_text = sponsored_header + (message.caption or "")
+                        await bot.send_video(user_id, video=message.video.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                    elif message.document:
+                        caption_text = sponsored_header + (message.caption or "")
+                        await bot.send_document(user_id, document=message.document.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                    elif message.animation:
+                        caption_text = sponsored_header + (message.caption or "")
+                        await bot.send_animation(user_id, animation=message.animation.file_id, caption=caption_text, caption_entities=message.caption_entities)
+                    
+                    success_count += 1
+                    await asyncio.sleep(0.05)  # Rate limiting
+                except Exception as e:
+                    fail_count += 1
+                    logging.debug(f"Failed to send bot-only ad to user {user_id}: {e}")
+            
+            await message.answer(
+                "<b>✅ Bot-Only Broadcast Complete!</b>\n\n"
+                f"<b>Package:</b> Bot-Only Broadcast\n"
+                f"✅ <b>Sent to:</b> {success_count} users\n"
+                f"❌ <b>Failed:</b> {fail_count} users\n\n"
+                "The message was sent directly through the bot without channel posting.",
+                reply_markup=contact_admin_keyboard
+            )
+            
+            # NOTE: Do NOT notify main admin for bot-only ads
+            
+        except Exception as e:
+            logging.error(f"Error broadcasting bot-only ad: {e}", exc_info=True)
+            await message.answer(f"❌ Error broadcasting ad: {e}")
+        
+        await state.clear()
+        return
+    
+    # Check if there's already an active featured ad (for channel-posting packages)
     active_ad = await get_active_featured_ad()
     if active_ad:
         time_left = active_ad['featured_until'] - datetime.now(timezone.utc)
