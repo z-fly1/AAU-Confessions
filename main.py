@@ -222,6 +222,9 @@ class AdminReview(StatesGroup):
 class AdManagement(StatesGroup):
     selecting_package = State()
     waiting_for_ad_content = State()
+    waiting_for_channel = State()
+    waiting_for_duration = State()
+    waiting_for_channel_message = State()
 
 # --- Database ---
 db = None
@@ -521,10 +524,29 @@ async def setup():
         await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS document_file_id TEXT NULL;")
         await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS animation_file_id TEXT NULL;")
         await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS caption TEXT NULL;")
+        # Add columns for channel join ad package
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS channel_username TEXT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS channel_id BIGINT NULL;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS requires_channel_join BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE ads ADD COLUMN IF NOT EXISTS custom_message TEXT NULL;")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_active ON ads(is_active);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_featured_until ON ads(featured_until);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ads_expires_at ON ads(expires_at);")
         logging.info("Checked/Created 'ads' table.")
+
+        # --- User Channel Verifications Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_channel_verifications (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                ad_id INT NOT NULL REFERENCES ads(id),
+                verified_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, ad_id)
+            );
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_channel_verifications_user ON user_channel_verifications(user_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_channel_verifications_ad ON user_channel_verifications(ad_id);")
+        logging.info("Checked/Created 'user_channel_verifications' table.")
 
         logging.info("Database tables setup complete.")
 
@@ -1301,6 +1323,60 @@ async def show_public_profile(viewer_user_id: int, profile_user_id: int):
     await safe_send_message(viewer_user_id, profile_text, reply_markup=builder.as_markup())
 
 
+# --- CHANNEL JOIN AD HELPERS ---
+async def get_active_channel_join_ad() -> Optional[Dict[str, Any]]:
+    """Check if there's an active channel join ad requirement."""
+    async with db.acquire() as conn:
+        ad = await conn.fetchrow("""
+            SELECT id, channel_username, channel_id, custom_message, expires_at
+            FROM ads
+            WHERE is_active = TRUE 
+            AND requires_channel_join = TRUE
+            AND expires_at > NOW()
+            ORDER BY posted_at DESC
+            LIMIT 1
+        """)
+        return dict(ad) if ad else None
+
+
+async def check_user_channel_verification(user_id: int, ad_id: int) -> bool:
+    """Check if user has verified their membership for a specific ad."""
+    async with db.acquire() as conn:
+        verified = await conn.fetchval("""
+            SELECT 1 FROM user_channel_verifications
+            WHERE user_id = $1 AND ad_id = $2
+        """, user_id, ad_id)
+        return verified is not None
+
+
+async def show_channel_join_requirement(user_id: int, ad: Dict[str, Any]):
+    """Show the channel join requirement message to the user."""
+    channel_username = ad['channel_username']
+    custom_message = ad['custom_message']
+    ad_id = ad['id']
+    
+    message_text = (
+        "<b>📢 Channel Join Required</b>\n\n"
+        f"{html.quote(custom_message)}\n\n"
+        f"<b>Channel:</b> @{channel_username}\n\n"
+        "Please join the channel to continue using the bot."
+    )
+    
+    # Create inline keyboard with join and verify buttons
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="📢 Join Channel",
+            url=f"https://t.me/{channel_username}"
+        )],
+        [InlineKeyboardButton(
+            text="✅ I've Joined",
+            callback_data=f"verify_channel_{ad_id}"
+        )]
+    ])
+    
+    await safe_send_message(user_id, message_text, reply_markup=keyboard)
+
+
 class BlockUserMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.TelegramObject, data: Dict[str, Any]) -> Any:
         user = data.get('event_from_user')
@@ -1402,6 +1478,19 @@ async def show_rules(message: types.Message):
 async def start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
     await state.clear()
     user_id = message.from_user.id
+    
+    # Skip channel check for admins
+    if user_id not in [ADMIN_ID, CONTACT_ADMIN_ID]:
+        # Check for active channel join requirement
+        active_ad = await get_active_channel_join_ad()
+        if active_ad:
+            # Check if user has already verified
+            is_verified = await check_user_channel_verification(user_id, active_ad['id'])
+            if not is_verified:
+                # Show channel join requirement
+                await show_channel_join_requirement(user_id, active_ad)
+                return
+    
     keyboard = get_main_keyboard(user_id)
 
     async with db.acquire() as conn:
@@ -1421,8 +1510,8 @@ async def start(message: types.Message, state: FSMContext, command: CommandObjec
             "2.  <b>Respectful Communication:</b> Sensitive topics (political, religious, cultural, etc.) are allowed but must be discussed with respect.\n\n"
             "3.  <b>No Harmful Content:</b> You may mention names, but at your own risk.\n\n - The bot and admins are not responsible for any consequences.\n\n - If someone mentioned requests removal, their name will be taken down.\n\n"
             "4.  <b>Names & Responsibility:</b> Do not share personal identifying information about yourself or others.\n\n"
-            "5.  <b>Anonymity & Privacy:</b> don’t reveal private details of others (contacts, adress, etc.) without consent.\n\n"
-            "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators’ decisions on approvals, edits, or removals.\n\n\n"
+            "5.  <b>Anonymity & Privacy:</b> don't reveal private details of others (contacts, adress, etc.) without consent.\n\n"
+            "6.  <b>Constructive Environment:</b> Keep confessions genuine. Avoid spam, trolling, or repeated submissions.\n\n - Respect moderators' decisions on approvals, edits, or removals.\n\n\n"
             "<i>Use this space to connect, share, and learn, not to spread misinformation or cause unnecessary drama.</i>"
         )
         accept_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -2628,9 +2717,23 @@ async def confirm_deletion_request(callback_query: types.CallbackQuery, state: F
 
 # --- NEW CONFESSION SUBMISSION FLOW ---
 
-@dp.message(Command("confess"), StateFilter(None))
 @dp.message(F.text == "✍️ Confess", StateFilter(None))
-async def start_confession(message: types.Message, state: FSMContext):
+@dp.message(Command("confess"), StateFilter(None))
+async def confess_button(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    
+    # Skip channel check for admins
+    if user_id not in [ADMIN_ID, CONTACT_ADMIN_ID]:
+        # Check for active channel join requirement
+        active_ad = await get_active_channel_join_ad()
+        if active_ad:
+            # Check if user has already verified
+            is_verified = await check_user_channel_verification(user_id, active_ad['id'])
+            if not is_verified:
+                # Show channel join requirement
+                await show_channel_join_requirement(user_id, active_ad)
+                return
+    
     await state.clear()
     await state.set_state(ConfessionForm.waiting_for_text)
     await message.answer(
@@ -4579,6 +4682,7 @@ async def start_ad_posting(message: types.Message, state: FSMContext):
     builder.button(text="📦 Basic Package (24h)", callback_data="ad_package_basic")
     builder.button(text="⭐ Standard Package (3 days)", callback_data="ad_package_standard")
     builder.button(text="🚀 High Reach Package", callback_data="ad_package_high_reach")
+    builder.button(text="📢 Channel Join Ad", callback_data="ad_package_channel_join")
     builder.adjust(1)
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="ad_cancel"))
     
@@ -4601,6 +4705,12 @@ async def start_ad_posting(message: types.Message, state: FSMContext):
         "  • Reposted once every day\n"
         "  • 📱 <b>Sent through the bot to all users daily</b>\n"
         "  • Auto-deleted after 3 days\n\n"
+        "<b>📢 Channel Join Ad:</b>\n"
+        "  • Custom duration (you specify)\n"
+        "  • Requires ALL users to join a specific channel\n"
+        "  • Users must verify membership to continue using bot\n"
+        "  • Shown through the bot (not posted to channel)\n"
+        "  • Auto-expires after specified duration\n\n"
         "Select a package below:"
     )
     
@@ -4615,12 +4725,29 @@ async def handle_ad_package_selection(callback_query: types.CallbackQuery, state
     
     package = callback_query.data.replace("ad_package_", "")
     
-    if package not in ["basic", "standard", "high_reach"]:
+    if package not in ["basic", "standard", "high_reach", "channel_join"]:
         await callback_query.answer("Invalid package", show_alert=True)
         return
     
     # Save package choice
     await state.update_data(package=package)
+    
+    # Channel join package has a different flow
+    if package == "channel_join":
+        await state.set_state(AdManagement.waiting_for_channel)
+        await callback_query.message.edit_text(
+            "<b>📢 Channel Join Ad Setup</b>\n\n"
+            "Please send the channel username that users must join.\n\n"
+            "<b>Format:</b> @channelname or just channelname\n\n"
+            "<b>Important:</b> Make sure the bot is added as an administrator "
+            "to this channel before proceeding.\n\n"
+            "Use /cancel to abort.",
+            reply_markup=None
+        )
+        await callback_query.answer()
+        return
+    
+    # Regular packages continue with ad content
     await state.set_state(AdManagement.waiting_for_ad_content)
     
     package_name = "Basic" if package == "basic" else ("Standard" if package == "standard" else "High Reach")
@@ -4642,6 +4769,178 @@ async def cancel_ad_posting(callback_query: types.CallbackQuery, state: FSMConte
     await state.clear()
     await callback_query.message.edit_text("❌ Ad posting cancelled.")
     await callback_query.answer()
+
+# --- CHANNEL JOIN AD HANDLERS ---
+@dp.message(AdManagement.waiting_for_channel)
+async def receive_channel_username(message: types.Message, state: FSMContext):
+    """Receive and validate channel username for channel join ad."""
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    channel_input = message.text.strip()
+    
+    # Normalize channel username
+    if not channel_input.startswith('@'):
+        channel_input = '@' + channel_input
+    
+    try:
+        # Try to get channel info
+        chat = await bot.get_chat(channel_input)
+        
+        # Check if it's actually a channel
+        if chat.type not in ['channel', 'supergroup']:
+            await message.answer(
+                "❌ This doesn't appear to be a channel. Please send a valid channel username.\n\n"
+                "Use /cancel to abort."
+            )
+            return
+        
+        # Check if bot is an administrator
+        bot_member = await bot.get_chat_member(chat.id, bot_info.id)
+        if bot_member.status not in ['administrator', 'creator']:
+            await message.answer(
+                f"❌ The bot is not an administrator in {channel_input}.\n\n"
+                "Please add the bot as an administrator to the channel first, then try again.\n\n"
+                "Use /cancel to abort."
+            )
+            return
+        
+        # Save channel info
+        await state.update_data(channel_username=chat.username or channel_input, channel_id=chat.id)
+        await state.set_state(AdManagement.waiting_for_duration)
+        
+        await message.answer(
+            f"✅ Channel verified: {chat.title}\n\n"
+            "<b>Now specify the duration:</b>\n\n"
+            "How many days should users be required to join this channel?\n\n"
+            "Send a number (e.g., 1, 3, 7, 30)\n\n"
+            "Use /cancel to abort."
+        )
+        
+    except TelegramBadRequest as e:
+        await message.answer(
+            f"❌ Could not find channel: {channel_input}\n\n"
+            "Please check the username and try again.\n\n"
+            f"Error: {str(e)}\n\n"
+            "Use /cancel to abort."
+        )
+    except Exception as e:
+        logging.error(f"Error validating channel {channel_input}: {e}", exc_info=True)
+        await message.answer(
+            f"❌ An error occurred while validating the channel.\n\n"
+            f"Error: {str(e)}\n\n"
+            "Use /cancel to abort."
+        )
+
+
+@dp.message(AdManagement.waiting_for_duration)
+async def receive_ad_duration(message: types.Message, state: FSMContext):
+    """Receive and validate duration for channel join ad."""
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    try:
+        duration_days = int(message.text.strip())
+        
+        if duration_days < 1:
+            await message.answer(
+                "❌ Duration must be at least 1 day.\n\n"
+                "Please send a valid number.\n\n"
+                "Use /cancel to abort."
+            )
+            return
+        
+        if duration_days > 365:
+            await message.answer(
+                "❌ Duration cannot exceed 365 days.\n\n"
+                "Please send a valid number.\n\n"
+                "Use /cancel to abort."
+            )
+            return
+        
+        # Save duration
+        await state.update_data(duration_days=duration_days)
+        await state.set_state(AdManagement.waiting_for_channel_message)
+        
+        await message.answer(
+            f"✅ Duration set to <b>{duration_days} day{'s' if duration_days != 1 else ''}</b>\n\n"
+            "<b>Now send your custom message:</b>\n\n"
+            "This message will be shown to users when they need to join the channel.\n\n"
+            "You can explain why they should join or provide additional information.\n\n"
+            "Use /cancel to abort."
+        )
+        
+    except ValueError:
+        await message.answer(
+            "❌ Please send a valid number for the duration (e.g., 1, 3, 7, 30).\n\n"
+            "Use /cancel to abort."
+        )
+
+
+@dp.message(AdManagement.waiting_for_channel_message)
+async def receive_channel_message(message: types.Message, state: FSMContext):
+    """Receive custom message and create the channel join ad."""
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+    
+    data = await state.get_data()
+    channel_username = data.get('channel_username')
+    channel_id = data.get('channel_id')
+    duration_days = data.get('duration_days')
+    custom_message = message.text
+    
+    if not all([channel_username, channel_id, duration_days]):
+        await message.answer("❌ Error: Missing information. Please start over.")
+        await state.clear()
+        return
+    
+    try:
+        # Calculate expiration time
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=duration_days)
+        
+        # For channel join ads, featured_until = expires_at (same as active period)
+        featured_until = expires_at
+        
+        # Save to database
+        async with db.acquire() as conn:
+            ad_id = await conn.fetchval("""
+                INSERT INTO ads (
+                    package_type, posted_by, featured_until, expires_at,
+                    channel_username, channel_id, requires_channel_join, custom_message,
+                    is_active, is_pinned
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id
+            """, 'channel_join', CONTACT_ADMIN_ID, featured_until, expires_at,
+                channel_username, channel_id, True, custom_message, True, False)
+        
+        await message.answer(
+            "<b>✅ Channel Join Ad Created Successfully!</b>\n\n"
+            f"<b>Channel:</b> @{channel_username}\n"
+            f"<b>Duration:</b> {duration_days} day{'s' if duration_days != 1 else ''}\n"
+            f"<b>Expires At:</b> {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            f"<b>Custom Message:</b>\n{html.quote(custom_message)}\n\n"
+            "Users will now be required to join this channel to continue using the bot.\n"
+            "The requirement will automatically expire after the specified duration.",
+            reply_markup=contact_admin_keyboard
+        )
+        
+        # Notify main admin
+        await safe_send_message(
+            ADMIN_ID,
+            "<b>📢 New Channel Join Ad Posted</b>\n\n"
+            f"<b>Channel:</b> @{channel_username}\n"
+            f"<b>Duration:</b> {duration_days} day{'s' if duration_days != 1 else ''}\n"
+            f"<b>Expires At:</b> {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+            "Users must join this channel to continue using the bot."
+        )
+        
+    except Exception as e:
+        logging.error(f"Error creating channel join ad: {e}", exc_info=True)
+        await message.answer(f"❌ Error creating ad: {e}")
+    
+    await state.clear()
+
 
 @dp.message(AdManagement.waiting_for_ad_content)
 async def receive_ad_content(message: types.Message, state: FSMContext):
@@ -4990,6 +5289,71 @@ async def ad_management_task():
             logging.error(f"Error in ad_management_task: {e}", exc_info=True)
 
 # ==================== END AD MANAGEMENT SYSTEM ====================
+
+# --- CHANNEL JOIN VERIFICATION ---
+@dp.callback_query(F.data.startswith("verify_channel_"))
+async def verify_channel_membership(callback_query: types.CallbackQuery):
+    """Verify that the user has joined the required channel."""
+    user_id = callback_query.from_user.id
+    ad_id = int(callback_query.data.split("_")[-1])
+    
+    try:
+        # Get the ad details
+        async with db.acquire() as conn:
+            ad = await conn.fetchrow("""
+                SELECT channel_id, channel_username, expires_at
+                FROM ads
+                WHERE id = $1 AND is_active = TRUE AND requires_channel_join = TRUE
+            """, ad_id)
+        
+        if not ad:
+            await callback_query.answer("❌ This ad has expired or is no longer active.", show_alert=True)
+            return
+        
+        # Check if ad has expired
+        if ad['expires_at'] <= datetime.now(timezone.utc):
+            await callback_query.answer("❌ This requirement has expired.", show_alert=True)
+            return
+        
+        # Check if user is a member of the channel
+        try:
+            member = await bot.get_chat_member(ad['channel_id'], user_id)
+            
+            if member.status in ['member', 'administrator', 'creator']:
+                # User is a member, store verification
+                async with db.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO user_channel_verifications (user_id, ad_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id, ad_id) DO NOTHING
+                    """, user_id, ad_id)
+                
+                await callback_query.answer("✅ Verified! You can now use the bot.", show_alert=True)
+                await callback_query.message.edit_text(
+                    f"✅ <b>Channel Join Verified!</b>\n\n"
+                    f"You have successfully joined @{ad['channel_username']}.\n\n"
+                    "You can now continue using the bot normally."
+                )
+            else:
+                # User is not a member (left, kicked, etc.)
+                await callback_query.answer(
+                    f"❌ You haven't joined @{ad['channel_username']} yet. "
+                    "Please join the channel and try again.",
+                    show_alert=True
+                )
+        
+        except TelegramBadRequest as e:
+            # User not found in channel
+            await callback_query.answer(
+                f"❌ You haven't joined @{ad['channel_username']} yet. "
+                "Please join the channel and try again.",
+                show_alert=True
+            )
+    
+    except Exception as e:
+        logging.error(f"Error verifying channel membership for user {user_id}: {e}", exc_info=True)
+        await callback_query.answer("❌ An error occurred. Please try again.", show_alert=True)
+
 
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
