@@ -660,6 +660,15 @@ async def get_comment_reactions(comment_id: int) -> Tuple[int, int]:
             likes, dislikes = counts['likes'], counts['dislikes']
     return likes, dislikes
 
+async def get_user_reaction(comment_id: int, user_id: int) -> Optional[str]:
+    """Get the user's reaction type for a comment ('like', 'dislike', or None)."""
+    async with db.acquire() as conn:
+        reaction = await conn.fetchval(
+            "SELECT reaction_type FROM reactions WHERE comment_id = $1 AND user_id = $2", 
+            comment_id, user_id
+        )
+    return reaction
+
 async def get_user_points(user_id: int) -> int:
     async with db.acquire() as conn:
         points = await conn.fetchval("SELECT points FROM user_points WHERE user_id = $1", user_id)
@@ -877,9 +886,15 @@ async def forward_voice_to_admin(user_id: int, voice_file_id: str, confession_id
 
 async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
     likes, dislikes = await get_comment_reactions(comment_id)
+    user_reaction = await get_user_reaction(comment_id, viewer_user_id)
+    
+    # Use pale emojis by default, regular emojis when user has reacted
+    like_emoji = "👍" if user_reaction == 'like' else "👍🏻"
+    dislike_emoji = "👎" if user_reaction == 'dislike' else "👎🏻"
+    
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"👍 {likes}", callback_data=f"react_like_{comment_id}")
-    builder.button(text=f"👎 {dislikes}", callback_data=f"react_dislike_{comment_id}")
+    builder.button(text=f"{like_emoji} {likes}", callback_data=f"react_like_{comment_id}")
+    builder.button(text=f"{dislike_emoji} {dislikes}", callback_data=f"react_dislike_{comment_id}")
     builder.button(text="Reply", callback_data=f"reply_{comment_id}")
 
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
