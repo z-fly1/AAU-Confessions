@@ -152,7 +152,8 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="2025 Wrapped")]
     ],
     resize_keyboard=True
 )
@@ -162,7 +163,8 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="2025 Wrapped")]
     ],
     resize_keyboard=True
 )
@@ -172,7 +174,8 @@ contact_admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📢 Post Ads")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="2025 Wrapped")]
     ],
     resize_keyboard=True
 )
@@ -1853,6 +1856,10 @@ def create_profile_pagination_keyboard(base_callback: str, current_page: int, to
         builder.row(*row)
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_to))
     return builder.as_markup()
+
+@dp.message(F.text == "2025 Wrapped")
+async def wrapped_2025(message: types.Message):
+    await message.answer("🎁 <b>2025 Wrapped</b>\n\nComing soon! Stay tuned for your year in review.", parse_mode=ParseMode.HTML)
 
 @dp.message(Command("profile"))
 @dp.message(F.text == "👤 Profile")
