@@ -551,6 +551,18 @@ async def setup():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_channel_verifications_ad ON user_channel_verifications(ad_id);")
         logging.info("Checked/Created 'user_channel_verifications' table.")
 
+        # --- Wrapped Cache Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS wrapped_cache (
+                user_id BIGINT NOT NULL,
+                year INT NOT NULL,
+                file_id TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, year)
+            );
+        """)
+        logging.info("Checked/Created 'wrapped_cache' table.")
+
         logging.info("Database tables setup complete.")
 
 
@@ -1857,9 +1869,232 @@ def create_profile_pagination_keyboard(base_callback: str, current_page: int, to
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_to))
     return builder.as_markup()
 
+# --- 2025 Wrapped Logic ---
+from PIL import Image, ImageDraw, ImageFont
+import io
+
+async def get_user_wrapped_stats(user_id: int) -> Dict[str, Any]:
+    """Fetches statistics for the user's 2025 Wrapped."""
+    async with db.acquire() as conn:
+        # 0. User Info (Nickname)
+        user_data = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", user_id)
+        nickname = user_data['nickname'] if user_data and user_data['nickname'] else "Anonymous"
+
+        # 1. Total Confessions
+        total_confessions = await conn.fetchval("SELECT COUNT(*) FROM confessions WHERE user_id = $1", user_id)
+        
+        # 2. Total Comments
+        total_comments = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", user_id)
+        
+        # 3. Most Liked Comment (and its like count)
+        most_liked = await conn.fetchrow("""
+            SELECT c.text, COUNT(r.id) as like_count
+            FROM comments c
+            JOIN reactions r ON c.id = r.comment_id
+            WHERE c.user_id = $1 AND r.reaction_type = 'like'
+            GROUP BY c.id
+            ORDER BY like_count DESC
+            LIMIT 1
+        """, user_id)
+        
+        # 4. Most Disliked Comment (and its dislike count)
+        most_disliked = await conn.fetchrow("""
+            SELECT c.text, COUNT(r.id) as dislike_count
+            FROM comments c
+            JOIN reactions r ON c.id = r.comment_id
+            WHERE c.user_id = $1 AND r.reaction_type = 'dislike'
+            GROUP BY c.id
+            ORDER BY dislike_count DESC
+            LIMIT 1
+        """, user_id)
+        
+        # 5. Aura Points
+        aura_points = await conn.fetchval("SELECT points FROM user_points WHERE user_id = $1", user_id) or 0
+        
+        # 6. Leaderboard Position
+        # This is a bit heavy, might need optimization for large datasets
+        rank = await conn.fetchval("""
+            SELECT rank FROM (
+                SELECT user_id, RANK() OVER (ORDER BY points DESC) as rank 
+                FROM user_points
+            ) as ranked_users
+            WHERE user_id = $1
+        """, user_id)
+        
+        # 7. Followers / Following
+        followers = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE following_id = $1", user_id)
+        following = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", user_id)
+
+        # 8. Chat Messages
+        chat_messages = await conn.fetchval("SELECT COUNT(*) FROM chat_messages WHERE sender_id = $1", user_id)
+
+    return {
+        "nickname": nickname,
+        "total_confessions": total_confessions,
+        "total_comments": total_comments,
+        "most_liked_comment": most_liked['text'] if most_liked else "N/A",
+        "most_liked_count": most_liked['like_count'] if most_liked else 0,
+        "most_disliked_comment": most_disliked['text'] if most_disliked else "N/A",
+        "most_disliked_count": most_disliked['dislike_count'] if most_disliked else 0,
+        "aura_points": aura_points,
+        "rank": rank if rank else "Unranked",
+        "followers": followers,
+        "following": following,
+        "chat_messages": chat_messages
+    }
+
+def generate_wrapped_image(stats: Dict[str, Any]) -> io.BytesIO:
+    """Generates the 2025 Wrapped image."""
+    
+    # ═══════════════════════════════════════════════════════════════
+    # CONFIGURATION: ADJUST THESE COORDINATES TO MATCH YOUR DESIGN
+    # ═══════════════════════════════════════════════════════════════
+    TEXT_POSITIONS = {
+        # Format: "label": (x, y, font_type, color)
+        "nickname": (540, 150, "header", (255, 255, 255)),  # Centered at top
+        "confessions_label": (100, 400, "header", (100, 255, 218)),
+        "confessions_value": (100, 460, "stat", (255, 255, 255)),
+        "comments_label": (600, 400, "header", (100, 255, 218)),
+        "comments_value": (600, 460, "stat", (255, 255, 255)),
+        "aura_label": (100, 650, "header", (100, 255, 218)),
+        "aura_value": (100, 710, "stat", (255, 255, 255)),
+        "social_label": (100, 900, "header", (100, 255, 218)),
+        "social_value": (100, 960, "text", (255, 255, 255)),
+        "chat_label": (100, 1100, "header", (100, 255, 218)),
+        "chat_value": (100, 1160, "stat", (255, 255, 255)),
+        "top_comment_label": (100, 1300, "header", (100, 255, 218)),
+        "top_comment_text": (100, 1360, "text", (255, 255, 255)),
+        "top_comment_likes": (100, 1410, "text", (255, 100, 100)),
+    }
+    # ═══════════════════════════════════════════════════════════════
+    
+    # Load the background image
+    import os
+    bg_path = os.path.join(os.path.dirname(__file__), "graphics", "wrap bg.png")
+    try:
+        img = Image.open(bg_path)
+        logging.info(f"Loaded background image: {bg_path}")
+    except Exception as e:
+        logging.error(f"Failed to load background image: {e}. Using solid color.")
+        # Fallback to solid color
+        img = Image.new('RGB', (1080, 1920), color=(10, 25, 47))
+    
+    draw = ImageDraw.Draw(img)
+    
+    # Fonts (using default if custom not available)
+    try:
+        title_font = ImageFont.truetype("Arial.ttf", 80)
+        header_font = ImageFont.truetype("Arial.ttf", 50)
+        text_font = ImageFont.truetype("Arial.ttf", 40)
+        stat_font = ImageFont.truetype("Arial.ttf", 60)
+    except IOError:
+        title_font = ImageFont.load_default()
+        header_font = ImageFont.load_default()
+        text_font = ImageFont.load_default()
+        stat_font = ImageFont.load_default()
+
+    # Font mapping
+    fonts = {
+        "title": title_font,
+        "header": header_font,
+        "text": text_font,
+        "stat": stat_font
+    }
+
+    # Helper function to draw text at specific position
+    def draw_at_position(key, text, center=False):
+        if key not in TEXT_POSITIONS:
+            return
+        x, y, font_type, color = TEXT_POSITIONS[key]
+        font = fonts[font_type]
+        
+        if center:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            x = x - (text_width / 2)  # Center around the x coordinate
+        
+        draw.text((x, y), text, font=font, fill=color)
+
+    # Draw all the stats using the configured positions
+    draw_at_position("nickname", f"{stats['nickname']}", center=True)
+    
+    draw_at_position("confessions_label", "Confessions")
+    draw_at_position("confessions_value", str(stats['total_confessions']))
+    
+    draw_at_position("comments_label", "Comments")
+    draw_at_position("comments_value", str(stats['total_comments']))
+    
+    draw_at_position("aura_label", "Aura Points")
+    draw_at_position("aura_value", f"{stats['aura_points']} (Rank #{stats['rank']})")
+    
+    draw_at_position("social_label", "Social")
+    draw_at_position("social_value", f"{stats['followers']} Followers | {stats['following']} Following")
+    
+    draw_at_position("chat_label", "Chat Messages")
+    draw_at_position("chat_value", str(stats['chat_messages']))
+    
+    draw_at_position("top_comment_label", "Top Comment")
+    # Truncate comment if too long
+    comment_text = stats['most_liked_comment']
+    if len(comment_text) > 50: 
+        comment_text = comment_text[:47] + "..."
+    draw_at_position("top_comment_text", f"\"{comment_text}\"")
+    draw_at_position("top_comment_likes", f"❤️ {stats['most_liked_count']} Likes")
+
+    # Save to BytesIO
+    bio = io.BytesIO()
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
 @dp.message(F.text == "2025 Wrapped")
 async def wrapped_2025(message: types.Message):
-    await message.answer("🎁 <b>2025 Wrapped</b>\n\nComing soon! Stay tuned for your year in review.", parse_mode=ParseMode.HTML)
+    user_id = message.from_user.id
+    current_year = 2025
+    
+    # 1. Check Cache
+    async with db.acquire() as conn:
+        cached_file_id = await conn.fetchval(
+            "SELECT file_id FROM wrapped_cache WHERE user_id = $1 AND year = $2",
+            user_id, current_year
+        )
+        
+    if cached_file_id:
+        # Send cached image
+        try:
+            await message.answer_photo(cached_file_id, caption="✨ Here is your 2025 Wrapped! (Cached)")
+            return
+        except Exception as e:
+            logging.warning(f"Failed to send cached wrapped image (file_id invalid?): {e}")
+            # If sending fails (e.g., file_id expired), proceed to regenerate
+            pass
+
+    wait_msg = await message.answer("🎁 Generating your 2025 Wrapped...")
+    
+    try:
+        # 2. Generate New Image
+        stats = await get_user_wrapped_stats(user_id)
+        image_bio = generate_wrapped_image(stats)
+        
+        from aiogram.types import BufferedInputFile
+        photo = BufferedInputFile(image_bio.read(), filename="wrapped_2025.png")
+        
+        # 3. Send and Cache
+        sent_msg = await message.answer_photo(photo, caption="✨ Here is your 2025 Wrapped! Share it with your friends!")
+        file_id = sent_msg.photo[-1].file_id
+        
+        async with db.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO wrapped_cache (user_id, year, file_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, year) DO UPDATE SET file_id = $3, created_at = CURRENT_TIMESTAMP
+            """, user_id, current_year, file_id)
+            
+        await wait_msg.delete()
+        
+    except Exception as e:
+        logging.error(f"Error generating wrapped: {e}", exc_info=True)
+        await wait_msg.edit_text("⚠️ An error occurred while generating your wrapped. Please try again later.")
 
 @dp.message(Command("profile"))
 @dp.message(F.text == "👤 Profile")
