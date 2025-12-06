@@ -152,8 +152,7 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
-        [KeyboardButton(text="2025 Wrapped")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
 )
@@ -163,8 +162,7 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
-        [KeyboardButton(text="2025 Wrapped")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
 )
@@ -174,8 +172,7 @@ contact_admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📢 Post Ads")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
-        [KeyboardButton(text="2025 Wrapped")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
 )
@@ -551,18 +548,6 @@ async def setup():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_channel_verifications_ad ON user_channel_verifications(ad_id);")
         logging.info("Checked/Created 'user_channel_verifications' table.")
 
-        # --- Wrapped Cache Table ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS wrapped_cache (
-                user_id BIGINT NOT NULL,
-                year INT NOT NULL,
-                file_id TEXT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, year)
-            );
-        """)
-        logging.info("Checked/Created 'wrapped_cache' table.")
-
         logging.info("Database tables setup complete.")
 
 
@@ -674,15 +659,6 @@ async def get_comment_reactions(comment_id: int) -> Tuple[int, int]:
         if counts:
             likes, dislikes = counts['likes'], counts['dislikes']
     return likes, dislikes
-
-async def get_user_reaction(comment_id: int, user_id: int) -> Optional[str]:
-    """Get the user's reaction type for a comment ('like', 'dislike', or None)."""
-    async with db.acquire() as conn:
-        reaction = await conn.fetchval(
-            "SELECT reaction_type FROM reactions WHERE comment_id = $1 AND user_id = $2", 
-            comment_id, user_id
-        )
-    return reaction
 
 async def get_user_points(user_id: int) -> int:
     async with db.acquire() as conn:
@@ -901,15 +877,9 @@ async def forward_voice_to_admin(user_id: int, voice_file_id: str, confession_id
 
 async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
     likes, dislikes = await get_comment_reactions(comment_id)
-    user_reaction = await get_user_reaction(comment_id, viewer_user_id)
-    
-    # Use pale emojis by default, regular emojis when user has reacted
-    like_emoji = "👍" if user_reaction == 'like' else "👍🏻"
-    dislike_emoji = "👎" if user_reaction == 'dislike' else "👎🏻"
-    
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"{like_emoji} {likes}", callback_data=f"react_like_{comment_id}")
-    builder.button(text=f"{dislike_emoji} {dislikes}", callback_data=f"react_dislike_{comment_id}")
+    builder.button(text=f"👍 {likes}", callback_data=f"react_like_{comment_id}")
+    builder.button(text=f"👎 {dislikes}", callback_data=f"react_dislike_{comment_id}")
     builder.button(text="Reply", callback_data=f"reply_{comment_id}")
 
     if viewer_user_id == confession_owner_id and viewer_user_id != commenter_user_id:
@@ -1868,357 +1838,6 @@ def create_profile_pagination_keyboard(base_callback: str, current_page: int, to
         builder.row(*row)
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=back_to))
     return builder.as_markup()
-
-# --- 2025 Wrapped Logic ---
-from PIL import Image, ImageDraw, ImageFont
-import io
-
-async def get_user_wrapped_stats(user_id: int) -> Dict[str, Any]:
-    """Fetches statistics for the user's 2025 Wrapped."""
-    async with db.acquire() as conn:
-        # 0. User Info (Nickname)
-        user_data = await conn.fetchrow("SELECT nickname FROM user_status WHERE user_id = $1", user_id)
-        nickname = user_data['nickname'] if user_data and user_data['nickname'] else "Anonymous"
-
-        # 1. Total Confessions
-        total_confessions = await conn.fetchval("SELECT COUNT(*) FROM confessions WHERE user_id = $1", user_id)
-        
-        # 2. Total Comments
-        total_comments = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", user_id)
-        
-        # 3. Most Liked Comment (and its like count) - only text comments
-        most_liked = await conn.fetchrow("""
-            SELECT c.text, c.id,
-                   SUM(CASE WHEN r.reaction_type = 'like' THEN 1 ELSE 0 END) as like_count,
-                   SUM(CASE WHEN r.reaction_type = 'dislike' THEN 1 ELSE 0 END) as dislike_count
-            FROM comments c
-            JOIN reactions r ON c.id = r.comment_id
-            WHERE c.user_id = $1 AND c.text IS NOT NULL
-            GROUP BY c.id
-            ORDER BY like_count DESC
-            LIMIT 1
-        """, user_id)
-        
-        # 4. Most Disliked Comment (and its dislike count) - only text comments
-        most_disliked = await conn.fetchrow("""
-            SELECT c.text, c.id,
-                   SUM(CASE WHEN r.reaction_type = 'like' THEN 1 ELSE 0 END) as like_count,
-                   SUM(CASE WHEN r.reaction_type = 'dislike' THEN 1 ELSE 0 END) as dislike_count
-            FROM comments c
-            JOIN reactions r ON c.id = r.comment_id
-            WHERE c.user_id = $1 AND c.text IS NOT NULL
-            GROUP BY c.id
-            ORDER BY dislike_count DESC
-            LIMIT 1
-        """, user_id)
-        
-        # 5. Aura Points
-        aura_points = await conn.fetchval("SELECT points FROM user_points WHERE user_id = $1", user_id) or 0
-        
-        # 6. Leaderboard Position
-        # This is a bit heavy, might need optimization for large datasets
-        rank = await conn.fetchval("""
-            SELECT rank FROM (
-                SELECT user_id, RANK() OVER (ORDER BY points DESC) as rank 
-                FROM user_points
-            ) as ranked_users
-            WHERE user_id = $1
-        """, user_id)
-        
-        # 7. Followers / Following
-        followers = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE following_id = $1", user_id)
-        following = await conn.fetchval("SELECT COUNT(*) FROM user_follows WHERE follower_id = $1", user_id)
-
-        # 8. Chat Messages
-        chat_messages = await conn.fetchval("SELECT COUNT(*) FROM chat_messages WHERE sender_id = $1", user_id)
-
-    return {
-        "nickname": nickname,
-        "total_confessions": total_confessions,
-        "total_comments": total_comments,
-        "most_liked_comment": most_liked['text'] if most_liked else None,
-        "most_liked_likes": int(most_liked['like_count']) if most_liked else 0,
-        "most_liked_dislikes": int(most_liked['dislike_count']) if most_liked else 0,
-        "most_disliked_comment": most_disliked['text'] if most_disliked else None,
-        "most_disliked_likes": int(most_disliked['like_count']) if most_disliked else 0,
-        "most_disliked_dislikes": int(most_disliked['dislike_count']) if most_disliked else 0,
-        "aura_points": aura_points,
-        "rank": rank if rank else "Unranked",
-        "followers": followers,
-        "following": following,
-        "chat_messages": chat_messages
-    }
-
-def generate_wrapped_image(stats: Dict[str, Any]) -> io.BytesIO:
-    """Generates the 2025 Wrapped image."""
-    
-    # ═══════════════════════════════════════════════════════════════
-    # CONFIGURATION: ADJUST THESE COORDINATES TO MATCH YOUR DESIGN
-    # ═══════════════════════════════════════════════════════════════
-    TEXT_POSITIONS = {
-        # Format: "label": (x, y, font_type, color)
-        "nickname": (540, 150, "header", (255, 255, 255)),  # Centered at top
-        # All labels are on background image, all values moved to TEXT_BOXES
-    }
-    
-    # BOUNDING BOXES: Define boxes where text must fit (x, y, width, height)
-    TEXT_BOXES = {
-        "confessions_value": (80, 569, 262, 80, "header", (255, 255, 255), "center"), #done
-        "comments_value": (400, 569, 262, 80, "header", (255, 255, 255), "center"), #done
-        "aura_value": (750, 579, 262, 80, "header", (255, 255, 255), "center"), #done
-        "social_value": (123, 1229, 246, 80, "header", (255, 255, 255), "center"), #done
-        # "chat_value": (80, 1160, 262, 80, "header", (255, 255, 255), "center"),
-        
-        # Most Liked Comment
-        "top_comment_text": (108, 816, 421, 155, "header", (255, 255, 255), "center"), #done
-        "top_comment_likes": (211, 1010, 72, 52, "text", (255, 255, 255), "center"), #done
-        "top_comment_dislikes": (412, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
-        
-        # Most Disliked Comment
-        "most_disliked_text": (591, 813, 421, 155, "header", (255, 255, 255), "center"), # Add this
-        "most_disliked_likes": (693, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
-        "most_disliked_dislikes": (899, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
-    }
-    # ═══════════════════════════════════════════════════════════════
-    
-    # Load the background image
-    import os
-    bg_path = os.path.join(os.path.dirname(__file__), "graphics", "wrap bg.png")
-    try:
-        img = Image.open(bg_path)
-        logging.info(f"Loaded background image: {bg_path}")
-    except Exception as e:
-        logging.error(f"Failed to load background image: {e}. Using solid color.")
-        # Fallback to solid color
-        img = Image.new('RGB', (1080, 1920), color=(10, 25, 47))
-    
-    draw = ImageDraw.Draw(img)
-    
-    # Fonts (using default if custom not available)
-    try:
-        title_font = ImageFont.truetype("Arial.ttf", 80)
-        header_font = ImageFont.truetype("Arial.ttf", 50)
-        text_font = ImageFont.truetype("Arial.ttf", 40)
-        stat_font = ImageFont.truetype("Arial.ttf", 60)
-    except IOError:
-        title_font = ImageFont.load_default()
-        header_font = ImageFont.load_default()
-        text_font = ImageFont.load_default()
-        stat_font = ImageFont.load_default()
-
-    # Font mapping
-    fonts = {
-        "title": title_font,
-        "header": header_font,
-        "text": text_font,
-        "stat": stat_font
-    }
-
-    # Helper function to draw text at specific position
-    def draw_at_position(key, text, center=False):
-        if key not in TEXT_POSITIONS:
-            return
-        x, y, font_type, color = TEXT_POSITIONS[key]
-        font = fonts[font_type]
-        
-        if center:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            x = x - (text_width / 2)  # Center around the x coordinate
-        
-        draw.text((x, y), text, font=font, fill=color)
-    
-    # Helper function to draw text within a bounding box (auto-shrinks if needed)
-    def draw_text_in_box(key, text, wrap=False):
-        """
-        Draws text within a defined bounding box. If text doesn't fit,
-        automatically reduces font size or wraps text to fit (if wrap=True).
-        """
-        if key not in TEXT_BOXES:
-            return
-        
-        x, y, max_width, max_height, font_type, color, align = TEXT_BOXES[key]
-        
-        # Get initial font size
-        base_font = fonts[font_type]
-        if hasattr(base_font, 'size'):
-            font_size = base_font.size
-        else:
-            font_size = 60  # Default fallback
-        
-        # Try progressively smaller fonts until text fits
-        min_font_size = 12
-        current_font = base_font
-        
-        # Helper to wrap text
-        def wrap_text(text, font, max_width):
-            """Wrap text to fit within max_width."""
-            words = text.split()
-            lines = []
-            current_line = []
-            
-            for word in words:
-                test_line = ' '.join(current_line + [word])
-                bbox = draw.textbbox((0, 0), test_line, font=font)
-                if bbox[2] - bbox[0] <= max_width:
-                    current_line.append(word)
-                else:
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                    else:
-                        # Single word too long, just add it anyway
-                        lines.append(word)
-            
-            if current_line:
-                lines.append(' '.join(current_line))
-            
-            return lines
-        
-        # Try to fit text with wrapping (if enabled)
-        if wrap:
-            while font_size >= min_font_size:
-                try:
-                    current_font = ImageFont.truetype("Arial.ttf", font_size)
-                except:
-                    current_font = ImageFont.load_default()
-                
-                # Try wrapping the text
-                lines = wrap_text(text, current_font, max_width)
-                
-                # Calculate total height needed
-                line_height = 0
-                for line in lines:
-                    bbox = draw.textbbox((0, 0), line, font=current_font)
-                    line_height = max(line_height, bbox[3] - bbox[1])
-                
-                total_height = line_height * len(lines)
-                
-                # Check if it fits
-                if total_height <= max_height:
-                    break
-                
-                # Reduce font size
-                font_size -= 2
-        else:
-            # No wrapping - just shrink font if needed
-            lines = [text]
-            while font_size >= min_font_size:
-                try:
-                    current_font = ImageFont.truetype("Arial.ttf", font_size)
-                except:
-                    current_font = ImageFont.load_default()
-                
-                bbox = draw.textbbox((0, 0), text, font=current_font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-                
-                if text_width <= max_width and text_height <= max_height:
-                    break
-                
-                font_size -= 2
-        
-        # Draw the text (wrapped or single line)
-        current_y = y
-        line_spacing = 5
-        
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=current_font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            
-            if align == "center":
-                text_x = x + (max_width - text_width) / 2
-            elif align == "right":
-                text_x = x + max_width - text_width
-            else:  # left
-                text_x = x
-            
-            draw.text((text_x, current_y), line, font=current_font, fill=color)
-            current_y += text_height + line_spacing
-
-    # Draw all the stats using the configured positions
-    draw_at_position("nickname", f"{stats['nickname']}", center=True)
-    
-    # Labels are on background, only draw values
-    draw_text_in_box("confessions_value", str(stats['total_confessions']))
-    draw_text_in_box("comments_value", str(stats['total_comments']))
-    draw_text_in_box("aura_value", f"{stats['aura_points']} (Rank #{stats['rank']})")
-    draw_text_in_box("social_value", f"{stats['followers']} Followers | {stats['following']} Following")
-    
-    # Chat messages (if you uncomment the TEXT_BOX entry)
-    # draw_text_in_box("chat_value", str(stats['chat_messages']))
-    
-    # Most Liked Comment - with wrapping
-    comment_text = stats['most_liked_comment']
-    if not comment_text:
-        comment_text = "No comments yet"
-    draw_text_in_box("top_comment_text", f"\"{comment_text}\"", wrap=True)
-    draw_text_in_box("top_comment_likes", str(stats['most_liked_likes']))
-    draw_text_in_box("top_comment_dislikes", str(stats['most_liked_dislikes']))
-    
-    # Most Disliked Comment - with wrapping
-    disliked_text = stats['most_disliked_comment']
-    if not disliked_text:
-        disliked_text = "No comments yet"
-    draw_text_in_box("most_disliked_text", f"\"{disliked_text}\"", wrap=True)
-    draw_text_in_box("most_disliked_likes", str(stats['most_disliked_likes']))
-    draw_text_in_box("most_disliked_dislikes", str(stats['most_disliked_dislikes']))
-
-    # Save to BytesIO
-    bio = io.BytesIO()
-    img.save(bio, 'PNG')
-    bio.seek(0)
-    return bio
-
-@dp.message(F.text == "2025 Wrapped")
-async def wrapped_2025(message: types.Message):
-    user_id = message.from_user.id
-    current_year = 2025
-    
-    # 1. Check Cache
-    async with db.acquire() as conn:
-        cached_file_id = await conn.fetchval(
-            "SELECT file_id FROM wrapped_cache WHERE user_id = $1 AND year = $2",
-            user_id, current_year
-        )
-        # Enable this for production
-    # if cached_file_id:
-    #     # Send cached image
-    #     try:
-    #         await message.answer_photo(cached_file_id, caption="✨ Here is your 2025 Wrapped! (Cached)")
-    #         return
-    #     except Exception as e:
-    #         logging.warning(f"Failed to send cached wrapped image (file_id invalid?): {e}")
-    #         # If sending fails (e.g., file_id expired), proceed to regenerate
-    #         pass
-
-    wait_msg = await message.answer("🎁 Generating your 2025 Wrapped...")
-    
-    try:
-        # 2. Generate New Image
-        stats = await get_user_wrapped_stats(user_id)
-        image_bio = generate_wrapped_image(stats)
-        
-        from aiogram.types import BufferedInputFile
-        photo = BufferedInputFile(image_bio.read(), filename="wrapped_2025.png")
-        
-        # 3. Send and Cache
-        sent_msg = await message.answer_photo(photo, caption="✨ Here is your 2025 Wrapped! Share it with your friends!")
-        file_id = sent_msg.photo[-1].file_id
-        
-        async with db.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO wrapped_cache (user_id, year, file_id)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id, year) DO UPDATE SET file_id = $3, created_at = CURRENT_TIMESTAMP
-            """, user_id, current_year, file_id)
-            
-        await wait_msg.delete()
-        
-    except Exception as e:
-        logging.error(f"Error generating wrapped: {e}", exc_info=True)
-        await wait_msg.edit_text("⚠️ An error occurred while generating your wrapped. Please try again later.")
 
 @dp.message(Command("profile"))
 @dp.message(F.text == "👤 Profile")
