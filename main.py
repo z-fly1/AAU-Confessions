@@ -1886,23 +1886,27 @@ async def get_user_wrapped_stats(user_id: int) -> Dict[str, Any]:
         # 2. Total Comments
         total_comments = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE user_id = $1", user_id)
         
-        # 3. Most Liked Comment (and its like count)
+        # 3. Most Liked Comment (and its like count) - only text comments
         most_liked = await conn.fetchrow("""
-            SELECT c.text, COUNT(r.id) as like_count
+            SELECT c.text, c.id,
+                   SUM(CASE WHEN r.reaction_type = 'like' THEN 1 ELSE 0 END) as like_count,
+                   SUM(CASE WHEN r.reaction_type = 'dislike' THEN 1 ELSE 0 END) as dislike_count
             FROM comments c
             JOIN reactions r ON c.id = r.comment_id
-            WHERE c.user_id = $1 AND r.reaction_type = 'like'
+            WHERE c.user_id = $1 AND c.text IS NOT NULL
             GROUP BY c.id
             ORDER BY like_count DESC
             LIMIT 1
         """, user_id)
         
-        # 4. Most Disliked Comment (and its dislike count)
+        # 4. Most Disliked Comment (and its dislike count) - only text comments
         most_disliked = await conn.fetchrow("""
-            SELECT c.text, COUNT(r.id) as dislike_count
+            SELECT c.text, c.id,
+                   SUM(CASE WHEN r.reaction_type = 'like' THEN 1 ELSE 0 END) as like_count,
+                   SUM(CASE WHEN r.reaction_type = 'dislike' THEN 1 ELSE 0 END) as dislike_count
             FROM comments c
             JOIN reactions r ON c.id = r.comment_id
-            WHERE c.user_id = $1 AND r.reaction_type = 'dislike'
+            WHERE c.user_id = $1 AND c.text IS NOT NULL
             GROUP BY c.id
             ORDER BY dislike_count DESC
             LIMIT 1
@@ -1932,10 +1936,12 @@ async def get_user_wrapped_stats(user_id: int) -> Dict[str, Any]:
         "nickname": nickname,
         "total_confessions": total_confessions,
         "total_comments": total_comments,
-        "most_liked_comment": most_liked['text'] if most_liked else "N/A",
-        "most_liked_count": most_liked['like_count'] if most_liked else 0,
-        "most_disliked_comment": most_disliked['text'] if most_disliked else "N/A",
-        "most_disliked_count": most_disliked['dislike_count'] if most_disliked else 0,
+        "most_liked_comment": most_liked['text'] if most_liked else None,
+        "most_liked_likes": int(most_liked['like_count']) if most_liked else 0,
+        "most_liked_dislikes": int(most_liked['dislike_count']) if most_liked else 0,
+        "most_disliked_comment": most_disliked['text'] if most_disliked else None,
+        "most_disliked_likes": int(most_disliked['like_count']) if most_disliked else 0,
+        "most_disliked_dislikes": int(most_disliked['dislike_count']) if most_disliked else 0,
         "aura_points": aura_points,
         "rank": rank if rank else "Unranked",
         "followers": followers,
@@ -1952,19 +1958,26 @@ def generate_wrapped_image(stats: Dict[str, Any]) -> io.BytesIO:
     TEXT_POSITIONS = {
         # Format: "label": (x, y, font_type, color)
         "nickname": (540, 150, "header", (255, 255, 255)),  # Centered at top
-        "confessions_label": (100, 400, "header", (100, 255, 218)),
-        "confessions_value": (100, 460, "stat", (255, 255, 255)),
-        "comments_label": (600, 400, "header", (100, 255, 218)),
-        "comments_value": (600, 460, "stat", (255, 255, 255)),
-        "aura_label": (100, 650, "header", (100, 255, 218)),
-        "aura_value": (100, 710, "stat", (255, 255, 255)),
-        "social_label": (100, 900, "header", (100, 255, 218)),
-        "social_value": (100, 960, "text", (255, 255, 255)),
-        "chat_label": (100, 1100, "header", (100, 255, 218)),
-        "chat_value": (100, 1160, "stat", (255, 255, 255)),
-        "top_comment_label": (100, 1300, "header", (100, 255, 218)),
-        "top_comment_text": (100, 1360, "text", (255, 255, 255)),
-        "top_comment_likes": (100, 1410, "text", (255, 100, 100)),
+        # All labels are on background image, all values moved to TEXT_BOXES
+    }
+    
+    # BOUNDING BOXES: Define boxes where text must fit (x, y, width, height)
+    TEXT_BOXES = {
+        "confessions_value": (80, 569, 262, 80, "header", (255, 255, 255), "center"), #done
+        "comments_value": (400, 569, 262, 80, "header", (255, 255, 255), "center"), #done
+        "aura_value": (750, 579, 262, 80, "header", (255, 255, 255), "center"), #done
+        "social_value": (123, 1229, 246, 80, "header", (255, 255, 255), "center"), #done
+        # "chat_value": (80, 1160, 262, 80, "header", (255, 255, 255), "center"),
+        
+        # Most Liked Comment
+        "top_comment_text": (108, 816, 421, 155, "header", (255, 255, 255), "center"), #done
+        "top_comment_likes": (211, 1010, 72, 52, "text", (255, 255, 255), "center"), #done
+        "top_comment_dislikes": (412, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
+        
+        # Most Disliked Comment
+        "most_disliked_text": (591, 813, 421, 155, "header", (255, 255, 255), "center"), # Add this
+        "most_disliked_likes": (693, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
+        "most_disliked_dislikes": (899, 1010, 72, 52, "text", (255, 255, 255), "center"), # Add this
     }
     # ═══════════════════════════════════════════════════════════════
     
@@ -2014,32 +2027,143 @@ def generate_wrapped_image(stats: Dict[str, Any]) -> io.BytesIO:
             x = x - (text_width / 2)  # Center around the x coordinate
         
         draw.text((x, y), text, font=font, fill=color)
+    
+    # Helper function to draw text within a bounding box (auto-shrinks if needed)
+    def draw_text_in_box(key, text, wrap=False):
+        """
+        Draws text within a defined bounding box. If text doesn't fit,
+        automatically reduces font size or wraps text to fit (if wrap=True).
+        """
+        if key not in TEXT_BOXES:
+            return
+        
+        x, y, max_width, max_height, font_type, color, align = TEXT_BOXES[key]
+        
+        # Get initial font size
+        base_font = fonts[font_type]
+        if hasattr(base_font, 'size'):
+            font_size = base_font.size
+        else:
+            font_size = 60  # Default fallback
+        
+        # Try progressively smaller fonts until text fits
+        min_font_size = 12
+        current_font = base_font
+        
+        # Helper to wrap text
+        def wrap_text(text, font, max_width):
+            """Wrap text to fit within max_width."""
+            words = text.split()
+            lines = []
+            current_line = []
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                if bbox[2] - bbox[0] <= max_width:
+                    current_line.append(word)
+                else:
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                    else:
+                        # Single word too long, just add it anyway
+                        lines.append(word)
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            return lines
+        
+        # Try to fit text with wrapping (if enabled)
+        if wrap:
+            while font_size >= min_font_size:
+                try:
+                    current_font = ImageFont.truetype("Arial.ttf", font_size)
+                except:
+                    current_font = ImageFont.load_default()
+                
+                # Try wrapping the text
+                lines = wrap_text(text, current_font, max_width)
+                
+                # Calculate total height needed
+                line_height = 0
+                for line in lines:
+                    bbox = draw.textbbox((0, 0), line, font=current_font)
+                    line_height = max(line_height, bbox[3] - bbox[1])
+                
+                total_height = line_height * len(lines)
+                
+                # Check if it fits
+                if total_height <= max_height:
+                    break
+                
+                # Reduce font size
+                font_size -= 2
+        else:
+            # No wrapping - just shrink font if needed
+            lines = [text]
+            while font_size >= min_font_size:
+                try:
+                    current_font = ImageFont.truetype("Arial.ttf", font_size)
+                except:
+                    current_font = ImageFont.load_default()
+                
+                bbox = draw.textbbox((0, 0), text, font=current_font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                
+                if text_width <= max_width and text_height <= max_height:
+                    break
+                
+                font_size -= 2
+        
+        # Draw the text (wrapped or single line)
+        current_y = y
+        line_spacing = 5
+        
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=current_font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            if align == "center":
+                text_x = x + (max_width - text_width) / 2
+            elif align == "right":
+                text_x = x + max_width - text_width
+            else:  # left
+                text_x = x
+            
+            draw.text((text_x, current_y), line, font=current_font, fill=color)
+            current_y += text_height + line_spacing
 
     # Draw all the stats using the configured positions
     draw_at_position("nickname", f"{stats['nickname']}", center=True)
     
-    draw_at_position("confessions_label", "Confessions")
-    draw_at_position("confessions_value", str(stats['total_confessions']))
+    # Labels are on background, only draw values
+    draw_text_in_box("confessions_value", str(stats['total_confessions']))
+    draw_text_in_box("comments_value", str(stats['total_comments']))
+    draw_text_in_box("aura_value", f"{stats['aura_points']} (Rank #{stats['rank']})")
+    draw_text_in_box("social_value", f"{stats['followers']} Followers | {stats['following']} Following")
     
-    draw_at_position("comments_label", "Comments")
-    draw_at_position("comments_value", str(stats['total_comments']))
+    # Chat messages (if you uncomment the TEXT_BOX entry)
+    # draw_text_in_box("chat_value", str(stats['chat_messages']))
     
-    draw_at_position("aura_label", "Aura Points")
-    draw_at_position("aura_value", f"{stats['aura_points']} (Rank #{stats['rank']})")
-    
-    draw_at_position("social_label", "Social")
-    draw_at_position("social_value", f"{stats['followers']} Followers | {stats['following']} Following")
-    
-    draw_at_position("chat_label", "Chat Messages")
-    draw_at_position("chat_value", str(stats['chat_messages']))
-    
-    draw_at_position("top_comment_label", "Top Comment")
-    # Truncate comment if too long
+    # Most Liked Comment - with wrapping
     comment_text = stats['most_liked_comment']
-    if len(comment_text) > 50: 
-        comment_text = comment_text[:47] + "..."
-    draw_at_position("top_comment_text", f"\"{comment_text}\"")
-    draw_at_position("top_comment_likes", f"❤️ {stats['most_liked_count']} Likes")
+    if not comment_text:
+        comment_text = "No comments yet"
+    draw_text_in_box("top_comment_text", f"\"{comment_text}\"", wrap=True)
+    draw_text_in_box("top_comment_likes", str(stats['most_liked_likes']))
+    draw_text_in_box("top_comment_dislikes", str(stats['most_liked_dislikes']))
+    
+    # Most Disliked Comment - with wrapping
+    disliked_text = stats['most_disliked_comment']
+    if not disliked_text:
+        disliked_text = "No comments yet"
+    draw_text_in_box("most_disliked_text", f"\"{disliked_text}\"", wrap=True)
+    draw_text_in_box("most_disliked_likes", str(stats['most_disliked_likes']))
+    draw_text_in_box("most_disliked_dislikes", str(stats['most_disliked_dislikes']))
 
     # Save to BytesIO
     bio = io.BytesIO()
@@ -2058,16 +2182,16 @@ async def wrapped_2025(message: types.Message):
             "SELECT file_id FROM wrapped_cache WHERE user_id = $1 AND year = $2",
             user_id, current_year
         )
-        
-    if cached_file_id:
-        # Send cached image
-        try:
-            await message.answer_photo(cached_file_id, caption="✨ Here is your 2025 Wrapped! (Cached)")
-            return
-        except Exception as e:
-            logging.warning(f"Failed to send cached wrapped image (file_id invalid?): {e}")
-            # If sending fails (e.g., file_id expired), proceed to regenerate
-            pass
+        # Enable this for production
+    # if cached_file_id:
+    #     # Send cached image
+    #     try:
+    #         await message.answer_photo(cached_file_id, caption="✨ Here is your 2025 Wrapped! (Cached)")
+    #         return
+    #     except Exception as e:
+    #         logging.warning(f"Failed to send cached wrapped image (file_id invalid?): {e}")
+    #         # If sending fails (e.g., file_id expired), proceed to regenerate
+    #         pass
 
     wait_msg = await message.answer("🎁 Generating your 2025 Wrapped...")
     
