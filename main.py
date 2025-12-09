@@ -3787,7 +3787,6 @@ async def reply_comment_prompt(callback_query: types.CallbackQuery, state: FSMCo
     async with db.acquire() as conn:
         comm_data = await conn.fetchrow("SELECT confession_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, user_id FROM comments WHERE id = $1", parent_id)
     if not comm_data: await callback_query.answer("Comment no longer exists.", show_alert=True); return
-    if callback_query.from_user.id == comm_data['user_id']: await callback_query.answer("You cannot reply to yourself.", show_alert=True); return
 
     try:
         reply_preview_message = "<i>Replying to:</i>\n\n"
