@@ -4,7 +4,7 @@
  */
 
 // ==================== CONFIGURATION ====================
-const API_BASE_URL = 'https://aau-confessions.onrender.com/api'; // Change this to your deployed API URL
+const API_BASE_URL = 'http://46.224.108.57:10000/api'; // Change this to your deployed API URL
 const POLL_INTERVAL = 3000; // Poll for new messages every 3 seconds
 const MAX_MESSAGE_LENGTH = 4000;
 
