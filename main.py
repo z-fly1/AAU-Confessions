@@ -3638,7 +3638,7 @@ async def check_and_handle_spam(message: types.Message, state: FSMContext) -> bo
         return False
 
     normalized_text = message.text.lower()
-    spam_keywords = ["melsget"]  # This list can be expanded with more keywords
+    spam_keywords = ["melsget", "AAUPulse", "@AAUPulseBot"]  # This list can be expanded with more keywords
 
     if any(keyword in normalized_text for keyword in spam_keywords):
         user_id = message.from_user.id
@@ -5133,17 +5133,22 @@ async def receive_ad_content(message: types.Message, state: FSMContext):
         document_file_id = message.document.file_id if message.document else None
         animation_file_id = message.animation.file_id if message.animation else None
         
+        # For high_reach package, initialize last_bot_send_date to today to prevent first-day duplicate
+        initial_bot_send_date = now.date() if package == "high_reach" else None
+        
         # Save to database
         async with db.acquire() as conn:
             await conn.execute("""
                 INSERT INTO ads (
                     package_type, message_id, posted_by, featured_until, 
                     expires_at, is_pinned, repost_time, message_text, message_entities,
-                    photo_file_id, video_file_id, document_file_id, animation_file_id, caption
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    photo_file_id, video_file_id, document_file_id, animation_file_id, caption,
+                    last_bot_send_date
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             """, package, sent_msg.message_id, CONTACT_ADMIN_ID, featured_until, 
                 expires_at, is_pinned, repost_time, message_text, message_entities,
-                photo_file_id, video_file_id, document_file_id, animation_file_id, caption)
+                photo_file_id, video_file_id, document_file_id, animation_file_id, caption,
+                initial_bot_send_date)
 
         
         package_name = "Basic" if package == "basic" else ("Standard" if package == "standard" else "High Reach")
