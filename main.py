@@ -1399,7 +1399,7 @@ class BlockUserMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_id = user.id
-        if user_id == ADMIN_ID:
+        if user_id in [ADMIN_ID, CONTACT_ADMIN_ID]:
             return await handler(event, data)
 
         async with db.acquire() as conn:
@@ -1637,6 +1637,11 @@ async def show_help(message: types.Message):
         help_text += ("\n\n<b>Admin Commands:</b>\n"
                       "🔹 /id &lt;user_id&gt; - Get user info.\n"
                       "🔹 /warn &lt;user_id&gt; &lt;reason&gt; - Send a warning.\n"
+                      "🔹 /block &lt;user_id&gt; &lt;duration&gt; [reason] - Temp block (e.g., 7d, 2w).\n"
+                      "🔹 /pblock &lt;user_id&gt; [reason] - Permanently block.\n"
+                      "🔹 /unblock &lt;user_id&gt; - Unblock a user.")
+    elif message.from_user and message.from_user.id == CONTACT_ADMIN_ID:
+        help_text += ("\n\n<b>Contact Admin Commands:</b>\n"
                       "🔹 /block &lt;user_id&gt; &lt;duration&gt; [reason] - Temp block (e.g., 7d, 2w).\n"
                       "🔹 /pblock &lt;user_id&gt; [reason] - Permanently block.\n"
                       "🔹 /unblock &lt;user_id&gt; - Unblock a user.")
@@ -3532,7 +3537,7 @@ async def apply_block(message: types.Message, user_id: int, reason: Optional[str
 
 @dp.message(Command("block"))
 async def admin_block_user(message: types.Message, command: CommandObject):
-    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not message.from_user or message.from_user.id not in [ADMIN_ID, CONTACT_ADMIN_ID]: return
     if not command.args: return await message.reply("Usage: /block &lt;user_id&gt; &lt;duration&gt; [reason]")
     
     parts = command.args.split(maxsplit=2)
@@ -3547,7 +3552,7 @@ async def admin_block_user(message: types.Message, command: CommandObject):
 
 @dp.message(Command("pblock"))
 async def admin_pblock_user(message: types.Message, command: CommandObject):
-    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not message.from_user or message.from_user.id not in [ADMIN_ID, CONTACT_ADMIN_ID]: return
     if not command.args: return await message.reply("Usage: /pblock &lt;user_id&gt; [reason]")
     
     parts = command.args.split(maxsplit=1)
@@ -3559,7 +3564,7 @@ async def admin_pblock_user(message: types.Message, command: CommandObject):
 
 @dp.message(Command("unblock"))
 async def admin_unblock_user(message: types.Message, command: CommandObject):
-    if not message.from_user or message.from_user.id != ADMIN_ID: return
+    if not message.from_user or message.from_user.id not in [ADMIN_ID, CONTACT_ADMIN_ID]: return
     if not command.args: return await message.reply("Usage: /unblock &lt;user_id&gt;")
     
     try: target_user_id = int(command.args.strip())
