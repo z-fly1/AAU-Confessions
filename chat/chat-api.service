@@ -4,8 +4,8 @@ After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/aau-confessions
+User=botuser
+WorkingDirectory=/home/botuser/AAU-Confessions
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 ExecStart=/usr/bin/python3 chat/chat_api.py
 Restart=always

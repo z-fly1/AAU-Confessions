@@ -6,7 +6,7 @@ set -e
 echo "🚀 Deploying Chat API as standalone service..."
 
 # Step 1: Check if we're on the VPS
-if [ ! -f "/root/aau-confessions/main.py" ]; then
+if [ ! -f "/home/botuser/AAU-Confessions/main.py" ]; then
     echo "❌ Error: This script must be run on the VPS"
     echo "Please copy this script to your VPS and run it there"
     exit 1
@@ -18,7 +18,7 @@ pip3 install Flask Flask-CORS psycopg2-binary python-dotenv
 
 # Step 3: Copy service file to systemd
 echo "📝 Installing systemd service..."
-sudo cp /root/aau-confessions/chat/chat-api.service /etc/systemd/system/
+sudo cp /home/botuser/AAU-Confessions/chat/chat-api.service /etc/systemd/system/
 
 # Step 4: Reload systemd
 echo "🔄 Reloading systemd..."
