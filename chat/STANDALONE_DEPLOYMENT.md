@@ -23,19 +23,19 @@ Running the chat API as a standalone service has several benefits:
 
 1. **Copy files to your VPS** (if deploying locally first):
    ```bash
-   scp chat/chat_api.py root@46.224.108.57:/root/aau-confessions/chat/
-   scp chat/chat-api.service root@46.224.108.57:/root/aau-confessions/chat/
-   scp chat/deploy-chat-api.sh root@46.224.108.57:/root/aau-confessions/chat/
+   scp chat/chat_api.py botuser@46.224.108.57:/home/botuser/AAU-Confessions/chat/
+   scp chat/chat-api.service botuser@46.224.108.57:/home/botuser/AAU-Confessions/chat/
+   scp chat/deploy-chat-api.sh botuser@46.224.108.57:/home/botuser/AAU-Confessions/chat/
    ```
 
 2. **SSH into your VPS**:
    ```bash
-   ssh root@46.224.108.57
+   ssh botuser@46.224.108.57
    ```
 
 3. **Run the deployment script**:
    ```bash
-   cd /root/aau-confessions
+   cd ~/AAU-Confessions
    chmod +x chat/deploy-chat-api.sh
    bash chat/deploy-chat-api.sh
    ```
@@ -52,12 +52,12 @@ If you prefer to deploy manually:
 
 1. **SSH into your VPS**:
    ```bash
-   ssh root@46.224.108.57
+   ssh botuser@46.224.108.57
    ```
 
 2. **Navigate to project directory**:
    ```bash
-   cd /root/aau-confessions
+   cd ~/AAU-Confessions
    ```
 
 3. **Install dependencies**:
@@ -279,9 +279,12 @@ After deployment:
 
 ## Configuration Reference
 
-Your current configuration:
+Your current setup:
 - **API Port**: 10000 (from `CHAT_API_PORT` in `.env`)
 - **VPS IP**: 46.224.108.57
+- **VPS User**: botuser
+- **Project Path**: /home/botuser/AAU-Confessions
 - **Web App URL**: https://aauconfessionschat.netlify.app
 - **API Endpoint**: http://46.224.108.57:10000/api
 - **Database**: PostgreSQL on localhost:5432
+```
