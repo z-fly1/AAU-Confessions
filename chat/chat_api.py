@@ -34,7 +34,7 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for local development
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKENS")  # Changed to BOT_TOKENS to match .env
 DATABASE_URL = os.getenv("DATABASE_URL")
 PORT = int(os.getenv("CHAT_API_PORT", "5000"))
 
