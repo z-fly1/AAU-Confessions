@@ -16,6 +16,10 @@ from telegram.ext import (
 )
 from telegram.constants import ChatType, ChatMemberStatus
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatType, ChatMemberStatus
+
+from datetime import datetime
+from datetime import timedelta
 
 from game_manager import GameManager, GameState, GameSession
 from story_builder import StoryBuilderGame
@@ -159,14 +163,26 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
     Args:
         chat_id: Telegram chat ID
         context: Callback context
-        delay: Delay in seconds before starting the game
+        delay: Initial delay in seconds before starting the game
     """
-    # Wait for players to join
-    await asyncio.sleep(delay)
-    
     session = game_manager.get_game(chat_id)
-    if not session or session.state != GameState.JOINING:
-        # Game was cancelled or state changed
+    if not session:
+        return
+
+    # Set initial deadline
+    session.joining_deadline = datetime.now() + timedelta(seconds=delay)
+    
+    # Loop until deadline is reached
+    while datetime.now() < session.joining_deadline:
+        # Check if game was cancelled or state changed
+        if session.state != GameState.JOINING:
+            return
+        
+        # Wait a bit before checking again
+        await asyncio.sleep(1)
+    
+    # Double check state after loop
+    if session.state != GameState.JOINING:
         return
     
     # Check if enough players joined
@@ -251,14 +267,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             await message.reply_text(
                 f"🎯 <b>{game_name} Game Selected!</b>\n\n"
-                "🎮 The game will start in 20 seconds!\n"
+                "🎮 The game will start in 40 seconds!\n"
                 "Send /join to participate.\n\n"
                 f"<b>Minimum {min_players} players required</b>",
                 parse_mode="HTML"
             )
             
-            # Schedule game start after 20 seconds (non-blocking)
-            asyncio.create_task(start_game_after_delay(chat.id, context, 20))
+            # Schedule game start after 40 seconds (non-blocking)
+            asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
                 "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, or <b>3</b>.",
@@ -590,6 +606,36 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         game_manager.remove_game(chat.id)
 
 
+async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /extend command to extend the joining period."""
+    chat = update.effective_chat
+    
+    if chat.type == ChatType.PRIVATE:
+        return
+        
+    session = game_manager.get_game(chat.id)
+    
+    if not session or session.state != GameState.JOINING:
+        await update.message.reply_text("⚠️ This command only works during the joining phase.")
+        return
+        
+    if not session.joining_deadline:
+        return
+        
+    # Extend deadline by 10 seconds
+    session.joining_deadline += timedelta(seconds=10)
+    
+    # Calculate remaining time
+    remaining = (session.joining_deadline - datetime.now()).seconds
+    
+    await update.message.reply_text(
+        f"⏳ <b>Time Extended!</b>\n\n"
+        f"Added 10 seconds to the joining period.\n"
+        f"Game starts in approximately {remaining} seconds.",
+        parse_mode="HTML"
+    )
+
+
 async def start_imposter_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     """Start the Guess the Imposter game."""
     secret_word = session.game.start_game()
@@ -805,6 +851,7 @@ def main() -> None:
     application.add_handler(CommandHandler("leave", leave_command))
     application.add_handler(CommandHandler("quit", quit_command))
     application.add_handler(CommandHandler("vote", vote_command))
+    application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 

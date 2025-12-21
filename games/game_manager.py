@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Dict, Optional, Set, Union
 from word_unscramble import WordUnscrambleGame
@@ -27,6 +28,7 @@ class GameSession:
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
         self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame]] = None
+        self.joining_deadline: Optional[datetime] = None
         
     def set_game_code(self, code: str) -> bool:
         """Set the game code and initialize the appropriate game.
