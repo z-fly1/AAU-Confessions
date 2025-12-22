@@ -7,10 +7,17 @@ class GuessTheImposterGame:
     # Built-in word list for the game - pairs of related words or just simple nouns
     # For now, just a list of words. The imposter has to blend in without knowing the word.
     WORD_LIST = [
-        "Apple", "Banana", "School", "Hospital", "Beach", "Mountain", 
-        "Piano", "Guitar", "Soccer", "Basketball", "Pizza", "Burger",
-        "Lion", "Tiger", "Computer", "Phone", "Car", "Bicycle",
-        "Sun", "Moon", "Book", "Movie", "Coffee", "Tea"
+        "Airport", "Classroom", "Library", "Market", "Restaurant", "Cinema",
+"Forest", "Desert", "River", "Island", "Garden", "Park",
+"Drums", "Violin", "Microphone", "Camera", "Headphones", "Speaker",
+"Cricket", "Tennis", "Swimming", "Running", "Cycling", "Boxing",
+"Sandwich", "Pasta", "IceCream", "Donut", "Pancake", "Noodles",
+"Elephant", "Giraffe", "Zebra", "Monkey", "Rabbit", "Horse",
+"Tablet", "Laptop", "Printer", "Router", "Keyboard", "Mouse",
+"Bus", "Train", "Airplane", "Scooter", "Truck", "Boat",
+"Star", "Cloud", "Rain", "Wind", "Thunder", "Rainbow",
+"Newspaper", "Magazine", "Notebook", "Pen", "Pencil", "Eraser",
+"Juice", "Milk", "Water", "Soda", "Smoothie", "Milkshake"
     ]
 
     def __init__(self):
