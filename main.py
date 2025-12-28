@@ -1011,7 +1011,8 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 
             profile_emoji = c_data.get('profile_emoji') or '👤'
             
-            admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID else ""
+
+            admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID or user_id == CONTACT_ADMIN_ID else ""
             display_tag = f" {profile_emoji} {tag}{medal_str}"
 
             reply_to_msg_id = None
@@ -3481,6 +3482,24 @@ async def admin_handle_deletion_request(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(callback_query.message.html_text + f"\n\n-- Deletion Request: {final_status} --", reply_markup=None)
     await callback_query.answer(f"Request {final_status}.")
 
+@dp.callback_query(F.data.startswith("admin_del_comment_"))
+async def handle_admin_delete_comment(callback: types.CallbackQuery):
+    if callback.from_user.id != CONTACT_ADMIN_ID:
+        await callback.answer("Unauthorized.", show_alert=True)
+        return
+
+    try:
+        comment_id = int(callback.data.split("_")[-1])
+        async with db.acquire() as conn:
+            await conn.execute("DELETE FROM comments WHERE id = $1", comment_id)
+        
+        await callback.message.edit_text(f"✅ Comment #{comment_id} deleted.")
+        await callback.answer("Comment deleted.")
+    except Exception as e:
+        logging.error(f"Error deleting comment {comment_id}: {e}")
+        await callback.answer("Error deleting comment.", show_alert=True)
+
+
 
 @dp.message(Command("warn"))
 async def admin_warn_user(message: types.Message, command: CommandObject):
@@ -3581,6 +3600,59 @@ async def admin_unblock_user(message: types.Message, command: CommandObject):
         await message.reply(f"✅ User ID <code>{target_user_id}</code> has been unblocked.")
     else:
         await message.reply(f"ℹ️ User ID <code>{target_user_id}</code> was not blocked.")
+
+
+@dp.message(Command("manage_user_comments"))
+async def handle_manage_user_comments(message: types.Message, command: CommandObject):
+    if message.from_user.id != CONTACT_ADMIN_ID:
+        return
+
+    if not command.args:
+        await message.answer("Usage: /manage_user_comments <user_id>")
+        return
+
+    try:
+        target_user_id = int(command.args.strip())
+    except ValueError:
+        await message.answer("Invalid User ID.")
+        return
+
+    async with db.acquire() as conn:
+        comments = await conn.fetch("""
+            SELECT id, confession_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, created_at 
+            FROM comments 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC 
+            LIMIT 50
+        """, target_user_id)
+
+    if not comments:
+        await message.answer(f"No comments found for user {target_user_id}.")
+        return
+
+    await message.answer(f"Found {len(comments)} recent comments for user {target_user_id}:")
+
+    for comment in comments:
+        text = comment['text']
+        content_type = "Text"
+        if comment['sticker_file_id']: content_type = "Sticker"
+        elif comment['animation_file_id']: content_type = "GIF"
+        elif comment['voice_file_id']: content_type = "Voice"
+        elif comment['photo_file_id']: content_type = "Photo"
+
+        display_text = text[:200] + "..." if text and len(text) > 200 else (text or f"[{content_type}]")
+        if comment['photo_caption']: display_text += f"\n[Caption]: {comment['photo_caption'][:100]}"
+        
+        msg = f"<b>Comment #{comment['id']}</b> on Confession #{comment['confession_id']}\n"
+        msg += f"📅 {comment['created_at'].strftime('%Y-%m-%d %H:%M')}\n"
+        msg += f"📝 {html.quote(display_text)}"
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🗑️ Delete", callback_data=f"admin_del_comment_{comment['id']}")
+        ]])
+        
+        await message.answer(msg, reply_markup=keyboard)
+        await asyncio.sleep(0.05) # Rate limit prevention
 
 
 # --- Commenting Flow Handlers ---
