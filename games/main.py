@@ -25,6 +25,7 @@ from game_manager import GameManager, GameState, GameSession
 from story_builder import StoryBuilderGame
 from guess_the_imposter import GuessTheImposterGame
 from guess_the_logo import GuessTheLogoGame
+from guessmoji import GuessMojiGame
 
 # Load environment variables
 load_dotenv()
@@ -153,7 +154,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>1</b> - Word Unscramble Game\n"
         "<b>2</b> - Story Builder Game\n"
         "<b>3</b> - Guess the Imposter\n"
-        "<b>4</b> - Guess the Logo\n\n"
+        "<b>4</b> - Guess the Logo\n"
+        "<b>5</b> - GuessMoji Game\n\n"
         "Send the game code to continue...",
         parse_mode="HTML"
     )
@@ -221,6 +223,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "4":
             # Guess the Logo
             await start_logo_game(chat_id, context, session)
+        elif session.game_code == "5":
+            # GuessMoji
+            await start_guessmoji_round(chat_id, context)
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -269,8 +274,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "3":
                 game_name = "Guess the Imposter"
                 min_players = "3"
-            else:
+            elif game_code == "4":
                 game_name = "Guess the Logo"
+                min_players = "2"
+            else:
+                game_name = "GuessMoji"
                 min_players = "2"
 
             await message.reply_text(
@@ -285,7 +293,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b> or <b>4</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b> or <b>5</b>.",
                 parse_mode="HTML"
             )
     
@@ -410,6 +418,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_logo_round(chat.id, context)
+
+        # Handle GuessMoji Game
+        elif session.game_code == "5":
+            if session.game.check_answer(message.text, user.id):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.get_current_answer()
+                display_name = user.first_name or user.username or "Player"
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"The answer was: <b>{answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_guessmoji_round(chat.id, context)
 
 
 
@@ -923,6 +951,59 @@ async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
         
         # Start next round
         await start_logo_round(chat_id, context)
+
+
+async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of GuessMoji."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "5":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    emojis, round_num = session.game.start_new_round()
+    theme = session.game.theme_name
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🤔 <b>Guess the Word/Phrase!</b>\n"
+             f"Theme: <b>{theme}</b>\n"
+             f"Round {round_num}/{session.game.total_rounds}\n\n"
+             f"{emojis}\n\n"
+             f"First to guess gets a point! (60s)",
+        parse_mode="HTML"
+    )
+
+    # Start timeout task (60 seconds)
+    asyncio.create_task(guessmoji_timeout(chat_id, context, round_num))
+
+
+async def guessmoji_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for GuessMoji round."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "5":
+        return
+    
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        # Time up - No winner
+        answer = session.game.get_current_answer()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\n"
+                 f"The answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_guessmoji_round(chat_id, context)
 
 
 def main() -> None:

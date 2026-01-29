@@ -5,6 +5,7 @@ from word_unscramble import WordUnscrambleGame
 from story_builder import StoryBuilderGame
 from guess_the_imposter import GuessTheImposterGame
 from guess_the_logo import GuessTheLogoGame
+from guessmoji import GuessMojiGame
 
 
 class GameState(Enum):
@@ -28,7 +29,7 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame]] = None
         self.joining_deadline: Optional[datetime] = None
         
     def set_game_code(self, code: str) -> bool:
@@ -58,6 +59,11 @@ class GameSession:
         elif code == "4":
             self.game_code = code
             self.game = GuessTheLogoGame(rounds_limit=15)
+            self.state = GameState.JOINING
+            return True
+        elif code == "5":
+            self.game_code = code
+            self.game = GuessMojiGame(total_rounds=20)
             self.state = GameState.JOINING
             return True
         return False
