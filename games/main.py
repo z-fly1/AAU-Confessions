@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import random
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -46,6 +47,18 @@ game_manager = GameManager()
 ALLOWED_CHAT_IDS = [
     -1003170577690,  # @aau_confessions
     -1003696845309,  # Testing Group
+]
+
+
+# Quirky response messages
+QUIRKY_RESPONSES = [
+    "Error: I don’t feel like it.",
+    "I’ll pass.",
+    "Cool. Command acknowledged. Ignored.",
+    "This action has been declined",
+    "Denied. But nicely",
+    "Request rejected successfully.",
+    
 ]
 
 
@@ -166,10 +179,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     # Check if there's already an active game
     if game_manager.has_active_game(chat.id):
-        await update.message.reply_text(
-            "⚠️ There's already a game in progress! "
-            "Please wait for it to finish."
-        )
+        await update.message.reply_text(random.choice(QUIRKY_RESPONSES))
         return
     
     # Create new game session
@@ -536,10 +546,7 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 parse_mode="HTML"
             )
         elif session.state == GameState.IN_PROGRESS:
-            await update.message.reply_text(
-                "⚠️ Game already in progress. Wait for the next round!",
-                parse_mode="HTML"
-            )
+            await update.message.reply_text(random.choice(QUIRKY_RESPONSES))
         return
     
     # Add player
@@ -1125,6 +1132,14 @@ async def movie_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_
         await start_movie_round(chat_id, context)
 
 
+
+async def post_init(application: Application) -> None:
+    """Explicitly initialize the bot."""
+    await application.bot.initialize()
+    bot_info = await application.bot.get_me()
+    logger.info(f"Bot initialized: {bot_info.id} (@{bot_info.username})")
+
+
 def main() -> None:
     """Start the bot."""
     # Get bot token from environment
@@ -1134,7 +1149,7 @@ def main() -> None:
         return
     
     # Create application
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(post_init).build()
     
     # Add handlers
     application.add_handler(ChatMemberHandler(my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
