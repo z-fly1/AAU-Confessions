@@ -24,6 +24,7 @@ from datetime import timedelta
 from game_manager import GameManager, GameState, GameSession
 from story_builder import StoryBuilderGame
 from guess_the_imposter import GuessTheImposterGame
+from guess_the_logo import GuessTheLogoGame
 
 # Load environment variables
 load_dotenv()
@@ -151,7 +152,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Please select a game by sending its code:\n\n"
         "<b>1</b> - Word Unscramble Game\n"
         "<b>2</b> - Story Builder Game\n"
-        "<b>3</b> - Guess the Imposter\n\n"
+        "<b>3</b> - Guess the Imposter\n"
+        "<b>4</b> - Guess the Logo\n\n"
         "Send the game code to continue...",
         parse_mode="HTML"
     )
@@ -216,6 +218,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "3":
             # Guess the Imposter
             await start_imposter_game(chat_id, context, session)
+        elif session.game_code == "4":
+            # Guess the Logo
+            await start_logo_game(chat_id, context, session)
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -240,7 +245,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.message
     user = update.effective_user
     
-    if chat.type == ChatType.PRIVATE or not message.text:
+    if not message or chat.type == ChatType.PRIVATE or not message.text:
         return
     
     session = game_manager.get_game(chat.id)
@@ -261,9 +266,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "2":
                 game_name = "Story Builder"
                 min_players = "2"
-            else:
+            elif game_code == "3":
                 game_name = "Guess the Imposter"
                 min_players = "3"
+            else:
+                game_name = "Guess the Logo"
+                min_players = "2"
 
             await message.reply_text(
                 f"🎯 <b>{game_name} Game Selected!</b>\n\n"
@@ -277,7 +285,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, or <b>3</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b> or <b>4</b>.",
                 parse_mode="HTML"
             )
     
@@ -384,11 +392,24 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                          text=f"👉 It's <a href=\"tg://user?id={next_id}\">{next_name}</a>'s turn to give a clue!",
                          parse_mode="HTML"
                      )
-                 else:
-                     # Round finished, loop back to start? or force vote?
-                     # Let's restart the order for now to allow multiple rounds.
                      # I need to modify GuessTheImposterGame to support cycling.
                      pass
+
+        # Handle Guess the Logo Game
+        elif session.game_code == "4":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.current_answer
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                # Next round
+                await start_logo_round(chat.id, context)
 
 
 
@@ -831,6 +852,77 @@ async def handle_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # Vote failed (already voted, etc)
         # We can show alert
         await context.bot.answer_callback_query(query.id, text="You already voted!", show_alert=True)
+
+
+async def start_logo_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Logo game."""
+    await start_logo_round(chat_id, context)
+
+
+async def start_logo_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Logo."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "4":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started (for player order init)
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    logo_path, player_id, player_name = result
+    
+    try:
+        with open(logo_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"🖼️ <b>Guess the Logo!</b>\n\n"
+                        f"👉 <a href=\"tg://user?id={player_id}\">{player_name}</a>, you have 45 seconds!",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending logo: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading logo. Skipping round...")
+        await start_logo_round(chat_id, context)
+        return
+
+    # Start timeout task (45 seconds)
+    round_num = session.game.current_round
+    player_id = session.game.current_player_id
+    asyncio.create_task(logo_timeout(chat_id, context, round_num, player_id))
+
+
+async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, player_id: int) -> None:
+    """Handle timeout for logo guess."""
+    await asyncio.sleep(45)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "4":
+        return
+    
+    # Check if we are still in the same round AND waiting for the SAME player
+    if session.game.current_round == round_num and session.game.current_player_id == player_id and session.game.waiting_for_answer:
+        # Time up - New Round (Next player, New Logo)
+        # End current round manually (without revealing if requested, currently resolve_round returns answer but we ignore it if not showing)
+        session.game.resolve_round()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>",
+            parse_mode="HTML"
+        )
+        
+        # Start next round
+        await start_logo_round(chat_id, context)
 
 
 def main() -> None:

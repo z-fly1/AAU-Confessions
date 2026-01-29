@@ -3715,7 +3715,7 @@ async def check_and_handle_spam(message: types.Message, state: FSMContext) -> bo
         return False
 
     normalized_text = message.text.lower()
-    spam_keywords = ["melsget", "aaupulse", "@aaupulsebot", "@keldenakeld13"]  # This list can be expanded with more keywords
+    spam_keywords = ["melsget", "aaupulse", "@aaupulsebot", "@keldenakeld13", "https://t.me/+yNCggu7OMN0wOWM0"]  # This list can be expanded with more keywords
 
     if any(keyword in normalized_text for keyword in spam_keywords):
         user_id = message.from_user.id

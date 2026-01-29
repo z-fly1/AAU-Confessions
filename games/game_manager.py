@@ -4,6 +4,7 @@ from typing import Dict, Optional, Set, Union
 from word_unscramble import WordUnscrambleGame
 from story_builder import StoryBuilderGame
 from guess_the_imposter import GuessTheImposterGame
+from guess_the_logo import GuessTheLogoGame
 
 
 class GameState(Enum):
@@ -27,7 +28,7 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame]] = None
         self.joining_deadline: Optional[datetime] = None
         
     def set_game_code(self, code: str) -> bool:
@@ -54,6 +55,11 @@ class GameSession:
             self.game = GuessTheImposterGame()
             self.state = GameState.JOINING
             return True
+        elif code == "4":
+            self.game_code = code
+            self.game = GuessTheLogoGame(rounds_limit=15)
+            self.state = GameState.JOINING
+            return True
         return False
     
     def add_player(self, user_id: int, username: Optional[str] = None) -> bool:
@@ -72,7 +78,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame)):
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)
             else:
