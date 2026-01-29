@@ -42,8 +42,11 @@ logger = logging.getLogger(__name__)
 game_manager = GameManager()
 
 
-# Allowed Group ID
-ALLOWED_CHAT_ID = -1003170577690
+# Allowed Group IDs
+ALLOWED_CHAT_IDS = [
+    -1003170577690,  # @aau_confessions
+    -1003696845309,  # Testing Group
+]
 
 
 async def check_bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -82,7 +85,7 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Bot added to chat {chat.id}: {chat.title}")
         
         # Check Allowed Group
-        if chat.id != ALLOWED_CHAT_ID:
+        if chat.id not in ALLOWED_CHAT_IDS:
             await context.bot.send_message(
                 chat_id=chat.id,
                 text="⚠️ <b>Access Denied</b>\n\n"
@@ -144,10 +147,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     # Check Allowed Group
-    if chat.id != ALLOWED_CHAT_ID:
+    if chat.id not in ALLOWED_CHAT_IDS:
         await update.message.reply_text(
-            "⚠️ <b>Womp Womp</b>\n\n"
-            "I only work in the @aau_confessions group",
+            "⚠️ <b>Access Denied</b>\n\n"
+            "I only work in the @aau_confessions group!",
             parse_mode="HTML"
         )
         return
