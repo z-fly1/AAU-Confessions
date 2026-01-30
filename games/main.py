@@ -39,6 +39,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Priority User ID constant
+PRIORITY_USER_ID = 8103840368
+
 # Initialize game manager
 game_manager = GameManager()
 
@@ -101,7 +104,7 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if chat.id not in ALLOWED_CHAT_IDS:
             await context.bot.send_message(
                 chat_id=chat.id,
-                text="⚠️ <b>Access Denied</b>\n\n"
+                text=" <b>Womp Womp</b>\n\n"
                      "I am exclusive to the @aau_confessions group!",
                 parse_mode="HTML"
             )
@@ -162,7 +165,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Check Allowed Group
     if chat.id not in ALLOWED_CHAT_IDS:
         await update.message.reply_text(
-            "⚠️ <b>Access Denied</b>\n\n"
+            "⚠️ <b>Womp Womp</b>\n\n"
             "I only work in the @aau_confessions group!",
             parse_mode="HTML"
         )
@@ -605,6 +608,13 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
 
     # Handle Word Unscramble Game (and others with scores)
     scoreboard = session.game.get_scoreboard()
+    
+    # Reorder scoreboard to put priority user first if they exist
+    priority_entry = next((entry for entry in scoreboard if entry[0] == PRIORITY_USER_ID), None)
+    if priority_entry:
+        scoreboard.remove(priority_entry)
+        scoreboard.insert(0, priority_entry)
+    
     winners = session.game.get_winners()
     
     # Build scoreboard message
@@ -615,10 +625,15 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
             user = await context.bot.get_chat_member(chat_id, user_id)
             username = user.user.username or user.user.first_name or "Player"
             medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-            scoreboard_text += f"{medal} <b>{rank}. {username}</b> - {score} points\n"
+            
+            # Add special message for priority user
+            suffix = " (its her spot)" if user_id == PRIORITY_USER_ID else ""
+            
+            scoreboard_text += f"{medal} <b>{rank}. {username}</b> - {score} points{suffix}\n"
         except Exception as e:
             logger.error(f"Error getting user info: {e}")
-            scoreboard_text += f"{rank}. User {user_id} - {score} points\n"
+            suffix = " (its her spot)" if user_id == PRIORITY_USER_ID else ""
+            scoreboard_text += f"{rank}. User {user_id} - {score} points{suffix}\n"
     
     # Build winners message
     if len(winners) == 1:
@@ -716,6 +731,15 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     
     if chat.type == ChatType.PRIVATE:
+        return
+        
+    # Check if user is admin
+    member = await chat.get_member(update.effective_user.id)
+    if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        await update.message.reply_text(
+            "Keysi hid kezi",
+            parse_mode="HTML"
+        )
         return
         
     session = game_manager.get_game(chat.id)
