@@ -27,6 +27,7 @@ from story_builder import StoryBuilderGame
 from guess_the_imposter import GuessTheImposterGame
 from guess_the_logo import GuessTheLogoGame
 from guess_the_movie import GuessTheMovieGame
+from guess_the_flag import GuessTheFlagGame
 from guessmoji import GuessMojiGame
 
 # Load environment variables
@@ -196,7 +197,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>3</b> - Guess the Imposter\n"
         "<b>4</b> - Guess the Logo\n"
         "<b>5</b> - GuessMoji Game\n"
-        "<b>6</b> - Guess the Movie\n\n"
+        "<b>6</b> - Guess the Movie\n"
+        "<b>7</b> - Guess the Flag\n\n"
         "Send the game code to continue...",
         parse_mode="HTML"
     )
@@ -270,6 +272,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "6":
             # Guess the Movie
             await start_movie_game(chat_id, context, session)
+        elif session.game_code == "7":
+            # Guess the Flag
+            await start_flag_game(chat_id, context, session)
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -321,11 +326,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "4":
                 game_name = "Guess the Logo"
                 min_players = "2"
-            elif game_code == "5":
-                game_name = "GuessMoji"
+            elif game_code == "6":
+                game_name = "Guess the Movie"
                 min_players = "2"
             else:
-                game_name = "Guess the Movie"
+                game_name = "Guess the Flag"
                 min_players = "2"
 
             await message.reply_text(
@@ -340,7 +345,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b> or <b>6</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b> or <b>7</b>.",
                 parse_mode="HTML"
             )
     
@@ -500,6 +505,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_movie_round(chat.id, context)
+
+        # Handle Guess the Flag Game
+        elif session.game_code == "7":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.get_current_answer()
+                display_name = user.first_name or user.username or "Player"
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"The answer was: <b>{answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_flag_round(chat_id, context)
 
 
 
@@ -1155,6 +1180,68 @@ async def movie_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_
         # Start next round
         await start_movie_round(chat_id, context)
 
+
+
+async def start_flag_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Flag game."""
+    await start_flag_round(chat_id, context)
+
+
+async def start_flag_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Flag."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "7":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    flag_path, round_num = result
+    
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=open(flag_path, 'rb'),
+        caption=f"🌍 <b>Guess the Flag!</b>\n"
+                f"Round {round_num}/{session.game.rounds_limit}\n\n"
+                f"First to guess gets a point! (60s)",
+        parse_mode="HTML"
+    )
+
+    # Start timeout task (60 seconds)
+    asyncio.create_task(flag_timeout(chat_id, context, round_num))
+
+
+async def flag_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for Guess the Flag round."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "7":
+        return
+    
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        # Time up - No winner
+        answer = session.game.get_current_answer()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\n"
+                 f"The answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_flag_round(chat_id, context)
 
 
 async def post_init(application: Application) -> None:
