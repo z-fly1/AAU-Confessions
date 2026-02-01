@@ -28,6 +28,7 @@ from guess_the_imposter import GuessTheImposterGame
 from guess_the_logo import GuessTheLogoGame
 from guess_the_movie import GuessTheMovieGame
 from guess_the_flag import GuessTheFlagGame
+from soccer_trivia import SoccerTriviaGame
 from guessmoji import GuessMojiGame
 
 # Load environment variables
@@ -198,7 +199,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>4</b> - Guess the Logo\n"
         "<b>5</b> - GuessMoji Game\n"
         "<b>6</b> - Guess the Movie\n"
-        "<b>7</b> - Guess the Flag\n\n"
+        "<b>7</b> - Guess the Flag\n"
+        "<b>8</b> - Soccer Trivia\n\n"
         "Send the game code to continue...",
         parse_mode="HTML"
     )
@@ -275,6 +277,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "7":
             # Guess the Flag
             await start_flag_game(chat_id, context, session)
+        elif session.game_code == "8":
+            # Soccer Trivia
+            await start_soccer_trivia_game(chat_id, context, session)
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -326,11 +331,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "4":
                 game_name = "Guess the Logo"
                 min_players = "2"
-            elif game_code == "6":
-                game_name = "Guess the Movie"
+            elif game_code == "7":
+                game_name = "Guess the Flag"
+                min_players = "2"
+            elif game_code == "8":
+                game_name = "Soccer Trivia"
                 min_players = "2"
             else:
-                game_name = "Guess the Flag"
+                game_name = "Guess the Flag" # Default fallback
                 min_players = "2"
 
             await message.reply_text(
@@ -345,7 +353,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b> or <b>7</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b> or <b>8</b>.",
                 parse_mode="HTML"
             )
     
@@ -524,7 +532,32 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if session.game.is_game_over():
                     await end_game(chat.id, context, session)
                 else:
-                    await start_flag_round(chat_id, context)
+                    await start_flag_round(chat.id, context)
+
+        # Handle Soccer Trivia Game
+        elif session.game_code == "8":
+            if session.game.check_answer(user.id, message.text):
+                if session.game.round_type == "listing":
+                    await message.reply_text(
+                        f"✅ <b>Correct!</b> That's one of them. You got a point!",
+                        parse_mode="HTML"
+                    )
+                else:
+                    # Logo round - score is updated, round is over
+                    score = session.game.scores.get(user.id, 0)
+                    await message.reply_text(
+                        f"⚽️ <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                        f"The answer was: <b>{session.game.current_answer}</b>\n"
+                        f"Your score: <b>{score}</b> point(s)",
+                        parse_mode="HTML"
+                    )
+                    
+                    if session.game.is_game_over():
+                        await end_game(chat.id, context, session)
+                    else:
+                        await start_soccer_trivia_round(chat.id, context)
+            else:
+                pass
 
 
 
@@ -1242,6 +1275,128 @@ async def flag_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
             await end_game(chat_id, context, session)
         else:
             await start_flag_round(chat_id, context)
+
+
+async def start_soccer_trivia_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Soccer Trivia game."""
+    await start_soccer_trivia_round(chat_id, context)
+
+
+async def start_soccer_trivia_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Soccer Trivia."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "8":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    round_type = result["type"]
+    round_num = result["round"]
+    
+    if round_type == "listing":
+        question_text = result["question"]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚽️ <b>Soccer Trivia!</b>\n"
+                 f"Round {round_num}/{session.game.rounds_limit}\n\n"
+                 f"👉 <b>{question_text}</b>\n\n"
+                 f"🔥 <b>You have 80 seconds</b> to list as many as possible!\n"
+                 f"Each correct team can only be claimed once!",
+            parse_mode="HTML"
+        )
+        # Start timeout task (80 seconds)
+        asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "listing"))
+        
+    elif round_type == "logo":
+        logo_path = result["logo_path"]
+        player_id = result["player_id"]
+        player_name = result["player_name"]
+        
+        try:
+            with open(logo_path, 'rb') as f:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=f"⚽️ <b>Soccer Trivia: Guess the Logo!</b>\n"
+                            f"Round {round_num}/{session.game.rounds_limit}\n\n"
+                            f"👉 <a href=\"tg://user?id={player_id}\">{player_name}</a>, you have 45 seconds!",
+                    parse_mode="HTML"
+                )
+        except Exception as e:
+            logger.error(f"Error sending soccer logo: {e}")
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading logo. Skipping round...")
+            await start_soccer_trivia_round(chat_id, context)
+            return
+            
+        # Start timeout task (45 seconds)
+        asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "logo", player_id))
+
+
+async def soccer_trivia_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, type: str, player_id: int = None) -> None:
+    """Handle timeout for Soccer Trivia round."""
+    timeout_duration = 80 if type == "listing" else 45
+    await asyncio.sleep(timeout_duration)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "8":
+        return
+    
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        # Check player if it's a logo round
+        if type == "logo" and session.game.current_player_id != player_id:
+            return
+
+        # Time up - Resolve and show results
+        results = session.game.resolve_round()
+        
+        if type == "listing":
+            round_scores = results["round_scores"]
+            sample_missed = results["sample_missed"]
+            total_claimed = results["total_claimed"]
+            
+            msg = f"⏰ <b>Time's Up!</b>\n\n"
+            msg += f"Total teams found: <b>{total_claimed}</b>\n"
+            
+            if round_scores:
+                msg += "\n<b>Round Performance:</b>\n"
+                sorted_performers = sorted(round_scores.items(), key=lambda x: x[1], reverse=True)
+                for uid, count in sorted_performers:
+                    try:
+                        member = await context.bot.get_chat_member(chat_id, uid)
+                        name = member.user.first_name or member.user.username or "Player"
+                        msg += f"• <b>{name}</b>: {count} team(s)\n"
+                    except Exception:
+                        msg += f"• User {uid}: {count} team(s)\n"
+            else:
+                msg += "\n<i>No one found any teams!</i>\n"
+                
+            if sample_missed:
+                msg += f"\nSome missed teams: <i>{', '.join(sample_missed)}</i>"
+            
+            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+            
+        elif type == "logo":
+            answer = results["answer"]
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⏰ <b>Time's Up!</b>\n\n"
+                     f"The answer was: <b>{answer}</b>",
+                parse_mode="HTML"
+            )
+        
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_soccer_trivia_round(chat_id, context)
 
 
 async def post_init(application: Application) -> None:
