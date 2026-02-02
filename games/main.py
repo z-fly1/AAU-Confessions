@@ -30,6 +30,7 @@ from guess_the_movie import GuessTheMovieGame
 from guess_the_flag import GuessTheFlagGame
 from soccer_trivia import SoccerTriviaGame
 from guessmoji import GuessMojiGame
+from general_knowledge import GeneralKnowledgeGame
 
 # Load environment variables
 load_dotenv()
@@ -200,7 +201,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>5</b> - GuessMoji Game\n"
         "<b>6</b> - Guess the Movie\n"
         "<b>7</b> - Guess the Flag\n"
-        "<b>8</b> - Soccer Trivia\n\n"
+        "<b>8</b> - Soccer Trivia\n"
+        "<b>9</b> - General Knowledge\n\n"
         "Send the game code to continue...",
         parse_mode="HTML"
     )
@@ -280,6 +282,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "8":
             # Soccer Trivia
             await start_soccer_trivia_game(chat_id, context, session)
+        elif session.game_code == "9":
+            # General Knowledge
+            await start_general_knowledge_game(chat_id, context, session)
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -337,8 +342,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "8":
                 game_name = "Soccer Trivia"
                 min_players = "2"
+            elif game_code == "9":
+                game_name = "General Knowledge"
+                min_players = "2"
             else:
-                game_name = "Guess the Flag" # Default fallback
+                game_name = "General Knowledge" # Default fallback
                 min_players = "2"
 
             await message.reply_text(
@@ -353,7 +361,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b> or <b>8</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b> or <b>9</b>.",
                 parse_mode="HTML"
             )
     
@@ -558,6 +566,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         await start_soccer_trivia_round(chat.id, context)
             else:
                 pass
+
+        # Handle General Knowledge Game
+        elif session.game_code == "9":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.get_current_answer()
+                display_name = user.first_name or user.username or "Player"
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"The answer was: <b>{answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_general_knowledge_round(chat.id, context)
 
 
 
@@ -1397,6 +1425,63 @@ async def soccer_trivia_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE
             await end_game(chat_id, context, session)
         else:
             await start_soccer_trivia_round(chat_id, context)
+
+
+async def start_general_knowledge_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the General Knowledge game."""
+    await start_general_knowledge_round(chat_id, context)
+
+
+async def start_general_knowledge_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of General Knowledge."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "9":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    question_text, round_num = session.game.start_new_round()
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🧠 <b>General Knowledge!</b>\n"
+             f"Round {round_num}/{session.game.total_rounds}\n\n"
+             f"👉 <b>{question_text}</b>\n\n"
+             f"First to guess gets a point! (60s)",
+        parse_mode="HTML"
+    )
+
+    # Start timeout task (60 seconds)
+    asyncio.create_task(general_knowledge_timeout(chat_id, context, round_num))
+
+
+async def general_knowledge_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for General Knowledge round."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "9":
+        return
+    
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        # Time up - No winner
+        session.game.round_in_progress = False
+        answer = session.game.get_current_answer()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\n"
+                 f"The answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_general_knowledge_round(chat_id, context)
 
 
 async def post_init(application: Application) -> None:

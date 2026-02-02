@@ -9,6 +9,7 @@ from guessmoji import GuessMojiGame
 from guess_the_movie import GuessTheMovieGame
 from guess_the_flag import GuessTheFlagGame
 from soccer_trivia import SoccerTriviaGame
+from general_knowledge import GeneralKnowledgeGame
 
 
 class GameState(Enum):
@@ -32,7 +33,7 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame]] = None
         self.joining_deadline: Optional[datetime] = None
         
     def set_game_code(self, code: str) -> bool:
@@ -84,6 +85,11 @@ class GameSession:
             self.game = SoccerTriviaGame(rounds_limit=15)
             self.state = GameState.JOINING
             return True
+        elif code == "9":
+            self.game_code = code
+            self.game = GeneralKnowledgeGame(total_rounds=15)
+            self.state = GameState.JOINING
+            return True
         return False
     
     def add_player(self, user_id: int, username: Optional[str] = None) -> bool:
@@ -102,7 +108,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame)):
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)
             else:
