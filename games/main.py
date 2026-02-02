@@ -31,6 +31,8 @@ from guess_the_flag import GuessTheFlagGame
 from soccer_trivia import SoccerTriviaGame
 from guessmoji import GuessMojiGame
 from general_knowledge import GeneralKnowledgeGame
+from guess_character import GuessCharacterGame
+
 
 # Load environment variables
 load_dotenv()
@@ -42,8 +44,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Priority User ID constant
-PRIORITY_USER_ID = 8103840368
+
 
 # Initialize game manager
 game_manager = GameManager()
@@ -202,8 +203,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>6</b> - Guess the Movie\n"
         "<b>7</b> - Guess the Flag\n"
         "<b>8</b> - Soccer Trivia\n"
-        "<b>9</b> - General Knowledge\n\n"
+        "<b>9</b> - General Knowledge\n"
+        "<b>10</b> - Guess the Character\n\n"
         "Send the game code to continue...",
+
         parse_mode="HTML"
     )
 
@@ -285,6 +288,10 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "9":
             # General Knowledge
             await start_general_knowledge_game(chat_id, context, session)
+        elif session.game_code == "10":
+            # Guess the Character
+            await start_character_game(chat_id, context, session)
+
 
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -345,6 +352,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "9":
                 game_name = "General Knowledge"
                 min_players = "2"
+            elif game_code == "10":
+                game_name = "Guess the Character"
+                min_players = "2"
+
             else:
                 game_name = "General Knowledge" # Default fallback
                 min_players = "2"
@@ -361,9 +372,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b> or <b>9</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b>, <b>9</b> or <b>10</b>.",
                 parse_mode="HTML"
             )
+
     
     elif session.state == GameState.IN_PROGRESS and session.game:
         # Handle Word Unscramble Game
@@ -587,6 +599,41 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 else:
                     await start_general_knowledge_round(chat.id, context)
 
+        # Handle Guess the Character Game
+        elif session.game_code == "10":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.get_current_answer()
+                full_image = session.game.get_full_image()
+                display_name = user.first_name or user.username or "Player"
+                
+                # Send confirmation first
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"The answer was: <b>{answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                # Send the full image
+                try:
+                    with open(full_image, 'rb') as f:
+                        await context.bot.send_photo(
+                            chat_id=chat.id,
+                            photo=f,
+                            caption=f"✅ <b>Full Picture: {answer}</b>",
+                            parse_mode="HTML"
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending full image: {e}")
+
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_character_round(chat.id, context)
+
+
 
 
 
@@ -695,11 +742,7 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
     # Handle Word Unscramble Game (and others with scores)
     scoreboard = session.game.get_scoreboard()
     
-    # Reorder scoreboard to put priority user first if they exist
-    priority_entry = next((entry for entry in scoreboard if entry[0] == PRIORITY_USER_ID), None)
-    if priority_entry:
-        scoreboard.remove(priority_entry)
-        scoreboard.insert(0, priority_entry)
+
     
     winners = session.game.get_winners()
     
@@ -712,14 +755,11 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
             username = user.user.username or user.user.first_name or "Player"
             medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
             
-            # Add special message for priority user
-            suffix = " (its her spot)" if user_id == PRIORITY_USER_ID else ""
-            
-            scoreboard_text += f"{medal} <b>{rank}. {username}</b> - {score} points{suffix}\n"
+            scoreboard_text += f"{medal} <b>{rank}. {username}</b> - {score} points\n"
         except Exception as e:
             logger.error(f"Error getting user info: {e}")
-            suffix = " (its her spot)" if user_id == PRIORITY_USER_ID else ""
-            scoreboard_text += f"{rank}. User {user_id} - {score} points{suffix}\n"
+            scoreboard_text += f"{rank}. User {user_id} - {score} points\n"
+
     
     # Build winners message
     if len(winners) == 1:
@@ -1482,6 +1522,90 @@ async def general_knowledge_timeout(chat_id: int, context: ContextTypes.DEFAULT_
             await end_game(chat_id, context, session)
         else:
             await start_general_knowledge_round(chat_id, context)
+
+
+
+async def start_character_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Character game."""
+    await start_character_round(chat_id, context)
+
+
+async def start_character_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Character."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "10":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    cropped_path, round_num = result
+    
+    try:
+        with open(cropped_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"🔍 <b>Guess the Person/Character!</b>\n"
+                        f"Round {round_num}/{session.game.rounds_limit}\n\n"
+                        f"First to guess gets a point! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending cropped image: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading image. Skipping round...")
+        await start_character_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    asyncio.create_task(character_timeout(chat_id, context, round_num))
+
+
+async def character_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for Guess the Character round."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "10":
+        return
+    
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        # Time up - No winner
+        answer = session.game.resolve_round()
+        full_image = session.game.get_full_image()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\n"
+                 f"The answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Send full image on timeout too? Usually good to show it.
+        try:
+            with open(full_image, 'rb') as f:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=f"✅ <b>Full Picture: {answer}</b>",
+                    parse_mode="HTML"
+                )
+        except Exception:
+            pass
+        
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_character_round(chat_id, context)
+
 
 
 async def post_init(application: Application) -> None:
