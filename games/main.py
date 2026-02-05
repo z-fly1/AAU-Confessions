@@ -1,8 +1,9 @@
 import os
+import json
 import logging
 import asyncio
 import random
-from typing import Optional
+from typing import Optional, Dict, List, Tuple, Union
 from dotenv import load_dotenv
 
 from telegram import Update, ChatMember, ChatMemberUpdated
@@ -12,11 +13,13 @@ from telegram.ext import (
     MessageHandler,
     ChatMemberHandler,
     CallbackQueryHandler,
+    InlineQueryHandler,
+    ChosenInlineResultHandler,
     filters,
     ContextTypes,
 )
 from telegram.constants import ChatType, ChatMemberStatus
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
 from telegram.constants import ChatType, ChatMemberStatus
 
 from datetime import datetime
@@ -33,6 +36,7 @@ from guessmoji import GuessMojiGame
 from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
 from word_connect import WordConnectGame
+from wdym_game import MemeGame
 
 
 # Load environment variables
@@ -50,12 +54,18 @@ logger = logging.getLogger(__name__)
 # Initialize game manager
 game_manager = GameManager()
 
+# Word Connect hint tasks
+word_connect_hint_tasks = {}
+
 
 # Allowed Group IDs
 ALLOWED_CHAT_IDS = [
     -1003170577690,  # @aau_confessions
     -1003696845309,  # Testing Group
 ]
+
+# Global lock for meme caching
+meme_cache_lock = asyncio.Lock()
 
 
 # Quirky response messages
@@ -206,7 +216,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>8</b> - Soccer Trivia\n"
         "<b>9</b> - General Knowledge\n"
         "<b>10</b> - Guess the Character\n"
-        "<b>11</b> - Word Connect Game\n\n"
+        "<b>11</b> - Word Connect Game\n"
+        "<b>12</b> - What You Meme\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -296,6 +307,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "11":
             # Word Connect
             await start_word_connect_game(chat_id, context, session)
+        elif session.game_code == "12":
+            # What You Meme
+            await start_wdym_game(chat_id, context, session)
 
 
 
@@ -363,6 +377,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "11":
                 game_name = "Word Connect"
                 min_players = "2"
+            elif game_code == "12":
+                game_name = "What You Meme"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -380,12 +397,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b>, <b>9</b>, <b>10</b> or <b>11</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>12</b>.",
                 parse_mode="HTML"
             )
 
     
     elif session.state == GameState.IN_PROGRESS and session.game:
+
         # Handle Word Unscramble Game
         if session.game_code == "1":
             # Handle game answers
@@ -656,7 +674,15 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     parse_mode="HTML"
                 )
                 
+                # Reset hint timer
+                await start_word_connect_hint_timer(chat.id, context, session.game.current_round)
+                
                 if session.game.is_round_finished():
+                    # Cancel hint timer
+                    if chat.id in word_connect_hint_tasks:
+                        word_connect_hint_tasks[chat.id].cancel()
+                        del word_connect_hint_tasks[chat.id]
+                    
                     await context.bot.send_message(
                         chat_id=chat.id,
                         text="🎊 <b>Round Completed!</b> 🎊\nAll words found!",
@@ -818,6 +844,10 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
     
     # Clean up
     session.end_game()
+    # Cancel hint timer if exists
+    if chat_id in word_connect_hint_tasks:
+        word_connect_hint_tasks[chat_id].cancel()
+        del word_connect_hint_tasks[chat_id]
     game_manager.remove_game(chat_id)
 
 
@@ -1639,8 +1669,57 @@ async def character_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, ro
             pass
         
         # Check game over or start next round
-        if session.game.is_game_over():
-            await end_game(chat_id, context, session)
+async def start_word_connect_hint_timer(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Start (or reset) a 30-second timer to reveal a hint."""
+    if chat_id in word_connect_hint_tasks:
+        word_connect_hint_tasks[chat_id].cancel()
+    
+    task = asyncio.create_task(word_connect_hint_timeout(chat_id, context, round_num))
+    word_connect_hint_tasks[chat_id] = task
+
+
+async def word_connect_hint_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Reveal a hint after 30 seconds if the round is still in progress."""
+    try:
+        await asyncio.sleep(30)
+        
+        session = game_manager.get_game(chat_id)
+        if not session or session.game_code != "11" or session.state != GameState.IN_PROGRESS:
+            return
+        
+        if session.game.current_round != round_num or not session.game.round_in_progress:
+            return
+            
+        hint_result = session.game.reveal_letter_hint()
+        if hint_result:
+            progress = session.game.get_round_progress()
+            letters = session.game.current_letters
+            
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"💡 <b>Hint!</b> A letter has been revealed:\n\n"
+                     f"Letters: <b>{' '.join(letters).upper()}</b>\n\n"
+                     f"{progress}",
+                parse_mode="HTML"
+            )
+            
+            if session.game.is_round_finished():
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="🎊 <b>Round Completed!</b> 🎊\nAll words found!",
+                    parse_mode="HTML"
+                )
+                
+                if session.game.is_game_over():
+                    await end_game(chat_id, context, session)
+                else:
+                    await start_word_connect_round(chat_id, context)
+            else:
+                # Schedule another hint
+                await start_word_connect_hint_timer(chat_id, context, round_num)
+    except asyncio.CancelledError:
+        pass
+
 
 async def start_word_connect_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     """Start the Word Connect game."""
@@ -1676,8 +1755,289 @@ async def start_word_connect_round(chat_id: int, context: ContextTypes.DEFAULT_T
         parse_mode="HTML"
     )
 
+    # Start hint timer
+    await start_word_connect_hint_timer(chat_id, context, round_num)
 
 
+async def start_wdym_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the What You Meme game."""
+    await start_wdym_round(chat_id, context)
+
+
+def get_meme_cache() -> Dict[str, str]:
+    """Synchronously read the meme cache from disk."""
+    cache_path = os.path.join(os.path.dirname(__file__), "meme_cache.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading meme cache: {e}")
+    return {}
+
+
+async def ensure_memes_cached(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, str]:
+    """Ensure all memes are uploaded to Telegram and their file_ids are cached in background."""
+    async with meme_cache_lock:
+        cache_path = os.path.join(os.path.dirname(__file__), "meme_cache.json")
+        meme_dir = os.path.join(os.path.dirname(__file__), "wdym", "memes")
+        
+        cache = get_meme_cache()
+
+        if not os.path.exists(meme_dir):
+            return cache
+
+        memes = sorted([f for f in os.listdir(meme_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+        updated = False
+        
+        # Use the testing group as a storage chat
+        storage_chat_id = ALLOWED_CHAT_IDS[1]
+        
+        for meme in memes:
+            if meme not in cache:
+                try:
+                    meme_path = os.path.join(meme_dir, meme)
+                    with open(meme_path, 'rb') as f:
+                        msg = await context.bot.send_photo(
+                            chat_id=storage_chat_id,
+                            photo=f,
+                            caption=f"Caching meme: {meme}",
+                            disable_notification=True
+                        )
+                        file_id = msg.photo[-1].file_id
+                        cache[meme] = file_id
+                        updated = True
+                        with open(cache_path, 'w') as sf:
+                            json.dump(cache, sf, indent=2)
+                        await asyncio.sleep(2)
+                except Exception as e:
+                    if "Flood control exceeded" in str(e):
+                        retry_after = 30
+                        try:
+                            import re
+                            match = re.search(r"Retry in (\d+) seconds", str(e))
+                            if match: retry_after = int(match.group(1)) + 1
+                        except: pass
+                        logger.warning(f"Rate limited during caching. Sleeping for {retry_after}s...")
+                        await asyncio.sleep(retry_after)
+                    else:
+                        logger.error(f"Error caching meme {meme}: {e}")
+                        await asyncio.sleep(1)
+
+        if updated:
+            try:
+                with open(cache_path, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                logger.info("Meme cache fully updated.")
+            except Exception as e:
+                logger.error(f"Error saving meme cache: {e}")
+                
+        return cache
+
+async def start_wdym_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of What You Meme."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "12":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over or not enough players
+        if len(session.game.players) < 2:
+             await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ Not enough players to continue! Need at least 2 players.",
+                parse_mode="HTML"
+            )
+             await end_game(chat_id, context, session)
+        else:
+            await end_game(chat_id, context, session)
+        return
+
+    question = result["question"]
+    round_num = result["round"]
+    
+    keyboard = [
+        [InlineKeyboardButton("What you meme", switch_inline_query_current_chat="meme ")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"Round {round_num}\n"
+             f"<b>{question}</b>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+    # Start timeout task (45 seconds total)
+    asyncio.create_task(wdym_timeout_manager(chat_id, context, round_num))
+
+
+async def wdym_timeout_manager(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Manage 30s reminder and 45s force-skip for WDYM."""
+    # 30 second reminder
+    await asyncio.sleep(30)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "12" or session.game.current_round != round_num or not session.game.round_in_progress:
+        return
+        
+    pending = session.game.get_pending_players()
+    if pending:
+        mention_list = []
+        for uid in pending:
+            name = session.game.players[uid]
+            mention_list.append(f"<a href=\"tg://user?id={uid}\">{name}</a>")
+            
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Hurry up!</b> 15 seconds left!\n\n"
+                 f"Still waiting for: {', '.join(mention_list)}",
+            parse_mode="HTML"
+        )
+        
+        # 15 more seconds total (45s)
+        await asyncio.sleep(15)
+        
+        # Check again
+        session = game_manager.get_game(chat_id)
+        if not session or session.game_code != "12" or session.game.current_round != round_num or not session.game.round_in_progress:
+            return
+            
+        pending = session.game.get_pending_players()
+        if pending:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⌛️ <b>Time's up!</b> Moving to the next question...",
+                parse_mode="HTML"
+            )
+            session.game.round_in_progress = False
+            if session.game.is_game_over():
+                await end_game(chat_id, context, session)
+            else:
+                await start_wdym_round(chat_id, context)
+
+
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Detect meme submissions by watching for photos in WDYM games."""
+    message = update.effective_message
+    if not message or not message.photo:
+        return
+        
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    session = game_manager.get_game(chat.id)
+    if not session or session.game_code != "12" or not session.game.round_in_progress:
+        return
+        
+    # If the user is a player, any photo they send is a submission
+    if user.id in session.game.players:
+        file_id = message.photo[-1].file_id
+        success = session.game.submit_meme(user.id, file_id)
+        if success:
+            # Check if all players have submitted
+            pending = session.game.get_pending_players()
+            if not pending:
+                session.game.round_in_progress = False
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_wdym_round(chat.id, context)
+
+
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline queries for memes."""
+    query = update.inline_query.query
+    if not query.startswith("meme"):
+        return
+
+    # Get cache immediately (non-blocking)
+    cache = get_meme_cache()
+    # Trigger background update check if not results or just as a precaution
+    asyncio.create_task(ensure_memes_cached(context))
+    
+    # Find session to get current prompt
+    user = update.inline_query.from_user
+    session = None
+    for s in game_manager.active_games.values():
+        if user.id in s.players and s.game_code == "12":
+            session = s
+            break
+    
+    prompt = session.game.current_question if (session and session.game.round_in_progress) else "Meme time!"
+    
+    results = []
+    # Sort to keep consistent order
+    for i, (meme, file_id) in enumerate(sorted(cache.items())):
+        if i >= 50: break # Telegram limit
+        results.append(
+            InlineQueryResultCachedPhoto(
+                id=f"wdym_{meme}", 
+                photo_file_id=file_id,
+                title=f"Meme {i+1}",
+                caption=f"🃏 <b>{prompt}</b>",
+                parse_mode="HTML"
+            )
+        )
+    
+    if not results:
+        results.append(
+            InlineQueryResultArticle(
+                id="caching",
+                title="Memes are being cached...",
+                description="Please wait a moment and try again.",
+                input_message_content=InputTextMessageContent("Bot is still processing memes. Please wait.")
+            )
+        )
+        # Trigger caching in background if it's empty
+        asyncio.create_task(ensure_memes_cached(context))
+    
+    try:
+        await update.inline_query.answer(results, cache_time=5, is_personal=True)
+    except Exception as e:
+        logger.error(f"Error answering inline query: {e}")
+
+
+async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track when a user picks a meme from inline query."""
+    result = update.chosen_inline_result
+    result_id = result.result_id
+    if not result_id.startswith("wdym_"):
+        return
+        
+    user = result.from_user
+    meme_filename = result_id.replace("wdym_", "")
+    
+    # Get file_id from cache to keep tracking consistent if needed, 
+    # but the game logic just needs to know who submitted.
+    # We can use filename as the unique identifier for the submission.
+    
+    # We don't have chat_id here, but we can find the session by user
+    session = None
+    for chat_id, s in game_manager.active_games.items():
+        if user.id in s.players and s.game_code == "12":
+            session = s
+            break
+            
+    if not session or not session.game.round_in_progress:
+        return
+        
+    success = session.game.submit_meme(user.id, meme_filename)
+    if success:
+        # Check if everyone submitted
+        pending = session.game.get_pending_players()
+        if not pending:
+            # All done!
+            session.game.round_in_progress = False
+            if session.game.is_game_over():
+                await end_game(session.chat_id, context, session)
+            else:
+                await start_wdym_round(session.chat_id, context)
 
 
 async def post_init(application: Application) -> None:
@@ -1685,6 +2045,12 @@ async def post_init(application: Application) -> None:
     await application.bot.initialize()
     bot_info = await application.bot.get_me()
     logger.info(f"Bot initialized: {bot_info.id} (@{bot_info.username})")
+    
+    # Trigger background caching on startup with proper context
+    # Use a dummy context since ensure_memes_cached only needs context.bot
+    from telegram.ext import CallbackContext
+    dummy_context = CallbackContext(application)
+    asyncio.create_task(ensure_memes_cached(dummy_context))
 
 
 def main() -> None:
@@ -1707,6 +2073,9 @@ def main() -> None:
     application.add_handler(CommandHandler("vote", vote_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
+    application.add_handler(InlineQueryHandler(inline_query_handler))
+    application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     

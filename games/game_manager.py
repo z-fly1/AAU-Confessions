@@ -12,6 +12,7 @@ from soccer_trivia import SoccerTriviaGame
 from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
 from word_connect import WordConnectGame
+from wdym_game import MemeGame
 
 
 
@@ -104,6 +105,11 @@ class GameSession:
             self.game = WordConnectGame(rounds_limit=10)
             self.state = GameState.JOINING
             return True
+        elif code == "12":
+            self.game_code = code
+            self.game = MemeGame(rounds_limit=10)
+            self.state = GameState.JOINING
+            return True
 
         return False
     
@@ -123,7 +129,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame)):
 
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)
