@@ -54,8 +54,24 @@ logger = logging.getLogger(__name__)
 # Initialize game manager
 game_manager = GameManager()
 
-# Word Connect hint tasks
-word_connect_hint_tasks = {}
+# Global task tracker for game-related background tasks (timers, hints, reminders)
+active_game_tasks: Dict[int, List[asyncio.Task]] = {}
+
+def track_game_task(chat_id: int, task: asyncio.Task) -> None:
+    """Register a background task for a specific game chat."""
+    if chat_id not in active_game_tasks:
+        active_game_tasks[chat_id] = []
+    active_game_tasks[chat_id].append(task)
+    # Clean up finished tasks from the list occasionally
+    task.add_done_callback(lambda t: active_game_tasks[chat_id].remove(t) if chat_id in active_game_tasks and t in active_game_tasks[chat_id] else None)
+
+def cancel_game_tasks(chat_id: int) -> None:
+    """Cancel all background tasks for a specific game chat."""
+    if chat_id in active_game_tasks:
+        for task in active_game_tasks[chat_id]:
+            if not task.done():
+                task.cancel()
+        del active_game_tasks[chat_id]
 
 
 # Allowed Group IDs
@@ -70,13 +86,22 @@ meme_cache_lock = asyncio.Lock()
 
 # Quirky response messages
 QUIRKY_RESPONSES = [
-    "Error: I don’t feel like it.",
-    "I’ll pass.",
-    "Cool. Command acknowledged. Ignored.",
-    "This action has been declined",
-    "Denied. But nicely",
-    "Request rejected successfully.",
-    
+    "Yeah… that’s not happening",
+    "I considered it. Briefly. No.",
+    "I refuse, and I stand by that decision",
+    "Absolutely not. Hope this helps.",
+    "I said no in several timelines.",
+    "The request was processed and found unnecessary",
+    "I refuse to participate in this chaos.",
+    "I could… but I won’t",
+    "This request embarrasses you.",
+    "I’d rather do nothing.",
+    "Please don’t ever ask that again",
+    "I’m pretending I didn’t see that.",
+    "I’d rather reboot",
+    "Ere",
+    "Ask me again and I’ll still say no.",
+    "I refuse to acknowledge this."
 ]
 
 
@@ -394,7 +419,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             
             # Schedule game start after 40 seconds (non-blocking)
-            asyncio.create_task(start_game_after_delay(chat.id, context, 40))
+            track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
                 "❌ Invalid game code. Please send <b>1</b> to <b>12</b>.",
@@ -675,13 +700,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 
                 # Reset hint timer
-                await start_word_connect_hint_timer(chat.id, context, session.game.current_round)
+                cancel_game_tasks(chat.id)
+                track_game_task(chat.id, asyncio.create_task(word_connect_hint_timeout(chat.id, context, session.game.current_round)))
                 
                 if session.game.is_round_finished():
                     # Cancel hint timer
-                    if chat.id in word_connect_hint_tasks:
-                        word_connect_hint_tasks[chat.id].cancel()
-                        del word_connect_hint_tasks[chat.id]
+                    cancel_game_tasks(chat.id)
                     
                     await context.bot.send_message(
                         chat_id=chat.id,
@@ -844,10 +868,7 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
     
     # Clean up
     session.end_game()
-    # Cancel hint timer if exists
-    if chat_id in word_connect_hint_tasks:
-        word_connect_hint_tasks[chat_id].cancel()
-        del word_connect_hint_tasks[chat_id]
+    cancel_game_tasks(chat_id)
     game_manager.remove_game(chat_id)
 
 
@@ -931,7 +952,7 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     member = await chat.get_member(update.effective_user.id)
     if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         await update.message.reply_text(
-            "Keysi hid kezi",
+            "",
             parse_mode="HTML"
         )
         return
@@ -1200,7 +1221,7 @@ async def start_logo_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     # Start timeout task (45 seconds)
     round_num = session.game.current_round
     player_id = session.game.current_player_id
-    asyncio.create_task(logo_timeout(chat_id, context, round_num, player_id))
+    track_game_task(chat_id, asyncio.create_task(logo_timeout(chat_id, context, round_num, player_id)))
 
 
 async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, player_id: int) -> None:
@@ -1250,7 +1271,7 @@ async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE
     )
 
     # Start timeout task (60 seconds)
-    asyncio.create_task(guessmoji_timeout(chat_id, context, round_num))
+    track_game_task(chat_id, asyncio.create_task(guessmoji_timeout(chat_id, context, round_num)))
 
 
 async def guessmoji_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
@@ -1324,7 +1345,7 @@ async def start_movie_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) ->
     # Start timeout task (45 seconds)
     round_num = session.game.current_round
     player_id = session.game.current_player_id
-    asyncio.create_task(movie_timeout(chat_id, context, round_num, player_id))
+    track_game_task(chat_id, asyncio.create_task(movie_timeout(chat_id, context, round_num, player_id)))
 
 
 async def movie_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, player_id: int) -> None:
@@ -1383,7 +1404,7 @@ async def start_flag_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     # Start timeout task (60 seconds)
-    asyncio.create_task(flag_timeout(chat_id, context, round_num))
+    track_game_task(chat_id, asyncio.create_task(flag_timeout(chat_id, context, round_num)))
 
 
 async def flag_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
@@ -1448,7 +1469,7 @@ async def start_soccer_trivia_round(chat_id: int, context: ContextTypes.DEFAULT_
             parse_mode="HTML"
         )
         # Start timeout task (80 seconds)
-        asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "listing"))
+        track_game_task(chat_id, asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "listing")))
         
     elif round_type == "logo":
         logo_path = result["logo_path"]
@@ -1472,7 +1493,7 @@ async def start_soccer_trivia_round(chat_id: int, context: ContextTypes.DEFAULT_
             return
             
         # Start timeout task (45 seconds)
-        asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "logo", player_id))
+        track_game_task(chat_id, asyncio.create_task(soccer_trivia_timeout(chat_id, context, round_num, "logo", player_id)))
 
 
 async def soccer_trivia_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, type: str, player_id: int = None) -> None:
@@ -1561,7 +1582,7 @@ async def start_general_knowledge_round(chat_id: int, context: ContextTypes.DEFA
     )
 
     # Start timeout task (60 seconds)
-    asyncio.create_task(general_knowledge_timeout(chat_id, context, round_num))
+    track_game_task(chat_id, asyncio.create_task(general_knowledge_timeout(chat_id, context, round_num)))
 
 
 async def general_knowledge_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
@@ -1632,7 +1653,7 @@ async def start_character_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE
         return
 
     # Start timeout task (60 seconds)
-    asyncio.create_task(character_timeout(chat_id, context, round_num))
+    track_game_task(chat_id, asyncio.create_task(character_timeout(chat_id, context, round_num)))
 
 
 async def character_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
@@ -1669,15 +1690,6 @@ async def character_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, ro
             pass
         
         # Check game over or start next round
-async def start_word_connect_hint_timer(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
-    """Start (or reset) a 30-second timer to reveal a hint."""
-    if chat_id in word_connect_hint_tasks:
-        word_connect_hint_tasks[chat_id].cancel()
-    
-    task = asyncio.create_task(word_connect_hint_timeout(chat_id, context, round_num))
-    word_connect_hint_tasks[chat_id] = task
-
-
 async def word_connect_hint_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
     """Reveal a hint after 30 seconds if the round is still in progress."""
     try:
@@ -1716,7 +1728,7 @@ async def word_connect_hint_timeout(chat_id: int, context: ContextTypes.DEFAULT_
                     await start_word_connect_round(chat_id, context)
             else:
                 # Schedule another hint
-                await start_word_connect_hint_timer(chat_id, context, round_num)
+                track_game_task(chat_id, asyncio.create_task(word_connect_hint_timeout(chat_id, context, round_num)))
     except asyncio.CancelledError:
         pass
 
@@ -1756,7 +1768,7 @@ async def start_word_connect_round(chat_id: int, context: ContextTypes.DEFAULT_T
     )
 
     # Start hint timer
-    await start_word_connect_hint_timer(chat_id, context, round_num)
+    track_game_task(chat_id, asyncio.create_task(word_connect_hint_timeout(chat_id, context, round_num)))
 
 
 async def start_wdym_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -1874,7 +1886,7 @@ async def start_wdym_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     # Start timeout task (45 seconds total)
-    asyncio.create_task(wdym_timeout_manager(chat_id, context, round_num))
+    track_game_task(chat_id, asyncio.create_task(wdym_timeout_manager(chat_id, context, round_num)))
 
 
 async def wdym_timeout_manager(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
@@ -1956,9 +1968,11 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not query.startswith("meme"):
         return
 
+    offset = int(update.inline_query.offset) if update.inline_query.offset else 0
+
     # Get cache immediately (non-blocking)
     cache = get_meme_cache()
-    # Trigger background update check if not results or just as a precaution
+    # Trigger background update check
     asyncio.create_task(ensure_memes_cached(context))
     
     # Find session to get current prompt
@@ -1971,10 +1985,13 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     
     prompt = session.game.current_question if (session and session.game.round_in_progress) else "Meme time!"
     
+    cache_items = sorted(cache.items())
     results = []
-    # Sort to keep consistent order
-    for i, (meme, file_id) in enumerate(sorted(cache.items())):
-        if i >= 50: break # Telegram limit
+    
+    # Slice the items based on offset
+    end_idx = min(offset + 50, len(cache_items))
+    for i in range(offset, end_idx):
+        meme, file_id = cache_items[i]
         results.append(
             InlineQueryResultCachedPhoto(
                 id=f"wdym_{meme}", 
@@ -1985,7 +2002,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         )
     
-    if not results:
+    if not results and offset == 0:
         results.append(
             InlineQueryResultArticle(
                 id="caching",
@@ -1994,11 +2011,10 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 input_message_content=InputTextMessageContent("Bot is still processing memes. Please wait.")
             )
         )
-        # Trigger caching in background if it's empty
-        asyncio.create_task(ensure_memes_cached(context))
     
     try:
-        await update.inline_query.answer(results, cache_time=5, is_personal=True)
+        next_offset = str(offset + 50) if offset + 50 < len(cache_items) else ""
+        await update.inline_query.answer(results, cache_time=5, is_personal=True, next_offset=next_offset)
     except Exception as e:
         logger.error(f"Error answering inline query: {e}")
 
