@@ -20,10 +20,9 @@ from telegram.ext import (
 )
 from telegram.constants import ChatType, ChatMemberStatus
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
-from telegram.constants import ChatType, ChatMemberStatus
+from telegram.error import NetworkError, Forbidden, TimedOut, TelegramError
 
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from game_manager import GameManager, GameState, GameSession
 from story_builder import StoryBuilderGame
@@ -242,7 +241,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>9</b> - General Knowledge\n"
         "<b>10</b> - Guess the Character\n"
         "<b>11</b> - Word Connect Game\n"
-        "<b>12</b> - What You Meme\n\n"
+        "<b>12</b> - What You Meme\n"
+        "<b>13</b> - Taylor Swift Or Shakespeare\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -335,6 +335,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "12":
             # What You Meme
             await start_wdym_game(chat_id, context, session)
+        elif session.game_code == "13":
+            # Taylor Swift Or Shakespeare
+            await start_ts_game(chat_id, context, session)
 
 
 
@@ -405,6 +408,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "12":
                 game_name = "What You Meme"
                 min_players = "2"
+            elif game_code == "13":
+                game_name = "Taylor Swift Or Shakespeare"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -422,7 +428,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>12</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>13</b>.",
                 parse_mode="HTML"
             )
 
@@ -1132,7 +1138,10 @@ async def handle_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user = query.from_user
     chat = update.effective_chat
     
-    await query.answer()
+    try:
+        await query.answer()
+    except (NetworkError, TimedOut, TelegramError) as e:
+        logger.warning(f"Failed to answer callback query: {e}")
     
     session = game_manager.get_game(chat.id)
     if not session or session.game_code != "3" or not isinstance(session.game, GuessTheImposterGame):
@@ -2015,6 +2024,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         next_offset = str(offset + 50) if offset + 50 < len(cache_items) else ""
         await update.inline_query.answer(results, cache_time=5, is_personal=True, next_offset=next_offset)
+    except (NetworkError, TimedOut, TelegramError) as e:
+        logger.warning(f"Failed to answer inline query: {e}")
     except Exception as e:
         logger.error(f"Error answering inline query: {e}")
 
@@ -2056,6 +2067,122 @@ async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEF
                 await start_wdym_round(session.chat_id, context)
 
 
+async def start_ts_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Taylor Swift vs Shakespeare game."""
+    await start_ts_round(chat_id, context)
+
+async def start_ts_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Taylor Swift vs Shakespeare."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "13":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    quote, round_num = session.game.start_new_round()
+    if not quote:
+        await end_game(chat_id, context, session)
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Taylor Swift", callback_data=f"ts_vote_Taylor Swift"),
+            InlineKeyboardButton("Shakespeare", callback_data=f"ts_vote_Shakespeare")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📜 <b>Taylor Swift Or Shakespeare?</b>\n"
+             f"Round {round_num}/{session.game.rounds_limit}\n\n"
+             f"<i>\"{quote}\"</i>\n\n"
+             f"Choose your answer! (30s)",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+    # Start timeout task (30 seconds)
+    track_game_task(chat_id, asyncio.create_task(ts_round_timeout(chat_id, context, round_num)))
+
+async def ts_round_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for Taylor Swift vs Shakespeare round."""
+    await asyncio.sleep(30)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "13" or not session.game.round_in_progress:
+        return
+
+    if session.game.current_round != round_num:
+        return
+
+    result = session.game.resolve_round()
+    if not result:
+        return
+
+    correct_author = result["correct_author"]
+    winners_ids = result["winners"]
+    quote = result["quote"]
+
+    winner_mentions = []
+    for uid in winners_ids:
+        name = session.game.players.get(uid, "Player")
+        winner_mentions.append(f"<a href=\"tg://user?id={uid}\">{name}</a>")
+
+    if winner_mentions:
+        winners_text = f"✅ <b>Correct!</b> It was <b>{correct_author}</b>!\n\n" \
+                       f"🏆 Winners this round: {', '.join(winner_mentions)}"
+    else:
+        winners_text = f"❌ <b>Too slow!</b> Nobody guessed right.\n" \
+                       f"The correct author was: <b>{correct_author}</b>"
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=winners_text,
+        parse_mode="HTML"
+    )
+
+    if session.game.is_game_over():
+        await end_game(chat_id, context, session)
+    else:
+        await start_ts_round(chat_id, context)
+
+async def handle_ts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle voting callback queries for Taylor vs Shakespeare."""
+    query = update.callback_query
+    user = query.from_user
+    chat = update.effective_chat
+    
+    author = query.data.split("_")[2]
+    
+    session = game_manager.get_game(chat.id)
+    if not session or session.game_code != "13" or not session.game.round_in_progress:
+        await query.answer("Game not active.")
+        return
+
+    # Just record the vote
+    try:
+        if session.game.record_vote(user.id, author):
+            await query.answer(f"Voted for {author}!")
+        else:
+            await query.answer("Couldn't record vote.")
+    except (NetworkError, TimedOut, TelegramError) as e:
+        logger.warning(f"Failed to answer TS callback query: {e}")
+
+
+async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        logger.warning(f'Network error: {context.error}')
+        return
+    if isinstance(context.error, Forbidden):
+        logger.warning(f'Bot was blocked or kicked: {context.error}')
+        return
+        
+    logger.error(f"Update {update} caused error {context.error}", exc_info=context.error)
+
+
 async def post_init(application: Application) -> None:
     """Explicitly initialize the bot."""
     await application.bot.initialize()
@@ -2080,6 +2207,9 @@ def main() -> None:
     # Create application
     application = Application.builder().token(token).post_init(post_init).build()
     
+    # Add global error handler
+    application.add_error_handler(error_handler)
+    
     # Add handlers
     application.add_handler(ChatMemberHandler(my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("start", start_command))
@@ -2089,6 +2219,7 @@ def main() -> None:
     application.add_handler(CommandHandler("vote", vote_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
+    application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
     application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

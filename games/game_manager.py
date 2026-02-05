@@ -13,6 +13,7 @@ from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
 from word_connect import WordConnectGame
 from wdym_game import MemeGame
+from taylor_shakespeare import TaylorShakespeareGame
 
 
 
@@ -37,7 +38,7 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame]] = None
 
         self.joining_deadline: Optional[datetime] = None
         
@@ -110,6 +111,11 @@ class GameSession:
             self.game = MemeGame(rounds_limit=10)
             self.state = GameState.JOINING
             return True
+        elif code == "13":
+            self.game_code = code
+            self.game = TaylorShakespeareGame(rounds=10)
+            self.state = GameState.JOINING
+            return True
 
         return False
     
@@ -129,7 +135,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame)):
 
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)
