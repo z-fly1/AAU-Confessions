@@ -32,6 +32,7 @@ from soccer_trivia import SoccerTriviaGame
 from guessmoji import GuessMojiGame
 from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
+from word_connect import WordConnectGame
 
 
 # Load environment variables
@@ -204,7 +205,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>7</b> - Guess the Flag\n"
         "<b>8</b> - Soccer Trivia\n"
         "<b>9</b> - General Knowledge\n"
-        "<b>10</b> - Guess the Character\n\n"
+        "<b>10</b> - Guess the Character\n"
+        "<b>11</b> - Word Connect Game\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -291,6 +293,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "10":
             # Guess the Character
             await start_character_game(chat_id, context, session)
+        elif session.game_code == "11":
+            # Word Connect
+            await start_word_connect_game(chat_id, context, session)
 
 
 
@@ -355,6 +360,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "10":
                 game_name = "Guess the Character"
                 min_players = "2"
+            elif game_code == "11":
+                game_name = "Word Connect"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -372,7 +380,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             asyncio.create_task(start_game_after_delay(chat.id, context, 40))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b>, <b>9</b> or <b>10</b>.",
+                "❌ Invalid game code. Please send <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>5</b>, <b>6</b>, <b>7</b>, <b>8</b>, <b>9</b>, <b>10</b> or <b>11</b>.",
                 parse_mode="HTML"
             )
 
@@ -632,6 +640,36 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await end_game(chat.id, context, session)
                 else:
                     await start_character_round(chat.id, context)
+
+        # Handle Word Connect Game
+        elif session.game_code == "11":
+            is_correct, feedback = session.game.check_answer(user.id, message.text)
+            if is_correct:
+                progress = session.game.get_round_progress()
+                display_name = user.first_name or user.username or "Player"
+                letters = session.game.current_letters
+                
+                await message.reply_text(
+                    f"🎉 <b>{feedback}! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"Letters: <b>{' '.join(letters).upper()}</b>\n\n"
+                    f"{progress}",
+                    parse_mode="HTML"
+                )
+                
+                if session.game.is_round_finished():
+                    await context.bot.send_message(
+                        chat_id=chat.id,
+                        text="🎊 <b>Round Completed!</b> 🎊\nAll words found!",
+                        parse_mode="HTML"
+                    )
+                    
+                    if session.game.is_game_over():
+                        await end_game(chat.id, context, session)
+                    else:
+                        await start_word_connect_round(chat.id, context)
+            elif feedback:
+                # feedback contains "Already found!"
+                await message.reply_text(f"⚠️ {feedback}", parse_mode="HTML")
 
 
 
@@ -1603,8 +1641,42 @@ async def character_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, ro
         # Check game over or start next round
         if session.game.is_game_over():
             await end_game(chat_id, context, session)
-        else:
-            await start_character_round(chat_id, context)
+
+async def start_word_connect_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Word Connect game."""
+    await start_word_connect_round(chat_id, context)
+
+
+async def start_word_connect_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Word Connect."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "11":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    letters = result["letters"]
+    round_num = result["round"]
+    progress = session.game.get_round_progress()
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🔠 <b>Word Connect!</b>\n"
+             f"Round {round_num}/{session.game.rounds_limit}\n\n"
+             f"Letters: <b>{' '.join(letters).upper()}</b>\n\n"
+             f"{progress}\n\n"
+             f"Swipe (type) the words to form them!",
+        parse_mode="HTML"
+    )
+
+
 
 
 

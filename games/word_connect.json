@@ -1,0 +1,152 @@
+[
+    {
+        "letters": [
+            "A",
+            "R",
+            "T"
+        ],
+        "words": [
+            "art",
+            "rat",
+            "at"
+        ]
+    },
+    {
+        "letters": [
+            "D",
+            "O",
+            "G"
+        ],
+        "words": [
+            "dog",
+            "god",
+            "do",
+            "go"
+        ]
+    },
+    {
+        "letters": [
+            "L",
+            "I",
+            "S",
+            "T"
+        ],
+        "words": [
+            "list",
+            "slit",
+            "silt",
+            "its",
+            "sit",
+            "lit",
+            "is",
+            "it"
+        ]
+    },
+    {
+        "letters": [
+            "P",
+            "A",
+            "R",
+            "K"
+        ],
+        "words": [
+            "park",
+            "ark",
+            "par",
+            "rap",
+            "cap",
+            "pa"
+        ]
+    },
+    {
+        "letters": [
+            "T",
+            "E",
+            "A",
+            "R"
+        ],
+        "words": [
+            "tear",
+            "rate",
+            "tare",
+            "tea",
+            "eat",
+            "are",
+            "era",
+            "art",
+            "rat",
+            "at"
+        ]
+    },
+    {
+        "letters": [
+            "S",
+            "M",
+            "I",
+            "L",
+            "E"
+        ],
+        "words": [
+            "smile",
+            "slime",
+            "miles",
+            "mile",
+            "slim",
+            "lime",
+            "lie",
+            "is",
+            "me"
+        ]
+    },
+    {
+        "letters": [
+            "P",
+            "L",
+            "A",
+            "N",
+            "E"
+        ],
+        "words": [
+            "plane",
+            "panel",
+            "plan",
+            "lane",
+            "lean",
+            "pale",
+            "plea",
+            "ape",
+            "pan",
+            "nap",
+            "pen"
+        ]
+    },
+    {
+        "letters": [
+            "S",
+            "T",
+            "A",
+            "R",
+            "E"
+        ],
+        "words": [
+            "stare",
+            "tears",
+            "rates",
+            "aster",
+            "rates",
+            "tear",
+            "rate",
+            "star",
+            "seat",
+            "east",
+            "tea",
+            "eat",
+            "are",
+            "era",
+            "art",
+            "rat",
+            "at",
+            "as"
+        ]
+    }
+]
