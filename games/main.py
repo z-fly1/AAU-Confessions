@@ -244,7 +244,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>11</b> - Word Connect Game\n"
         "<b>12</b> - What You Meme\n"
         "<b>13</b> - Taylor Swift Or Shakespeare\n"
-        "<b>14</b> - The Silent Game (Troll)\n\n"
+        "<b>14</b> - The Amazing Game\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
