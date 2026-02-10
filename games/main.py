@@ -36,6 +36,7 @@ from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
 from word_connect import WordConnectGame
 from wdym_game import MemeGame
+from silent_game import SilentGame
 
 
 # Load environment variables
@@ -196,16 +197,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Only work in groups
     if chat.type == ChatType.PRIVATE:
         await update.message.reply_text(
-            "👋 Hi! I'm a game bot for @aau_confessions Group.\n\n"
-            "I also work in other groups.Add me to a group and make me an admin to start playing games!"
+            "Sup\n\n"
+            "Add me to a group and make me an admin to start playing games."
         )
         return
     
     # Check Allowed Group
     if chat.id not in ALLOWED_CHAT_IDS:
         await update.message.reply_text(
-            "⚠️ <b>Womp Womp</b>\n\n"
-            "I only work in the @aau_confessions group!",
+            "<b>Womp Womp</b>\n\n"
+            "I only work in the @aau_confessions group",
             parse_mode="HTML"
         )
         return
@@ -242,7 +243,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>10</b> - Guess the Character\n"
         "<b>11</b> - Word Connect Game\n"
         "<b>12</b> - What You Meme\n"
-        "<b>13</b> - Taylor Swift Or Shakespeare\n\n"
+        "<b>13</b> - Taylor Swift Or Shakespeare\n"
+        "<b>14</b> - The Silent Game (Troll)\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -338,6 +340,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "13":
             # Taylor Swift Or Shakespeare
             await start_ts_game(chat_id, context, session)
+        elif session.game_code == "14":
+            # The Silent Game
+            await start_silent_game(chat_id, context, session)
 
 
 
@@ -355,6 +360,21 @@ def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) 
              f"👉 It's <a href=\"tg://user?id={current_player_id}\">{current_player_name}</a>'s turn to continue the story!",
         parse_mode="HTML"
     ))
+
+
+async def start_silent_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the silent game and announce the rules."""
+    session.game.start_game()
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🤫 <b>The Silent Game has Started!</b>\n\n"
+             "The rules are simple:\n"
+             "1. If you joined, <b>STAY SILENT</b>. The last person to stay silent wins!\n"
+             "2. If you didn't join, <b>DON'T TALK</b>. Your messages will be deleted.\n"
+             "3. If a player talks, they are eliminated with a 👎 and 'you lost'.\n\n"
+             "Good luck... and SHHH! 🤐",
+        parse_mode="HTML"
+    )
 
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -411,6 +431,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "13":
                 game_name = "Taylor Swift Or Shakespeare"
                 min_players = "2"
+            elif game_code == "14":
+                game_name = "The Silent Game"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -428,7 +451,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>13</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>14</b>.",
                 parse_mode="HTML"
             )
 
@@ -726,6 +749,39 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif feedback:
                 # feedback contains "Already found!"
                 await message.reply_text(f"⚠️ {feedback}", parse_mode="HTML")
+
+        # Handle The Silent Game
+        elif session.game_code == "14":
+            user_id = user.id
+            if user_id in session.game.players and user_id not in session.game.losers:
+                # Player talked!
+                session.game.eliminate_player(user_id)
+                
+                # React with 👎
+                try:
+                    # Message reactions (Requires Bot API 7.0+)
+                    await context.bot.set_message_reaction(
+                        chat_id=chat.id,
+                        message_id=message.message_id,
+                        reaction=[{"type": "emoji", "emoji": "👎"}]
+                    )
+                except Exception as e:
+                    logger.error(f"Error setting reaction: {e}")
+                
+                await message.reply_text(
+                    f"👎 <b><a href=\"tg://user?id={user_id}\">{user.first_name}</a>, you lost!</b>",
+                    parse_mode="HTML"
+                )
+                
+                # Check if game is over
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+            else:
+                # Non-player or already eliminated talked - delete message
+                try:
+                    await message.delete()
+                except Exception as e:
+                    logger.error(f"Error deleting message: {e}")
 
 
 
