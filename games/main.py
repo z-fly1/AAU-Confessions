@@ -3,8 +3,10 @@ import json
 import logging
 import asyncio
 import random
+import threading
 from typing import Optional, Dict, List, Tuple, Union
 from dotenv import load_dotenv
+from flask import Flask
 
 from telegram import Update, ChatMember, ChatMemberUpdated
 from telegram.ext import (
@@ -2284,6 +2286,24 @@ def main() -> None:
     
     # Start the bot
     logger.info("Bot starting...")
+
+    # Set up Flask server for health checks
+    app = Flask(__name__)
+
+    @app.route('/')
+    def health_check():
+        return "Bot is running!", 200
+
+    def run_flask():
+        # Use PORT environment variable from Render, default to 8080
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host="0.0.0.0", port=port)
+
+    # Run Flask in a separate daemon thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"Health check server started on port {os.environ.get('PORT', 8080)}")
+
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
