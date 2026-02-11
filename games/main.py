@@ -2466,12 +2466,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     # Add handler for all other content types (stickers, voice, etc.) for games like Silent Game
-    all_media_filter = (
-        filters.STICKER | filters.VOICE | filters.VIDEO_NOTE | filters.VIDEO | 
-        filters.ANIMATION | filters.DOCUMENT | filters.CONTACT | filters.LOCATION | 
-        filters.VENUE | filters.POLL | filters.DICE | filters.ATTACHMENT
-    )
-    application.add_handler(MessageHandler(all_media_filter & ~filters.COMMAND, handle_misc_content))
+    # We use negation to catch everything that isn't already handled above (TEXT and PHOTO)
+    application.add_handler(MessageHandler(~filters.TEXT & ~filters.PHOTO & ~filters.COMMAND, handle_misc_content))
 
     
     # Start the bot
