@@ -347,6 +347,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "14":
             # The Silent Game
             await start_silent_game(chat_id, context, session)
+        elif session.game_code == "15":
+            # 20 Questions
+            await start_20q_game(chat_id, context, session)
 
 
 
