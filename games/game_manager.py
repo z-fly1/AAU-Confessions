@@ -40,9 +40,14 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame]] = None
 
         self.joining_deadline: Optional[datetime] = None
+        
+        # New fields for restricted controls and voting
+        self.initiator_id: Optional[int] = None
+        self.quit_votes: Set[int] = set()  # user_ids who voted to quit
+        self.quit_vote_message_id: Optional[int] = None
         
     def set_game_code(self, code: str) -> bool:
         """Set the game code and initialize the appropriate game.

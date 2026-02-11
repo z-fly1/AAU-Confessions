@@ -4,11 +4,12 @@ import logging
 import asyncio
 import random
 import threading
+import html
 from typing import Optional, Dict, List, Tuple, Union
 from dotenv import load_dotenv
 from flask import Flask
 
-from telegram import Update, ChatMember, ChatMemberUpdated
+from telegram import Update, ChatMember, ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton, ReactionTypeEmoji
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,8 +21,8 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from telegram.constants import ChatType, ChatMemberStatus
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
+from telegram.constants import ChatType, ChatMemberStatus, ParseMode
+from telegram import InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
 from telegram.error import NetworkError, Forbidden, TimedOut, TelegramError
 
 from datetime import datetime, timedelta
@@ -197,6 +198,7 @@ def extract_status_change(chat_member_update: ChatMemberUpdated) -> Optional[tup
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command to initiate a game."""
     chat = update.effective_chat
+    user = update.effective_user
     
     # Only work in groups
     if chat.type == ChatType.PRIVATE:
@@ -229,9 +231,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(random.choice(QUIRKY_RESPONSES))
         return
     
-    # Create new game session
+    # Create a new game session
     session = game_manager.create_game(chat.id)
+    session.initiator_id = user.id
     
+    # Quirky intro
     await update.message.reply_text(
         "🎮 <b>Welcome to Game Bot!</b>\n\n"
         "Please select a game by sending its code:\n\n"
@@ -248,7 +252,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>11</b> - Word Connect Game\n"
         "<b>12</b> - What You Meme\n"
         "<b>13</b> - Taylor Swift Or Shakespeare\n"
-        "<b>14</b> - The Amazing Game\n\n"
+        "<b>14</b> - The Silent Game\n"
+        "<b>15</b> - 20 Questions\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -406,7 +411,7 @@ async def process_silent_game_content(update: Update, context: ContextTypes.DEFA
             await context.bot.set_message_reaction(
                 chat_id=chat.id,
                 message_id=message.message_id,
-                reaction=[{"type": "emoji", "emoji": "👎"}]
+                reaction=[ReactionTypeEmoji(emoji="👎")]
             )
         except Exception as e:
             logger.error(f"Error setting reaction: {e}")
@@ -452,9 +457,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not session:
         return
     
-    # Route based on game state
+    # If waiting for game code, process numbers
     if session.state == GameState.WAITING_FOR_GAME_CODE:
-        # Handle game code selection
+        # Check if it's the initiator
+        if session.initiator_id and user.id != session.initiator_id:
+            return # Ignore others picking game
+            
         game_code = message.text.strip()
         
         if session.set_game_code(game_code):
@@ -834,6 +842,25 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 is_action, result = session.game.check_guess_or_question(user_id, text)
                 
                 if result == 'QUESTION_COUNTED':
+                    # React to the question
+                    try:
+                        # Try user's preferred 'Alien Monster'
+                        await context.bot.set_message_reaction(
+                            chat_id=chat.id,
+                            message_id=message.message_id,
+                            reaction=[ReactionTypeEmoji(emoji="👾")]
+                        )
+                    except Exception:
+                        try:
+                            # Fallback to standard 'Thinking Face'
+                            await context.bot.set_message_reaction(
+                                chat_id=chat.id,
+                                message_id=message.message_id,
+                                reaction=[ReactionTypeEmoji(emoji="🤔")]
+                            )
+                        except Exception:
+                            pass # Group has restricted reactions
+
                     remaining = session.game.max_questions - session.game.questions_asked
                     if remaining <= 5:
                          await message.reply_text(f"⚠️ <b>{remaining} questions left!</b>", parse_mode="HTML")
@@ -984,7 +1011,7 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
             username = user.user.username or user.user.first_name or "Player"
             medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
             
-            scoreboard_text += f"{medal} <b>{rank}. {username}</b> - {score} points\n"
+            scoreboard_text += f"{medal} <b>{username}</b> - {score} points\n"
         except Exception as e:
             logger.error(f"Error getting user info: {e}")
             scoreboard_text += f"{rank}. User {user_id} - {score} points\n"
@@ -1044,42 +1071,125 @@ async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /quit command for admins to end the game."""
+    """Handle /quit command with voting mechanism."""
     chat = update.effective_chat
     user = update.effective_user
     
     if chat.type == ChatType.PRIVATE:
         return
-    
-    # Check if user is admin
-    member = await chat.get_member(user.id)
-    if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text(
-            "⚠️ Only admins can end the game!",
-            parse_mode="HTML"
-        )
+        
+    session = game_manager.get_game(chat.id)
+    if not session:
         return
 
-    session = game_manager.get_game(chat.id)
-    
-    if not session:
-        await update.message.reply_text(
-            "⚠️ No game in progress.",
-            parse_mode="HTML"
-        )
+    # Check if a vote is already in progress
+    if session.quit_vote_message_id:
+        await update.message.reply_text("⚠️ A quit vote is already in progress!")
         return
-        
-    # End the game
-    await update.message.reply_text(
-        "🛑 <b>Game ended by admin.</b>",
+
+    # Don't require vote if no one has joined yet or only 1 player
+    if len(session.players) <= 1:
+        await update.message.reply_text("👋 Game ended.")
+        session.end_game()
+        game_manager.remove_game(chat.id)
+        cancel_game_tasks(chat.id)
+        return
+
+    # Only admins can trigger the quit vote
+    try:
+        member = await chat.get_member(user.id)
+        if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            await update.message.reply_text("❌ Only group admins can initiate a quit vote.")
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        return
+
+    # Start voting
+    session.quit_votes = {user.id} if user.id in session.players else set()
+    total_players = len(session.players)
+    required_votes = (total_players + 1) // 2
+    current_votes = len(session.quit_votes)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="vote_quit_game")]
+    ])
+
+    msg = await update.message.reply_text(
+        f"🚨 <b>Quit Vote Started!</b>\n\n"
+        f"The game will end if <b>{required_votes}</b> players agree.\n"
+        f"Valid for 60 seconds.",
+        reply_markup=keyboard,
         parse_mode="HTML"
     )
+    session.quit_vote_message_id = msg.message_id
     
-    # Show final scores if game was in progress
-    if session.state == GameState.IN_PROGRESS:
-        await end_game(chat.id, context, session)
-    else:
+    # Auto-cancel vote after 60s
+    track_game_task(chat.id, asyncio.create_task(quit_vote_timeout(chat.id, context, msg.message_id)))
+
+async def quit_vote_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_id: int):
+    """Clean up voting after timeout."""
+    await asyncio.sleep(60)
+    session = game_manager.get_game(chat_id)
+    if session and session.quit_vote_message_id == message_id:
+        session.quit_vote_message_id = None
+        session.quit_votes = set()
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="❌ <b>Quit vote expired.</b> Game continues!",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+async def handle_quit_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle quit vote button clicks."""
+    query = update.callback_query
+    user = query.from_user
+    chat = update.effective_chat
+    
+    session = game_manager.get_game(chat.id)
+    if not session or not session.quit_vote_message_id or session.quit_vote_message_id != query.message.message_id:
+        await query.answer("Vote no longer active.")
+        return
+
+    if user.id not in session.players:
+        await query.answer("❌ Only joined players can vote!", show_alert=True)
+        return
+
+    if user.id in session.quit_votes:
+        await query.answer("You already voted!")
+        return
+
+    session.quit_votes.add(user.id)
+    total_players = len(session.players)
+    required_votes = (total_players + 1) // 2
+    current_votes = len(session.quit_votes)
+
+    if current_votes >= required_votes:
+        await query.answer("Game ended by vote!")
+        await context.bot.edit_message_text(
+            chat_id=chat.id,
+            message_id=session.quit_vote_message_id,
+            text=f"🛑 <b>Game Terminated!</b>\nMajority voted to quit ({current_votes}/{total_players}).",
+            parse_mode="HTML"
+        )
+        session.end_game()
+        # If in progress, show final scores? Or just remove. 
+        # Usually it's better to just end it if they voted to quit.
         game_manager.remove_game(chat.id)
+        cancel_game_tasks(chat.id)
+    else:
+        await query.answer("Vote counted!")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="vote_quit_game")]
+        ])
+        try:
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+        except Exception:
+            pass
 
 
 async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2216,7 +2326,7 @@ async def start_ts_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, sessio
 
 async def start_20q_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session: GameSession) -> None:
     """Start the 20 Questions game."""
-    session.game.round_in_progress = False # Wait for first round start
+    session.game.round_in_progress = False
     await context.bot.send_message(
         chat_id=chat_id,
         text="🕵️‍♂️ <b>20 Questions Started!</b>\n\n"
@@ -2239,37 +2349,45 @@ async def start_20q_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE, forc
     if not session or not isinstance(session.game, TwentyQuestionsGame):
         return
 
-    # Cancel previous tasks (timer)
-    cancel_game_tasks(chat_id)
-    
-    if not session.game.start_new_round(forced_host_id):
-        await context.bot.send_message(chat_id=chat_id, text="Not enough players to continue!")
-        session.end_game()
-        game_manager.remove_game(chat_id)
-        return
+    try:
+        # Start logical round
+        if not session.game.start_new_round(forced_host_id):
+            await context.bot.send_message(chat_id=chat_id, text="Not enough players to continue!")
+            session.end_game()
+            game_manager.remove_game(chat_id)
+            return
 
-    host_name = session.game.get_host_name()
-    host_id = session.game.host_id
-    
-    # Inline button for host to see word
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🤐 View Secret Word (Host Only)", callback_data="view_secret_word")]
-    ])
+        host_id = session.game.host_id
+        host_name = session.game.get_host_name()
+        
+        # Create keyboard
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🤐 View Secret Word (Host Only)", callback_data="view_secret_word")]
+        ])
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🔴 <b>Round {session.game.current_round}</b>\n\n"
-             f"👤 <b>Host:</b> <a href=\"tg://user?id={host_id}\">{host_name}</a>\n"
-             f"❓ <b>Questions Remaining:</b> 20\n"
-             f"⏱ <b>Time Limit:</b> 5 Minutes\n\n"
-             f"Host, click below to see your word!",
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
-    
-    # 5 Minute Timeout
-    track_game_task(chat_id, asyncio.create_task(twenty_questions_timeout(chat_id, context, session.game.current_round)))
+        # Using standard HTML
+        message_text = (
+            f"🔴 <b>Round {session.game.current_round}</b>\n\n"
+            f"👤 <b>Host:</b> <a href=\"tg://user?id={host_id}\">{html.escape(host_name)}</a>\n"
+            f"❓ <b>Questions Remaining:</b> 20\n"
+            f"⏱ <b>Time Limit:</b> 5 Minutes\n\n"
+            f"Host, click below to see your word!"
+        )
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=message_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        # 5 Minute Timeout
+        task = asyncio.create_task(twenty_questions_timeout(chat_id, context, session.game.current_round))
+        track_game_task(chat_id, task)
+        
+    except Exception as e:
+        logger.error(f"Error in start_20q_round: {e}", exc_info=True)
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error starting round. check logs.")
 
 
 async def twenty_questions_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int):
@@ -2314,6 +2432,9 @@ async def handle_20q_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         word = session.game.current_word
         await query.answer(f"🤫 Secret Word: {word}", show_alert=True)
+
+
+async def start_ts_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start a new round of Taylor Swift vs Shakespeare."""
     session = game_manager.get_game(chat_id)
     if not session or session.game_code != "13":
@@ -2462,6 +2583,7 @@ def main() -> None:
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
     application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
+    application.add_handler(CallbackQueryHandler(handle_quit_vote_callback, pattern="^vote_quit_game$"))
     application.add_handler(CallbackQueryHandler(handle_20q_callback, pattern="^view_secret_word$"))
     application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))

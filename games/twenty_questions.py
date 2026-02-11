@@ -151,3 +151,12 @@ class TwentyQuestionsGame:
 
     def is_game_over(self) -> bool:
         return self.current_round >= self.rounds_limit
+
+    def get_winners(self) -> List[int]:
+        """Return the user IDs of the player(s) with the highest score."""
+        if not self.scores:
+            return []
+        max_score = max(self.scores.values())
+        if max_score == 0:
+            return []
+        return [uid for uid, score in self.scores.items() if score == max_score]
