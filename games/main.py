@@ -432,6 +432,9 @@ async def handle_misc_content(update: Update, context: ContextTypes.DEFAULT_TYPE
     session = game_manager.get_game(chat.id)
     if session and session.game_code == "14":
         await process_silent_game_content(update, context, session)
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle all text messages - route based on game state."""
     chat = update.effective_chat
     message = update.message
