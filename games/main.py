@@ -38,7 +38,9 @@ from general_knowledge import GeneralKnowledgeGame
 from guess_character import GuessCharacterGame
 from word_connect import WordConnectGame
 from wdym_game import MemeGame
+from taylor_shakespeare import TaylorShakespeareGame
 from silent_game import SilentGame
+from twenty_questions import TwentyQuestionsGame
 
 
 # Load environment variables
@@ -372,14 +374,64 @@ async def start_silent_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, se
         text="🤫 <b>The Silent Game has Started!</b>\n\n"
              "The rules are simple:\n"
              "1. If you joined, <b>STAY SILENT</b>. The last person to stay silent wins!\n"
-             "2. If you didn't join, <b>DON'T TALK</b>. Your messages will be deleted.\n"
-             "3. If a player talks, they are eliminated with a 👎 and 'you lost'.\n\n"
+             "2. If you didn't join, <b>DON'T SEND ANYTHING</b>. Your messages will be deleted.\n"
+             "3. If a player sends any message, they are eliminated.\n\n"
              "Good luck... and SHHH! 🤐",
         parse_mode="HTML"
     )
 
 
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def process_silent_game_content(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> bool:
+    """
+    Handle a message during the Silent Game.
+    Returns True if the message was handled as a violation, False otherwise.
+    """
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not message or not session or not session.game or session.game_code != "14" or session.state != GameState.IN_PROGRESS:
+        return False
+
+    user_id = user.id
+    if user_id in session.game.players and user_id not in session.game.losers:
+        # Player sending content!
+        session.game.eliminate_player(user_id)
+        
+        # React with 👎
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=chat.id,
+                message_id=message.message_id,
+                reaction=[{"type": "emoji", "emoji": "👎"}]
+            )
+        except Exception as e:
+            logger.error(f"Error setting reaction: {e}")
+        
+        await message.reply_text(
+            f"👎 <b><a href=\"tg://user?id={user_id}\">{user.first_name}</a>, you lost!</b>",
+            parse_mode="HTML"
+        )
+        
+        # Check if game is over
+        if session.game.is_game_over():
+            await end_game(chat.id, context, session)
+        return True
+    else:
+        # Non-player or already eliminated sending content - delete
+        try:
+            await message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {e}")
+        return True
+
+
+async def handle_misc_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle non-text/non-photo messages (stickers, voice, etc.) during games like Silent Game."""
+    chat = update.effective_chat
+    session = game_manager.get_game(chat.id)
+    if session and session.game_code == "14":
+        await process_silent_game_content(update, context, session)
     """Handle all text messages - route based on game state."""
     chat = update.effective_chat
     message = update.message
@@ -436,6 +488,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "14":
                 game_name = "The Silent Game"
                 min_players = "2"
+            elif game_code == "15":
+                game_name = "20 Questions"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -453,7 +508,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>14</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>15</b>.",
                 parse_mode="HTML"
             )
 
@@ -754,36 +809,52 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Handle The Silent Game
         elif session.game_code == "14":
+            await process_silent_game_content(update, context, session)
+
+        # Handle 20 Questions Game
+        elif session.game_code == "15":
+            if not session.game.round_in_progress:
+                return
+
             user_id = user.id
-            if user_id in session.game.players and user_id not in session.game.losers:
-                # Player talked!
-                session.game.eliminate_player(user_id)
-                
-                # React with 👎
-                try:
-                    # Message reactions (Requires Bot API 7.0+)
-                    await context.bot.set_message_reaction(
-                        chat_id=chat.id,
-                        message_id=message.message_id,
-                        reaction=[{"type": "emoji", "emoji": "👎"}]
-                    )
-                except Exception as e:
-                    logger.error(f"Error setting reaction: {e}")
-                
-                await message.reply_text(
-                    f"👎 <b><a href=\"tg://user?id={user_id}\">{user.first_name}</a>, you lost!</b>",
-                    parse_mode="HTML"
-                )
-                
-                # Check if game is over
-                if session.game.is_game_over():
-                    await end_game(chat.id, context, session)
+            text = message.text.strip()
+            
+            # Host can only answer text ending in ?
+            # Check if it is the host speaking
+            if user_id == session.game.host_id:
+                pass
             else:
-                # Non-player or already eliminated talked - delete message
-                try:
-                    await message.delete()
-                except Exception as e:
-                    logger.error(f"Error deleting message: {e}")
+                # Guesser logic
+                is_action, result = session.game.check_guess_or_question(user_id, text)
+                
+                if result == 'QUESTION_COUNTED':
+                    remaining = session.game.max_questions - session.game.questions_asked
+                    if remaining <= 5:
+                         await message.reply_text(f"⚠️ <b>{remaining} questions left!</b>", parse_mode="HTML")
+
+                elif result == 'LIMIT_REACHED':
+                    await message.reply_text("🚫 <b>20 Questions Reached!</b> Host wins this round.")
+                    session.game.host_wins_round()
+                    
+                    if session.game.is_game_over():
+                        await end_game(chat.id, context, session)
+                    else:
+                        await start_20q_round(chat.id, context)
+                        
+                elif result == 'CORRECT':
+                    display_name = user.first_name
+                    await message.reply_text(
+                        f"🎉 <b>Correct! <a href=\"tg://user?id={user_id}\">{display_name}</a> got it!</b>\n"
+                        f"The word was: <b>{session.game.current_word}</b>\n\n"
+                        f"<i>{display_name} is now the Host!</i>",
+                        parse_mode="HTML"
+                    )
+                    
+                    if session.game.is_game_over():
+                        await end_game(chat.id, context, session)
+                    else:
+                        # Winner becomes host
+                        await start_20q_round(chat.id, context, forced_host_id=user_id)
 
 
 
@@ -2011,7 +2082,15 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     chat = update.effective_chat
     
     session = game_manager.get_game(chat.id)
-    if not session or session.game_code != "12" or not session.game.round_in_progress:
+    if not session:
+        return
+
+    # Check for Silent Game violation first
+    if session.game_code == "14":
+        if await process_silent_game_content(update, context, session):
+            return
+
+    if session.game_code != "12" or not session.game.round_in_progress:
         return
         
     # If the user is a player, any photo they send is a submission
@@ -2129,7 +2208,106 @@ async def start_ts_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, sessio
     """Start the Taylor Swift vs Shakespeare game."""
     await start_ts_round(chat_id, context)
 
-async def start_ts_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_20q_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session: GameSession) -> None:
+    """Start the 20 Questions game."""
+    session.game.round_in_progress = False # Wait for first round start
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🕵️‍♂️ <b>20 Questions Started!</b>\n\n"
+             "Rules:\n"
+             "1. One player is the <b>Host</b> and gets a secret word.\n"
+             "2. Everyone else asks Yes/No questions.\n"
+             "3. Questions <b>must end with a ?</b> to be counted.\n"
+             "4. You have <b>20 Questions</b> or <b>5 Minutes</b> to guess the word.\n"
+             "5. If you guess it, YOU become the Host!\n\n"
+             "Starting first round...",
+        parse_mode="HTML"
+    )
+    # Start first round
+    await start_20q_round(chat_id, context)
+
+
+async def start_20q_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE, forced_host_id: Optional[int] = None) -> None:
+    """Start a new round of 20 Questions."""
+    session = game_manager.get_game(chat_id)
+    if not session or not isinstance(session.game, TwentyQuestionsGame):
+        return
+
+    # Cancel previous tasks (timer)
+    cancel_game_tasks(chat_id)
+    
+    if not session.game.start_new_round(forced_host_id):
+        await context.bot.send_message(chat_id=chat_id, text="Not enough players to continue!")
+        session.end_game()
+        game_manager.remove_game(chat_id)
+        return
+
+    host_name = session.game.get_host_name()
+    host_id = session.game.host_id
+    
+    # Inline button for host to see word
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤐 View Secret Word (Host Only)", callback_data="view_secret_word")]
+    ])
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🔴 <b>Round {session.game.current_round}</b>\n\n"
+             f"👤 <b>Host:</b> <a href=\"tg://user?id={host_id}\">{host_name}</a>\n"
+             f"❓ <b>Questions Remaining:</b> 20\n"
+             f"⏱ <b>Time Limit:</b> 5 Minutes\n\n"
+             f"Host, click below to see your word!",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    
+    # 5 Minute Timeout
+    track_game_task(chat_id, asyncio.create_task(twenty_questions_timeout(chat_id, context, session.game.current_round)))
+
+
+async def twenty_questions_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int):
+    """Handle 5 minute timeout for 20 questions round."""
+    try:
+        await asyncio.sleep(300) # 5 minutes
+        
+        session = game_manager.get_game(chat_id)
+        if session and session.game_code == "15" and session.game.current_round == round_num and session.game.round_in_progress:
+            # Time up! Host wins.
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⏰ <b>Time's Up!</b>\n\n"
+                     f"The word was: <b>{session.game.current_word}</b>\n"
+                     f"Host gets a point!",
+                parse_mode="HTML"
+            )
+            session.game.host_wins_round()
+            
+            if session.game.is_game_over():
+                await end_game(chat_id, context, session)
+            else:
+                await start_20q_round(chat_id, context)
+                
+    except asyncio.CancelledError:
+        pass
+
+
+async def handle_20q_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle View Secret Word callback."""
+    query = update.callback_query
+    user = query.from_user
+    chat = update.effective_chat
+    
+    session = game_manager.get_game(chat.id)
+    if not session or session.game_code != "15":
+        await query.answer("Game not active.")
+        return
+
+    if user.id != session.game.host_id:
+        await query.answer("❌ You are not the Host!", show_alert=True)
+    else:
+        word = session.game.current_word
+        await query.answer(f"🤫 Secret Word: {word}", show_alert=True)
     """Start a new round of Taylor Swift vs Shakespeare."""
     session = game_manager.get_game(chat_id)
     if not session or session.game_code != "13":
@@ -2278,10 +2456,19 @@ def main() -> None:
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
     application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
+    application.add_handler(CallbackQueryHandler(handle_20q_callback, pattern="^view_secret_word$"))
     application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    
+    # Add handler for all other content types (stickers, voice, etc.) for games like Silent Game
+    all_media_filter = (
+        filters.STICKER | filters.VOICE | filters.VIDEO_NOTE | filters.VIDEO | 
+        filters.ANIMATION | filters.DOCUMENT | filters.CONTACT | filters.LOCATION | 
+        filters.VENUE | filters.POLL | filters.DICE | filters.ATTACHMENT
+    )
+    application.add_handler(MessageHandler(all_media_filter & ~filters.COMMAND, handle_misc_content))
 
     
     # Start the bot

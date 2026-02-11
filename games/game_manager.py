@@ -15,6 +15,7 @@ from word_connect import WordConnectGame
 from wdym_game import MemeGame
 from taylor_shakespeare import TaylorShakespeareGame
 from silent_game import SilentGame
+from twenty_questions import TwentyQuestionsGame
 
 
 
@@ -122,6 +123,11 @@ class GameSession:
             self.game = SilentGame()
             self.state = GameState.JOINING
             return True
+        elif code == "15":
+            self.game_code = code
+            self.game = TwentyQuestionsGame(rounds_limit=10)
+            self.state = GameState.JOINING
+            return True
 
         return False
     
@@ -141,7 +147,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame)):
 
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)
