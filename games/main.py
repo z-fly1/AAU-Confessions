@@ -1112,7 +1112,7 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     current_votes = len(session.quit_votes)
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="vote_quit_game")]
+        [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="quit_game_vote")]
     ])
 
     msg = await update.message.reply_text(
@@ -1184,7 +1184,7 @@ async def handle_quit_vote_callback(update: Update, context: ContextTypes.DEFAUL
     else:
         await query.answer("Vote counted!")
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="vote_quit_game")]
+            [InlineKeyboardButton(f"✅ Vote to Quit ({current_votes}/{required_votes})", callback_data="quit_game_vote")]
         ])
         try:
             await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -2583,7 +2583,7 @@ def main() -> None:
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
     application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
-    application.add_handler(CallbackQueryHandler(handle_quit_vote_callback, pattern="^vote_quit_game$"))
+    application.add_handler(CallbackQueryHandler(handle_quit_vote_callback, pattern="^quit_game_vote$"))
     application.add_handler(CallbackQueryHandler(handle_20q_callback, pattern="^view_secret_word$"))
     application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
