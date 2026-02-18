@@ -932,6 +932,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if (title_matched or artist_matched) and session.game.is_round_complete():
                 session.game.round_in_progress = False
                 await send_song_reveal(chat.id, context, session)
+                await asyncio.sleep(5)
 
                 if session.game.is_game_over():
                     await end_game(chat.id, context, session)
@@ -2707,6 +2708,7 @@ async def song_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
 
         # Send album cover
         await send_song_reveal(chat_id, context, session)
+        await asyncio.sleep(5)
 
         # Check game over or start next round
         if session.game.is_game_over():
