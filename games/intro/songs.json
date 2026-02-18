@@ -1,0 +1,272 @@
+[
+    {
+        "title": "7 Rings",
+        "artist": "Ariana Grande",
+        "audio_file": "7 Rings.MP3",
+        "cover_file": "7 rings.png.avif"
+    },
+    {
+        "title": "7 Years",
+        "artist": "Lukas Graham",
+        "audio_file": "7 Years.MP3",
+        "cover_file": "7 years.jpg"
+    },
+    {
+        "title": "About Damn Time",
+        "artist": "Lizzo",
+        "audio_file": "About Damn Time.MP3",
+        "cover_file": "about damn time.png"
+    },
+    {
+        "title": "Bad Guy",
+        "artist": "Billie Eilish",
+        "audio_file": "Bad Guy.MP3",
+        "cover_file": "bad guy.jpg"
+    },
+    {
+        "title": "Billie Jean",
+        "artist": "Michael Jackson",
+        "audio_file": "Billie Jeans.MP3",
+        "cover_file": "billie jean.jpeg"
+    },
+    {
+        "title": "Bloodline",
+        "artist": "Ariana Grande",
+        "audio_file": "Bloodline.MP3",
+        "cover_file": "artworks-kvsXa0Iyo1NcdzWn-W1fJtw-t1080x1080.jpg"
+    },
+    {
+        "title": "Breakin Dishes",
+        "artist": "Rihanna",
+        "audio_file": "Breakin Dishes.MP3",
+        "cover_file": "breakin dishes.png"
+    },
+    {
+        "title": "Can't Tell Me Nothing",
+        "artist": "Kanye West",
+        "audio_file": "Can't Tell Me Nothing.MP3",
+        "cover_file": "cant tell me.jpg"
+    },
+    {
+        "title": "Candy Shop",
+        "artist": "50 Cent",
+        "audio_file": "Candy Shop.MP3",
+        "cover_file": "candy shop.jpg"
+    },
+    {
+        "title": "Cheap Thrills",
+        "artist": "Sia",
+        "audio_file": "Cheap Thrills.MP3",
+        "cover_file": "cheap thrills.jpeg"
+    },
+    {
+        "title": "Dandelions",
+        "artist": "Ruth B",
+        "audio_file": "Dandelions.MP3",
+        "cover_file": "dandelions.jpg"
+    },
+    {
+        "title": "Die For You",
+        "artist": "The Weeknd",
+        "audio_file": "Die For You.MP3",
+        "cover_file": "die for you.png"
+    },
+    {
+        "title": "Do I Wanna Know",
+        "artist": "Arctic Monkeys",
+        "audio_file": "Do I Wanna Know.MP3",
+        "cover_file": "9d35a5dff10090e6c1d5e077932cea99.1000x1000x1.jpg"
+    },
+    {
+        "title": "Doja",
+        "artist": "Central Cee",
+        "audio_file": "Doja.MP3",
+        "cover_file": "doja.jpeg"
+    },
+    {
+        "title": "Family Affair",
+        "artist": "Mary J. Blige",
+        "audio_file": "Family Affair.MP3",
+        "cover_file": "family affair.jpeg"
+    },
+    {
+        "title": "Girls Like You",
+        "artist": "Maroon 5",
+        "audio_file": "Girls Like You.MP3",
+        "cover_file": "girls like you.png"
+    },
+    {
+        "title": "God's Plan",
+        "artist": "Drake",
+        "audio_file": "God's Plan.MP3",
+        "cover_file": "god's plan.jpg"
+    },
+    {
+        "title": "Good 4 U",
+        "artist": "Olivia Rodrigo",
+        "audio_file": "Good 4 u.MP3",
+        "cover_file": "good 4 u.jpeg"
+    },
+    {
+        "title": "Havana",
+        "artist": "Camila Cabello",
+        "audio_file": "Havana.MP3",
+        "cover_file": "havana.png"
+    },
+    {
+        "title": "Here",
+        "artist": "Alessia Cara",
+        "audio_file": "Here.MP3",
+        "cover_file": "here.png"
+    },
+    {
+        "title": "How Long",
+        "artist": "Charlie Puth",
+        "audio_file": "How Long.MP3",
+        "cover_file": "how long.png"
+    },
+    {
+        "title": "I'm The One",
+        "artist": "DJ Khaled",
+        "audio_file": "I'm the One.MP3",
+        "cover_file": "I'm the one.jpg"
+    },
+    {
+        "title": "Ice Cream",
+        "artist": "BLACKPINK",
+        "audio_file": "Ice Cream.MP3",
+        "cover_file": "ice cream.png"
+    },
+    {
+        "title": "Industry Baby",
+        "artist": "",
+        "audio_file": "Industry Baby.MP3",
+        "cover_file": "industry baby.png"
+    },
+    {
+        "title": "Kiss It Better",
+        "artist": "Rihanna",
+        "audio_file": "Kiss It Better.MP3",
+        "cover_file": "kiss it better.png"
+    },
+    {
+        "title": "Like That",
+        "artist": "Future",
+        "audio_file": "Like That.MP3",
+        "cover_file": "like that.jpg"
+    },
+    {
+        "title": "Love Again",
+        "artist": "Dua Lipa",
+        "audio_file": "Love Again.MP3",
+        "cover_file": "love again.png"
+    },
+    {
+        "title": "Love On The Brain",
+        "artist": "Rihanna",
+        "audio_file": "Love On The Brain.MP3",
+        "cover_file": "love on the brain.png"
+    },
+    {
+        "title": "Money Trees",
+        "artist": "Kendrick Lamar",
+        "audio_file": "Money Trees.MP3",
+        "cover_file": "money trees.jpeg"
+    },
+    {
+        "title": "No Role Modelz",
+        "artist": "J. Cole",
+        "audio_file": "No Role Modelz.MP3",
+        "cover_file": "no role modelz.jpg"
+    },
+    {
+        "title": "Players",
+        "artist": "Coi Leray",
+        "audio_file": "Players.MP3",
+        "cover_file": "players.png"
+    },
+    {
+        "title": "Push 2 Start",
+        "artist": "Tyla",
+        "audio_file": "Push 2 Start.MP3",
+        "cover_file": "push 2 start.webp"
+    },
+    {
+        "title": "Save Your Tears",
+        "artist": "The Weeknd",
+        "audio_file": "Save Your Tears.MP3",
+        "cover_file": "save your tears.jpg"
+    },
+    {
+        "title": "Shake It Off",
+        "artist": "Taylor Swift",
+        "audio_file": "Shake It Off.MP3",
+        "cover_file": "shake it off.png"
+    },
+    {
+        "title": "Shivers",
+        "artist": "Ed Sheeran",
+        "audio_file": "Shivers.MP3",
+        "cover_file": "shivers.png"
+    },
+    {
+        "title": "Shut Down",
+        "artist": "BLACKPINK",
+        "audio_file": "Shut Down.MP3",
+        "cover_file": "shut down.jpg"
+    },
+    {
+        "title": "Skyfall",
+        "artist": "Adele",
+        "audio_file": "Skyfall.MP3",
+        "cover_file": "skyfall.webp"
+    },
+    {
+        "title": "Still D.R.E.",
+        "artist": "Dr. Dre",
+        "audio_file": "Still D.R.E..MP3",
+        "cover_file": "dr dre.JPG"
+    },
+    {
+        "title": "Sway",
+        "artist": "Michael Bublé",
+        "audio_file": "Sway.MP3",
+        "cover_file": "sway.jpeg"
+    },
+    {
+        "title": "TV Off",
+        "artist": "The Weeknd",
+        "audio_file": "tv off.MP3",
+        "cover_file": "tv off.png.jpeg"
+    },
+    {
+        "title": "Unstoppable",
+        "artist": "Sia",
+        "audio_file": "Unstoppable.MP3",
+        "cover_file": "Unstoppable.jpg"
+    },
+    {
+        "title": "When I Grow Up",
+        "artist": "NF",
+        "audio_file": "When I Grow Up.MP3",
+        "cover_file": "when i grow up.jpg"
+    },
+    {
+        "title": "Worth It",
+        "artist": "Fifth Harmony",
+        "audio_file": "Worth It.MP3",
+        "cover_file": "worth it.png"
+    },
+    {
+        "title": "Yeah!",
+        "artist": "Usher",
+        "audio_file": "Yeah!.MP3",
+        "cover_file": "yeah.jpg"
+    },
+    {
+        "title": "You Are The Reason",
+        "artist": "Calum Scott",
+        "audio_file": "You are the reason.MP3",
+        "cover_file": "you are the reason.jpg"
+    }
+]

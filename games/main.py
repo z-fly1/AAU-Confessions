@@ -42,6 +42,7 @@ from wdym_game import MemeGame
 from taylor_shakespeare import TaylorShakespeareGame
 from silent_game import SilentGame
 from twenty_questions import TwentyQuestionsGame
+from guess_the_song import GuessTheSongGame
 
 
 # Load environment variables
@@ -253,7 +254,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>12</b> - What You Meme\n"
         "<b>13</b> - Taylor Swift Or Shakespeare\n"
         "<b>14</b> - The Silent Game\n"
-        "<b>15</b> - 20 Questions\n\n"
+        "<b>15</b> - 20 Questions\n"
+        "<b>16</b> - Guess the Song\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -355,6 +357,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "15":
             # 20 Questions
             await start_20q_game(chat_id, context, session)
+        elif session.game_code == "16":
+            # Guess the Song
+            await start_song_game(chat_id, context, session)
 
 
 
@@ -505,6 +510,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "15":
                 game_name = "20 Questions"
                 min_players = "2"
+            elif game_code == "16":
+                game_name = "Guess the Song"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -522,7 +530,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>15</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>16</b>.",
                 parse_mode="HTML"
             )
 
@@ -889,7 +897,46 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         # Winner becomes host
                         await start_20q_round(chat.id, context, forced_host_id=user_id)
 
+        # Handle Guess the Song Game
+        elif session.game_code == "16":
+            if not session.game.round_in_progress:
+                return
 
+            text = message.text.strip()
+            display_name = user.first_name or user.username or "Player"
+
+            title_matched = session.game.check_title(user.id, text)
+            artist_matched = session.game.check_artist(user.id, text)
+
+            if title_matched:
+                score = session.game.scores.get(user.id, 0)
+                title = session.game.get_current_title()
+                await message.reply_text(
+                    f"🎵 <b>Title guessed! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"Song: <b>{title}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+
+            if artist_matched:
+                score = session.game.scores.get(user.id, 0)
+                artist = session.game.get_current_artist()
+                await message.reply_text(
+                    f"🎤 <b>Artist guessed! <a href=\"tg://user?id={user.id}\">{display_name}</a></b>\n\n"
+                    f"Artist: <b>{artist}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+
+            # Check if round is complete (both guessed)
+            if (title_matched or artist_matched) and session.game.is_round_complete():
+                session.game.round_in_progress = False
+                await send_song_reveal(chat.id, context, session)
+
+                if session.game.is_game_over():
+                    await end_game(chat.id, context, session)
+                else:
+                    await start_song_round(chat.id, context)
 
 
 
@@ -2532,6 +2579,140 @@ async def handle_ts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.answer("Couldn't record vote.")
     except (NetworkError, TimedOut, TelegramError) as e:
         logger.warning(f"Failed to answer TS callback query: {e}")
+
+
+async def start_song_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Song game."""
+    await start_song_round(chat_id, context)
+
+
+async def start_song_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Song."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "16":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    audio_path, round_num = result
+
+    # Build hints about what to guess
+    artist = session.game.get_current_artist()
+    if artist:
+        hint_text = "Guess the <b>song title</b> and the <b>artist</b>!"
+    else:
+        hint_text = "Guess the <b>song title</b>!"
+
+    try:
+        with open(audio_path, 'rb') as f:
+            await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=f,
+                title=f"Song #{round_num}",
+                performer="???",
+                caption=f"🎧 <b>Guess the Song!</b>\n"
+                        f"Round {round_num}/{session.game.total_rounds}\n\n"
+                        f"{hint_text}\n"
+                        f"You have 60 seconds! ⏱",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending audio intro: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading audio. Skipping round...")
+        session.game.round_in_progress = False
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_song_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(song_timeout(chat_id, context, round_num)))
+
+
+async def send_song_reveal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Send the album cover and song info after a round."""
+    info = session.game.get_song_info()
+    if not info:
+        return
+
+    title = info["title"]
+    artist = info["artist"] if info["artist"] else "Unknown Artist"
+    cover_path = info["cover_path"]
+
+    caption = (
+        f"💿 <b>{title}</b>\n"
+        f"🎤 <b>{artist}</b>"
+    )
+
+    try:
+        if os.path.exists(cover_path):
+            with open(cover_path, 'rb') as f:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=caption,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending song cover: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            parse_mode="HTML"
+        )
+
+
+async def song_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for Guess the Song round."""
+    await asyncio.sleep(60)
+
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "16":
+        return
+
+    # Check if we are still in the same round and it's in progress
+    if session.game.current_round == round_num and session.game.round_in_progress:
+        session.game.round_in_progress = False
+
+        # Build reveal message for anything unguessed
+        reveal_parts = []
+        if not session.game.title_guessed:
+            reveal_parts.append(f"🎵 Song: <b>{session.game.get_current_title()}</b>")
+        if not session.game.artist_guessed:
+            artist = session.game.get_current_artist()
+            if artist:
+                reveal_parts.append(f"🎤 Artist: <b>{artist}</b>")
+
+        reveal_text = "\n".join(reveal_parts) if reveal_parts else ""
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\n{reveal_text}" if reveal_text else "⏰ <b>Time's Up!</b>",
+            parse_mode="HTML"
+        )
+
+        # Send album cover
+        await send_song_reveal(chat_id, context, session)
+
+        # Check game over or start next round
+        if session.game.is_game_over():
+            await end_game(chat_id, context, session)
+        else:
+            await start_song_round(chat_id, context)
 
 
 async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE) -> None:
