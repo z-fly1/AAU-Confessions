@@ -38,7 +38,7 @@ class GuessTheLogoGame:
             return
 
         for filename in os.listdir(logo_dir):
-            if filename.lower().endswith('.webp'):
+            if filename.lower().endswith(('.webp', '.png', '.jpg', '.jpeg')):
                 clean_name = os.path.splitext(filename)[0]
                 self.logos.append((os.path.join(logo_dir, filename), clean_name))
 
