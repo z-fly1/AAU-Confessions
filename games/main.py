@@ -22,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from telegram.constants import ChatType, ChatMemberStatus, ParseMode
-from telegram import InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto
+from telegram import InlineQueryResultArticle, InputTextMessageContent, InlineQueryResultCachedPhoto, InlineQueryResultCachedSticker
 from telegram.error import NetworkError, Forbidden, TimedOut, TelegramError
 
 from datetime import datetime, timedelta
@@ -43,6 +43,8 @@ from taylor_shakespeare import TaylorShakespeareGame
 from silent_game import SilentGame
 from twenty_questions import TwentyQuestionsGame
 from guess_the_song import GuessTheSongGame
+from crazy_eight import Crazy8Game
+
 
 
 # Load environment variables
@@ -88,6 +90,8 @@ ALLOWED_CHAT_IDS = [
 
 # Global lock for meme caching
 meme_cache_lock = asyncio.Lock()
+# Global lock for card caching
+card_cache_lock = asyncio.Lock()
 
 
 # Quirky response messages
@@ -255,7 +259,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>13</b> - Taylor Swift Or Shakespeare\n"
         "<b>14</b> - The Silent Game\n"
         "<b>15</b> - 20 Questions\n"
-        "<b>16</b> - Guess the Song\n\n"
+        "<b>16</b> - Guess the Song\n"
+        "<b>17</b> - 🃏 Crazy 8\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -360,6 +365,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "16":
             # Guess the Song
             await start_song_game(chat_id, context, session)
+        elif session.game_code == "17":
+            # Crazy 8
+            await start_crazy8_game(chat_id, context, session)
 
 
 
@@ -513,6 +521,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "16":
                 game_name = "Guess the Song"
                 min_players = "2"
+            elif game_code == "17":
+                game_name = "Crazy 8"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -530,7 +541,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>16</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>17</b>.",
                 parse_mode="HTML"
             )
 
@@ -938,6 +949,65 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await end_game(chat.id, context, session)
                 else:
                     await start_song_round(chat.id, context)
+
+        # Handle Crazy 8 Game
+        elif session.game_code == "17":
+            # Detect "Draw a card" message from inline query result
+            if message.text.lower() == "draw a card":
+                success, msg_text = session.game.draw_card_for_player(user.id)
+                if success:
+                    # Send the drawn card as a sticker in private
+                    drawn_card = session.game.hands[user.id][-1]
+                    cache = get_sticker_cache()
+                    sticker_id = cache.get(f"{drawn_card.rank}_of_{drawn_card.suit}")
+                    
+                    try:
+                        if sticker_id:
+                            await context.bot.send_sticker(chat_id=user.id, sticker=sticker_id)
+                    except Exception:
+                        # User hasn't started bot in private
+                        pass
+                        
+                    await context.bot.send_message(chat_id=chat.id, text=msg_text, parse_mode="HTML")
+                    await send_c8_buttons(chat.id, context, session)
+                else:
+                    await message.reply_text(f"⚠️ {msg_text}", parse_mode="HTML")
+                return
+
+            # Parse play
+            success, msg_text, filename = session.game.play_card(user.id, message.text)
+            if success:
+                # Send the card image if they played one
+                if filename:
+                    card_path = os.path.join(os.path.dirname(__file__), "cards-png", filename)
+                    try:
+                        with open(card_path, 'rb') as f:
+                            await context.bot.send_photo(
+                                chat_id=chat.id,
+                                photo=f,
+                                caption=msg_text,
+                                parse_mode="HTML"
+                            )
+                    except Exception as e:
+                        logger.error(f"Error sending card image: {e}")
+                        await message.reply_text(msg_text, parse_mode="HTML")
+                else:
+                    await message.reply_text(msg_text, parse_mode="HTML")
+                
+                # Check win
+                if session.game.game_over:
+                    # They won
+                    await end_game(chat.id, context, session)
+                else:
+                    # Provide buttons for the next player
+                    await send_c8_buttons(chat.id, context, session)
+            else:
+                # Only reply if it was an active player trying to play an invalid card (otherwise ignore chat)
+                if user.id == session.game.current_player_id:
+                     # Attempt to parse
+                     if session.game.parse_card_from_text(message.text):
+                         # If it was a card format but invalid, show error
+                         await message.reply_text(f"⚠️ {msg_text}", parse_mode="HTML")
 
 
 
@@ -2148,6 +2218,56 @@ async def ensure_memes_cached(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, s
                 
         return cache
 
+
+def get_sticker_cache() -> Dict[str, str]:
+    """Synchronously read the sticker cache from disk."""
+    cache_path = os.path.join(os.path.dirname(__file__), "sticker_cache.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading sticker cache: {e}")
+    return {}
+
+
+async def ensure_stickers_cached(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, str]:
+    """Fetch and cache sticker IDs for Crazy 8."""
+    async with card_cache_lock:
+        cache_path = os.path.join(os.path.dirname(__file__), "sticker_cache.json")
+        cache = get_sticker_cache()
+        
+        if cache:
+            return cache # Assume cache is complete if exists
+            
+        try:
+            sticker_set = await context.bot.get_sticker_set("DeckofCardsTraditional")
+            ranks = ['ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king']
+            suits = ['spades', 'diamonds', 'hearts', 'clubs']
+            
+            # Mapping based on observation: indices 0-51 cover the 52 cards
+            for i, sticker in enumerate(sticker_set.stickers):
+                if i >= 52: break # Skip joker for now
+                
+                rank_idx = i // 4
+                suit_idx = i % 4
+                
+                rank = ranks[rank_idx]
+                suit = suits[suit_idx]
+                
+                key = f"{rank}_of_{suit}"
+                cache[key] = sticker.file_id
+            
+            with open(cache_path, 'w') as f:
+                json.dump(cache, f, indent=2)
+            
+            logger.info(f"Sticker cache updated with {len(cache)} cards.")
+            return cache
+            
+        except Exception as e:
+            logger.error(f"Error caching stickers: {e}")
+            return cache
+
 async def start_wdym_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start a new round of What You Meme."""
     session = game_manager.get_game(chat_id)
@@ -2273,62 +2393,160 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle inline queries for memes."""
-    query = update.inline_query.query
-    if not query.startswith("meme"):
+    """Handle inline queries for memes and cards."""
+    iq = update.inline_query
+    query_text = iq.query
+    user = iq.from_user
+    offset = int(iq.offset) if iq.offset else 0
+
+    # 1. Handle Memes
+    if query_text.startswith("meme"):
+        # Existing meme logic
+        cache = get_meme_cache()
+        asyncio.create_task(ensure_memes_cached(context))
+        
+        session = None
+        for s in game_manager.active_games.values():
+            if user.id in s.players and s.game_code == "12":
+                session = s
+                break
+        
+        prompt = session.game.current_question if (session and session.game.round_in_progress) else "Meme time!"
+        
+        cache_items = sorted(cache.items())
+        results = []
+        end_idx = min(offset + 50, len(cache_items))
+        for i in range(offset, end_idx):
+            meme, file_id = cache_items[i]
+            results.append(
+                InlineQueryResultCachedPhoto(
+                    id=f"wdym_{meme}", 
+                    photo_file_id=file_id,
+                    title=f"Meme {i+1}",
+                    caption=f"🃏 <b>{prompt}</b>",
+                    parse_mode="HTML"
+                )
+            )
+        
+        if not results and offset == 0:
+            results.append(
+                InlineQueryResultArticle(
+                    id="caching", title="Memes are being cached...",
+                    input_message_content=InputTextMessageContent("Bot is still processing memes.")
+                )
+            )
+        
+        next_offset = str(offset + 50) if offset + 50 < len(cache_items) else ""
+        await iq.answer(results, cache_time=5, is_personal=True, next_offset=next_offset)
         return
 
-    offset = int(update.inline_query.offset) if update.inline_query.offset else 0
+    # 2. Handle Crazy 8 Cards
+    elif query_text.startswith("c8"):
+        cache = get_sticker_cache()
+        asyncio.create_task(ensure_stickers_cached(context))
+        
+        # Find active session
+        session = None
+        for s in game_manager.active_games.values():
+            if user.id in s.players and s.game_code == "17":
+                session = s
+                break
+        
+        if not session or not session.game:
+            await iq.answer([], cache_time=1, is_personal=True, switch_pm_text="No active game found", switch_pm_parameter="help")
+            return
 
-    # Get cache immediately (non-blocking)
-    cache = get_meme_cache()
-    # Trigger background update check
-    asyncio.create_task(ensure_memes_cached(context))
+        is_turn = (user.id == session.game.current_player_id)
+        
+        results = []
+        hand = session.game.hands.get(user.id, [])
+        
+        # Filter hand if user typed something specific after 'c8 '
+        search_filter = query_text[2:].strip().lower()
+        
+        for i, card in enumerate(hand):
+            card_desc = str(card)
+            if search_filter and search_filter not in card_desc.lower():
+                continue
+                
+            file_id = cache.get(f"{card.rank}_of_{card.suit}")
+            if file_id:
+                # Note: InlineQueryResultCachedSticker doesn't support captions in the same way photos do
+                # It just sends the sticker.
+                results.append(
+                    InlineQueryResultCachedSticker(
+                        id=f"c8_{user.id}_{i}",
+                        sticker_file_id=file_id
+                    )
+                )
+
+        # Add "Draw Card" as an article at the end
+        if is_turn:
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"c8_draw_{user.id}",
+                    title="🃏 Draw a Card",
+                    description="Draw a card from the deck and pass your turn.",
+                    input_message_content=InputTextMessageContent("Draw a card")
+                )
+            )
+
+        await iq.answer(results, cache_time=0, is_personal=True)
+        return
+
+
+async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Detect card plays via stickers in Crazy 8."""
+    message = update.effective_message
+    if not message or not message.sticker:
+        return
+        
+    user = update.effective_user
+    chat = update.effective_chat
+    session = game_manager.get_game(chat.id)
     
-    # Find session to get current prompt
-    user = update.inline_query.from_user
-    session = None
-    for s in game_manager.active_games.values():
-        if user.id in s.players and s.game_code == "12":
-            session = s
+    if not session or session.game_code != "17" or not session.game:
+        return
+        
+    if user.id not in session.game.players:
+        return
+
+    # Map sticker back to card
+    sticker_id = message.sticker.file_id
+    cache = get_sticker_cache()
+    
+    card_key = None
+    for key, fid in cache.items():
+        if fid == sticker_id:
+            card_key = key
             break
+            
+    if not card_key:
+        return # Not a card sticker
+
+    # card_key is like "ace_of_spades"
+    card_name = card_key.replace('_', ' ')
     
-    prompt = session.game.current_question if (session and session.game.round_in_progress) else "Meme time!"
-    
-    cache_items = sorted(cache.items())
-    results = []
-    
-    # Slice the items based on offset
-    end_idx = min(offset + 50, len(cache_items))
-    for i in range(offset, end_idx):
-        meme, file_id = cache_items[i]
-        results.append(
-            InlineQueryResultCachedPhoto(
-                id=f"wdym_{meme}", 
-                photo_file_id=file_id,
-                title=f"Meme {i+1}",
-                caption=f"🃏 <b>{prompt}</b>",
-                parse_mode="HTML"
-            )
+    # Process play
+    success, msg_text, filename = session.game.play_card(user.id, card_name)
+    if success:
+        # Sticker is already in chat. Just announce move.
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=f"✅ {session.game.players[user.id]} played <b>{card_name.title()}</b>.\n\n{msg_text}",
+            parse_mode="HTML"
         )
-    
-    if not results and offset == 0:
-        results.append(
-            InlineQueryResultArticle(
-                id="caching",
-                title="Memes are being cached...",
-                description="Please wait a moment and try again.",
-                input_message_content=InputTextMessageContent("Bot is still processing memes. Please wait.")
-            )
-        )
-    
-    try:
-        next_offset = str(offset + 50) if offset + 50 < len(cache_items) else ""
-        await update.inline_query.answer(results, cache_time=5, is_personal=True, next_offset=next_offset)
-    except (NetworkError, TimedOut, TelegramError) as e:
-        logger.warning(f"Failed to answer inline query: {e}")
-    except Exception as e:
-        logger.error(f"Error answering inline query: {e}")
+        
+        if session.game.is_last_card(user.id):
+             await context.bot.send_message(chat_id=chat.id, text=f"⚠️ {session.game.players[user.id]} has only ONE card left!")
+
+        if session.game.is_game_over(user.id):
+            await end_game(chat.id, context, session)
+        else:
+            await send_c8_buttons(chat.id, context, session)
+    else:
+        # Invalid play, bot replies.
+        await message.reply_text(f"⚠️ {msg_text}", parse_mode="HTML")
 
 
 async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2740,6 +2958,57 @@ async def post_init(application: Application) -> None:
     from telegram.ext import CallbackContext
     dummy_context = CallbackContext(application)
     asyncio.create_task(ensure_memes_cached(dummy_context))
+    asyncio.create_task(ensure_stickers_cached(dummy_context))
+
+
+async def start_crazy8_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Crazy 8 game."""
+    first_msg_filename = session.game.start_game()
+    if not first_msg_filename:
+        await context.bot.send_message(chat_id=chat_id, text="Error starting game.")
+        return
+        
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🃏 <b>Crazy 8 Started!</b> 🃏\n\nEach player has been dealt 7 cards.",
+        parse_mode="HTML"
+    )
+    
+    # Send top card as sticker
+    top_card = session.game.get_top_card()
+    cache = get_sticker_cache()
+    sticker_id = cache.get(f"{top_card.rank}_of_{top_card.suit}")
+    
+    caption = f"The top card is {str(top_card)}.\n\nIt is {session.game.players[session.game.current_player_id]}'s turn."
+    
+    try:
+        if sticker_id:
+            await context.bot.send_sticker(chat_id=chat_id, sticker=sticker_id)
+        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error sending start card: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode="HTML")
+        
+    await send_c8_buttons(chat_id, context, session)
+
+async def send_c8_buttons(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Send inline buttons for viewing hand and drawing a card."""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🃏 Play / Draw", switch_inline_query_current_chat="c8")
+        ]
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"👉 <a href=\"tg://user?id={session.game.current_player_id}\">{session.game.players[session.game.current_player_id]}</a>, it's your turn!\nClick the button below to view your cards and play one.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+async def handle_c8_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Legacy/Simplified button handler. Viewing hands is now via inline queries."""
+    query = update.callback_query
+    await query.answer("Use the 'Play / Draw' button to interact!", show_alert=True)
 
 
 def main() -> None:
@@ -2768,9 +3037,11 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
     application.add_handler(CallbackQueryHandler(handle_quit_vote_callback, pattern="^quit_game_vote$"))
     application.add_handler(CallbackQueryHandler(handle_20q_callback, pattern="^view_secret_word$"))
+    application.add_handler(CallbackQueryHandler(handle_c8_callback, pattern="^c8_"))
     application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    application.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     # Add handler for all other content types (stickers, voice, etc.) for games like Silent Game
