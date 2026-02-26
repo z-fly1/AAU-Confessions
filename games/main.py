@@ -1573,7 +1573,7 @@ async def start_logo_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
         await end_game(chat_id, context, session)
         return
 
-    logo_path, player_id, player_name = result
+    logo_path, round_num = result
     
     try:
         with open(logo_path, 'rb') as f:
@@ -1581,7 +1581,7 @@ async def start_logo_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
                 chat_id=chat_id,
                 photo=f,
                 caption=f"🖼️ <b>Guess the Logo!</b>\n\n"
-                        f"👉 <a href=\"tg://user?id={player_id}\">{player_name}</a>, you have 45 seconds!",
+                        f"First to guess gets a point! (60s)",
                 parse_mode="HTML"
             )
     except Exception as e:
@@ -1590,29 +1590,26 @@ async def start_logo_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
         await start_logo_round(chat_id, context)
         return
 
-    # Start timeout task (45 seconds)
-    round_num = session.game.current_round
-    player_id = session.game.current_player_id
-    track_game_task(chat_id, asyncio.create_task(logo_timeout(chat_id, context, round_num, player_id)))
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(logo_timeout(chat_id, context, round_num)))
 
 
-async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int, player_id: int) -> None:
+async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
     """Handle timeout for logo guess."""
-    await asyncio.sleep(45)
+    await asyncio.sleep(60)
     
     session = game_manager.get_game(chat_id)
     if not session or session.game_code != "4":
         return
     
-    # Check if we are still in the same round AND waiting for the SAME player
-    if session.game.current_round == round_num and session.game.current_player_id == player_id and session.game.waiting_for_answer:
-        # Time up - New Round (Next player, New Logo)
-        # End current round manually (without revealing if requested, currently resolve_round returns answer but we ignore it if not showing)
-        session.game.resolve_round()
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
         
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"⏰ <b>Time's Up!</b>",
+            text=f"⏰ <b>Time's Up!</b>\n\nThe correct answer was: <b>{answer}</b>",
             parse_mode="HTML"
         )
         

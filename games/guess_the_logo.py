@@ -19,12 +19,7 @@ class GuessTheLogoGame:
         self.logos: List[Tuple[str, str]] = [] # list of (filename, answer_key)
         self.used_logos: List[str] = []
         
-        # Round Robin Logic
-        self.player_ids: List[int] = [] 
-        self.turn_index: int = 0
-        
         # Current round state
-        self.current_player_id: Optional[int] = None
         self.current_logo_path: Optional[str] = None
         self.current_answer: Optional[str] = None
         self.waiting_for_answer: bool = False
@@ -54,17 +49,6 @@ class GuessTheLogoGame:
             del self.players[user_id]
         if user_id in self.scores:
             del self.scores[user_id]
-        # Re-sync player ids if needed? 
-        # For simplicity, we regenerate player_ids only on start or when needed would be better but we need consistent order.
-        # If active player leaves, handle it? 
-        if user_id in self.player_ids:
-            # If the current player left, we need to adjust index
-            idx = self.player_ids.index(user_id)
-            self.player_ids.remove(user_id)
-            if idx < self.turn_index:
-                self.turn_index -= 1
-            if self.turn_index >= len(self.player_ids):
-                self.turn_index = 0
 
     def _normalize_answer(self, text: str) -> str:
         """Normalize answer for comparison (remove special chars, lowercase)."""
@@ -74,36 +58,17 @@ class GuessTheLogoGame:
         """Start the game."""
         self.current_round = 0
         self.used_logos = []
-        
-        # Initialize turn order
-        self.player_ids = list(self.players.keys())
-        random.shuffle(self.player_ids)
-        self.turn_index = 0
 
-    def start_new_round(self) -> Optional[Tuple[str, int, str]]:
+    def start_new_round(self) -> Optional[Tuple[str, int]]:
         """Start a new round with a NEW logo.
         
         Returns:
-            Tuple of (logo_path, player_id, player_name) or None if game over/error.
+            Tuple of (logo_path, round_number) or None if game over/error.
         """
         if self.is_game_over() or not self.players:
             return None
 
         self.current_round += 1
-        
-        # Just pick next in turn
-        if not self.player_ids:
-             self.player_ids = list(self.players.keys())
-             random.shuffle(self.player_ids)
-             
-        # Advance turn for new start logic? 
-        # User said "next person in turn" gets the question.
-        # So we just take current turn index.
-        # If we just finished a round successfully, let's bump the turn index for variety
-        # But wait, if we got it right, maybe we go again? No, "randomly ask the next person in turn".
-        
-        self.turn_index = (self.turn_index + 1) % len(self.player_ids)
-        self.current_player_id = self.player_ids[self.turn_index]
         
         # Pick a random logo not used yet
         available_logos = [l for l in self.logos if l[0] not in self.used_logos]
@@ -120,30 +85,17 @@ class GuessTheLogoGame:
         self.current_answer = answer
         self.waiting_for_answer = True
         
-        return logo_path, self.current_player_id, self.players[self.current_player_id]
-
-    def pass_turn(self) -> Optional[Tuple[int, str]]:
-        """Pass turn to next player (same logo).
-        
-        Returns:
-            Tuple of (player_id, player_name) or None.
-        """
-        if not self.player_ids:
-            return None
-            
-        self.turn_index = (self.turn_index + 1) % len(self.player_ids)
-        self.current_player_id = self.player_ids[self.turn_index]
-        self.waiting_for_answer = True # Still waiting
-        
-        return self.current_player_id, self.players[self.current_player_id]
+        return logo_path, self.current_round
 
     def check_answer(self, user_id: int, answer: str) -> bool:
         """Check if the answer is correct."""
         if not self.waiting_for_answer:
             return False
             
-        if user_id != self.current_player_id:
-            return False
+        if user_id not in self.players:
+            # Maybe they joined late? Let's check session scores in main.py usually handles this
+            # but for internal consistency we should check.
+            pass
             
         if not self.current_answer:
             return False
@@ -152,7 +104,7 @@ class GuessTheLogoGame:
         normalized_correct = self._normalize_answer(self.current_answer)
         
         if normalized_input == normalized_correct:
-            self.scores[user_id] += 1
+            self.scores[user_id] = self.scores.get(user_id, 0) + 1
             self.waiting_for_answer = False
             return True
         
