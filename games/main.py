@@ -45,6 +45,7 @@ from twenty_questions import TwentyQuestionsGame
 from guess_the_song import GuessTheSongGame
 from crazy_eight import Crazy8Game
 from guess_the_book import GuessTheBookGame
+from guess_the_marvel import GuessMarvelGame
 
 
 
@@ -262,7 +263,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>15</b> - 20 Questions\n"
         "<b>16</b> - Guess the Song\n"
         "<b>17</b> - 🃏 Crazy 8\n"
-        "<b>18</b> - 📚 Guess the Book\n\n"
+        "<b>18</b> - 📚 Guess the Book\n"
+        "<b>19</b> - 🦸 Guess the Marvel Character\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -373,6 +375,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "18":
             # Guess the Book
             await start_book_game(chat_id, context, session)
+        elif session.game_code == "19":
+            # Guess the Marvel Character
+            await start_marvel_game(chat_id, context, session)
 
 
 
@@ -532,6 +537,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "18":
                 game_name = "Guess the Book"
                 min_players = "2"
+            elif game_code == "19":
+                game_name = "Guess the Marvel Character"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -549,7 +557,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>18</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>19</b>.",
                 parse_mode="HTML"
             )
 
@@ -835,6 +843,23 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_book_round(chat.id, context)
+            
+        # Handle Guess the Marvel Character Game
+        elif session.game_code == "19":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.current_answer
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"The character was: <b>{answer}</b>\n"
+                    f"Your score: <b>{score} point(s)</b>",
+                    parse_mode="HTML"
+                )
+                
+                # Next round
+                await start_marvel_round(chat.id, context)
 
         # Handle Word Connect Game
         elif session.game_code == "11":
@@ -1730,6 +1755,74 @@ async def book_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
         
         # Start next round
         await start_book_round(chat_id, context)
+
+
+async def start_marvel_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Marvel Character game."""
+    await start_marvel_round(chat_id, context)
+
+
+async def start_marvel_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Marvel Character."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "19":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    image_path, round_num = result
+    
+    try:
+        with open(image_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"🦸 <b>Guess the Marvel Character!</b>\n\n"
+                        f"First to guess gets a point! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending marvel image: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading image. Skipping round...")
+        await start_marvel_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(marvel_timeout(chat_id, context, round_num)))
+
+
+async def marvel_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for marvel guess."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "19":
+        return
+    
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\nThe correct answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Start next round
+        await start_marvel_round(chat_id, context)
 
 
 async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
