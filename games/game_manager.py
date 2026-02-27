@@ -18,6 +18,7 @@ from silent_game import SilentGame
 from twenty_questions import TwentyQuestionsGame
 from guess_the_song import GuessTheSongGame
 from crazy_eight import Crazy8Game
+from guess_the_book import GuessTheBookGame
 
 
 
@@ -42,7 +43,7 @@ class GameSession:
         self.state = GameState.WAITING_FOR_GAME_CODE
         self.game_code: Optional[str] = None
         self.players: Set[int] = set()  # Set of user IDs
-        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame, GuessTheSongGame, Crazy8Game]] = None
+        self.game: Optional[Union[WordUnscrambleGame, StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessMojiGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame, GuessTheSongGame, Crazy8Game, GuessTheBookGame]] = None
 
         self.joining_deadline: Optional[datetime] = None
         
@@ -145,6 +146,11 @@ class GameSession:
             self.game = Crazy8Game()
             self.state = GameState.JOINING
             return True
+        elif code == "18":
+            self.game_code = code
+            self.game = GuessTheBookGame(rounds_limit=15)
+            self.state = GameState.JOINING
+            return True
 
         return False
     
@@ -164,7 +170,7 @@ class GameSession:
         self.players.add(user_id)
         if self.game:
             # Handle different game signatures
-            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame, GuessTheSongGame, Crazy8Game)):
+            if isinstance(self.game, (StoryBuilderGame, GuessTheImposterGame, GuessTheLogoGame, GuessTheMovieGame, GuessTheFlagGame, SoccerTriviaGame, GeneralKnowledgeGame, GuessCharacterGame, WordConnectGame, MemeGame, TaylorShakespeareGame, SilentGame, TwentyQuestionsGame, GuessTheSongGame, Crazy8Game, GuessTheBookGame)):
 
                 display_name = username or "Player"
                 self.game.add_player(user_id, display_name)

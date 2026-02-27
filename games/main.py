@@ -44,6 +44,7 @@ from silent_game import SilentGame
 from twenty_questions import TwentyQuestionsGame
 from guess_the_song import GuessTheSongGame
 from crazy_eight import Crazy8Game
+from guess_the_book import GuessTheBookGame
 
 
 
@@ -260,7 +261,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>14</b> - The Silent Game\n"
         "<b>15</b> - 20 Questions\n"
         "<b>16</b> - Guess the Song\n"
-        "<b>17</b> - 🃏 Crazy 8\n\n"
+        "<b>17</b> - 🃏 Crazy 8\n"
+        "<b>18</b> - 📚 Guess the Book\n\n"
         "Send the game code to continue...",
 
         parse_mode="HTML"
@@ -368,6 +370,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "17":
             # Crazy 8
             await start_crazy8_game(chat_id, context, session)
+        elif session.game_code == "18":
+            # Guess the Book
+            await start_book_game(chat_id, context, session)
 
 
 
@@ -524,6 +529,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             elif game_code == "17":
                 game_name = "Crazy 8"
                 min_players = "2"
+            elif game_code == "18":
+                game_name = "Guess the Book"
+                min_players = "2"
 
             else:
                 game_name = "General Knowledge" # Default fallback
@@ -541,7 +549,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
         else:
             await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>17</b>.",
+                "❌ Invalid game code. Please send <b>1</b> to <b>18</b>.",
                 parse_mode="HTML"
             )
 
@@ -797,11 +805,36 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         )
                 except Exception as e:
                     logger.error(f"Error sending full image: {e}")
-
-                if session.game.is_game_over():
-                    await end_game(chat.id, context, session)
-                else:
-                    await start_character_round(chat.id, context)
+            
+        # Handle Guess the Book Game
+        elif session.game_code == "18":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                answer = session.game.current_answer
+                reveal_image = session.game.get_reveal_image()
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"Your score: <b>{score} point(s)</b>",
+                    parse_mode="HTML"
+                )
+                
+                # Send the reveal image
+                if reveal_image and os.path.exists(reveal_image):
+                    try:
+                        with open(reveal_image, 'rb') as f:
+                            await context.bot.send_photo(
+                                chat_id=chat.id,
+                                photo=f,
+                                caption=f"✅ <b>{answer}</b>",
+                                parse_mode="HTML"
+                            )
+                    except Exception as e:
+                        logger.error(f"Error sending book reveal image: {e}")
+                
+                # Next round
+                await start_book_round(chat.id, context)
 
         # Handle Word Connect Game
         elif session.game_code == "11":
@@ -1615,6 +1648,88 @@ async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
         
         # Start next round
         await start_logo_round(chat_id, context)
+
+
+async def start_book_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess the Book game."""
+    await start_book_round(chat_id, context)
+
+
+async def start_book_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess the Book."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "18":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started (for player order init)
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    book_path, round_num = result
+    
+    try:
+        with open(book_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"📚 <b>Guess the Book!</b>\n\n"
+                        f"First to guess gets a point! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending book image: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading book image. Skipping round...")
+        await start_book_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(book_timeout(chat_id, context, round_num)))
+
+
+async def book_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for book guess."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "18":
+        return
+    
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
+        reveal_image = session.game.get_reveal_image()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\nThe correct answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+
+        # Send the reveal image
+        if reveal_image and os.path.exists(reveal_image):
+            try:
+                with open(reveal_image, 'rb') as f:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=f"✅ <b>{answer}</b>",
+                        parse_mode="HTML"
+                    )
+            except Exception as e:
+                logger.error(f"Error sending book reveal image: {e}")
+        
+        # Start next round
+        await start_book_round(chat_id, context)
 
 
 async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
