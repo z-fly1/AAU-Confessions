@@ -1,0 +1,348 @@
+[
+    {
+        "image": "Doro Manekiya.png",
+        "answers": [
+            "Doro Manekiya",
+            "ዶሮ ማነቂያ",
+            "Doro manekia"
+        ]
+    },
+    {
+        "image": "Entoto.png",
+        "answers": [
+            "Entoto",
+            "እንጦጦ"
+        ]
+    },
+    {
+        "image": "addis ketema.png",
+        "answers": [
+            "Addis Ketema",
+            "አዲስ ከተማ"
+        ]
+    },
+    {
+        "image": "alembank.png",
+        "answers": [
+            "Alembank",
+            "አለም ባንክ",
+            "Alem bank"
+        ]
+    },
+    {
+        "image": "alemgena.png",
+        "answers": [
+            "Alemgena",
+            "አለምገና"
+        ]
+    },
+    {
+        "image": "arat kilo.png",
+        "answers": [
+            "Arat Kilo",
+            "አራት ኪሎ",
+            "4 kilo"
+        ]
+    },
+    {
+        "image": "awtobis tera.png",
+        "answers": [
+            "Awtobis Tera",
+            "አውቶቢስ ተራ",
+            "Autobis tera"
+        ]
+    },
+    {
+        "image": "ayat.png",
+        "answers": [
+            "Ayat",
+            "አያት"
+        ]
+    },
+    {
+        "image": "ayertena.png",
+        "answers": [
+            "Ayertena",
+            "አየር ጤና",
+            "Ayertena"
+        ]
+    },
+    {
+        "image": "bella.png",
+        "answers": [
+            "Bella",
+            "ቤላ"
+        ]
+    },
+    {
+        "image": "betel.png",
+        "answers": [
+            "Betel",
+            "ቤቴል"
+        ]
+    },
+    {
+        "image": "bisrate gebriel.png",
+        "answers": [
+            "Bisrate Gebriel",
+            "ብስራተ ገብርኤል",
+            "Bisrate Gabriel"
+        ]
+    },
+    {
+        "image": "bulgariya.png",
+        "answers": [
+            "Bulgariya",
+            "ቡልጋሪያ",
+            "Bulgaria"
+        ]
+    },
+    {
+        "image": "cmc.png",
+        "answers": [
+            "CMC",
+            "ሲ ኤም ሲ"
+        ]
+    },
+    {
+        "image": "dembel.png",
+        "answers": [
+            "Dembel",
+            "ደምበል"
+        ]
+    },
+    {
+        "image": "enkulal fabrika.png",
+        "answers": [
+            "Enkulal Fabrika",
+            "እንቁላል ፋብሪካ"
+        ]
+    },
+    {
+        "image": "ferensay.png",
+        "answers": [
+            "Ferensay",
+            "ፈረንሳይ",
+            "French legation"
+        ]
+    },
+    {
+        "image": "filweha.png",
+        "answers": [
+            "Filweha",
+            "ፍል ውሃ"
+        ]
+    },
+    {
+        "image": "gerji.png",
+        "answers": [
+            "Gerji",
+            "ገርጂ"
+        ]
+    },
+    {
+        "image": "gofa.png",
+        "answers": [
+            "Gofa",
+            "ጎፋ"
+        ]
+    },
+    {
+        "image": "goro.png",
+        "answers": [
+            "Goro",
+            "ጎሮ"
+        ]
+    },
+    {
+        "image": "gurdshola.png",
+        "answers": [
+            "Gurdshola",
+            "ጉርድ ሾላ",
+            "Gurd shola"
+        ]
+    },
+    {
+        "image": "haya hulet.png",
+        "answers": [
+            "Haya Hulet",
+            "ሀያ ሁለት",
+            "22"
+        ]
+    },
+    {
+        "image": "janmeda.png",
+        "answers": [
+            "Janmeda",
+            "ጃንሜዳ",
+            "Jan meda"
+        ]
+    },
+    {
+        "image": "jemo.png",
+        "answers": [
+            "Jemo",
+            "ጀሞ"
+        ]
+    },
+    {
+        "image": "kebena.png",
+        "answers": [
+            "Kebena",
+            "ቀበና"
+        ]
+    },
+    {
+        "image": "kechne.png",
+        "answers": [
+            "Kechne",
+            "ቀጭኔ"
+        ]
+    },
+    {
+        "image": "kolfe.png",
+        "answers": [
+            "Kolfe",
+            "ኮልፌ"
+        ]
+    },
+    {
+        "image": "lafto.png",
+        "answers": [
+            "Lafto",
+            "ላፍቶ"
+        ]
+    },
+    {
+        "image": "lamberet.png",
+        "answers": [
+            "Lamberet",
+            "ላምበረት"
+        ]
+    },
+    {
+        "image": "lebu.png",
+        "answers": [
+            "Lebu",
+            "ለቡ"
+        ]
+    },
+    {
+        "image": "lideta.png",
+        "answers": [
+            "Lideta",
+            "ልደታ"
+        ]
+    },
+    {
+        "image": "mekenisa.png",
+        "answers": [
+            "Mekenisa",
+            "መካኒሳ"
+        ]
+    },
+    {
+        "image": "meskel flower.png",
+        "answers": [
+            "Meskel Flower",
+            "መስቀል ፍላወር"
+        ]
+    },
+    {
+        "image": "mexico.png",
+        "answers": [
+            "Mexico",
+            "ሜክሲኮ"
+        ]
+    },
+    {
+        "image": "sarbet.png",
+        "answers": [
+            "Sarbet",
+            "ሳር ቤት",
+            "Sar bet"
+        ]
+    },
+    {
+        "image": "semen hotel.png",
+        "answers": [
+            "Semen Hotel",
+            "ሰሜን ሆቴል"
+        ]
+    },
+    {
+        "image": "semit.png",
+        "answers": [
+            "Semit",
+            "ሰሚት"
+        ]
+    },
+    {
+        "image": "sengatera.png",
+        "answers": [
+            "Sengatera",
+            "ሰንጋ ተራ",
+            "Senga tera"
+        ]
+    },
+    {
+        "image": "shiromeda.png",
+        "answers": [
+            "Shiromeda",
+            "ሽሮ ሜዳ",
+            "Shiro meda"
+        ]
+    },
+    {
+        "image": "shola gebeya.png",
+        "answers": [
+            "Shola Gebeya",
+            "ሾላ ገበያ",
+            "Shola"
+        ]
+    },
+    {
+        "image": "sidist kilo.png",
+        "answers": [
+            "Sidist Kilo",
+            "ስድስት ኪሎ",
+            "6 kilo"
+        ]
+    },
+    {
+        "image": "tor hayloch.png",
+        "answers": [
+            "Tor Hayloch",
+            "ጦር ኃይሎች",
+            "Tor hailoch"
+        ]
+    },
+    {
+        "image": "total.png",
+        "answers": [
+            "Total",
+            "ቶታል"
+        ]
+    },
+    {
+        "image": "urael.png",
+        "answers": [
+            "Urael",
+            "ዑራኤል"
+        ]
+    },
+    {
+        "image": "wingate.png",
+        "answers": [
+            "Wingate",
+            "ዊንጌት"
+        ]
+    },
+    {
+        "image": "zenebewerk.png",
+        "answers": [
+            "Zenebewerk",
+            "ዘነበወርቅ"
+        ]
+    }
+]
