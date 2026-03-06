@@ -7,18 +7,19 @@ from typing import List, Dict, Optional, Tuple
 class GuessAddisGame:
     """Manages a 'Guess Addis' game where players identify local areas in Addis Ababa."""
 
-    def __init__(self, rounds_limit: int = 20):
+    def __init__(self, rounds_limit: int = 20, used_images: Optional[List[str]] = None):
         """Initialize the game.
         
         Args:
             rounds_limit: Maximum number of rounds to play.
+            used_images: Optional list of already used image paths to avoid repetition.
         """
         self.rounds_limit = rounds_limit
         self.current_round = 0
         self.scores: Dict[int, int] = {}  # user_id -> score
         self.players: Dict[int, str] = {} # user_id -> display_name
         self.data: List[Dict] = [] # list of {image: str, answers: List[str]}
-        self.used_images: List[str] = []
+        self.used_images = used_images if used_images is not None else []
         
         # Current round state
         self.current_image_path: Optional[str] = None
@@ -82,7 +83,6 @@ class GuessAddisGame:
     def start_game(self) -> None:
         """Start the game."""
         self.current_round = 0
-        self.used_images = []
 
     def start_new_round(self) -> Optional[Tuple[str, int]]:
         """Start a new round with a NEW image.
@@ -98,7 +98,7 @@ class GuessAddisGame:
         # Pick a random image not used yet
         available_images = [d for d in self.data if d['path'] not in self.used_images]
         if not available_images:
-            self.used_images = []
+            self.used_images.clear()
             available_images = self.data
         
         if not available_images:

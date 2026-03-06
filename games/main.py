@@ -479,7 +479,12 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
     elif data.startswith("game_pick_"):
         game_code = data.replace("game_pick_", "")
         
-        if session.set_game_code(game_code):
+        # Load persistent seen images for Guess Addis
+        used_images = None
+        if game_code == "20":
+            used_images = settings_manager.get_setting(chat_id, "seen_addis", [])
+            
+        if session.set_game_code(game_code, used_images=used_images):
             # Define game names and min players
             game_info = {
                 "1": ("Word Unscramble", "2"),
@@ -1084,6 +1089,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"Your score: <b>{score}</b> point(s)",
                     parse_mode="HTML"
                 )
+                
+                # Save progress
+                save_addis_progress(chat.id, session)
                 
                 # Next round
                 await start_guess_addis_round(chat.id, context)
@@ -2121,8 +2129,17 @@ async def addis_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_
             parse_mode="HTML"
         )
         
+        # Save progress
+        save_addis_progress(chat_id, session)
+        
         # Start next round
         await start_guess_addis_round(chat_id, context)
+
+
+def save_addis_progress(chat_id: int, session: GameSession) -> None:
+    """Save the persistent progress for Guess Addis."""
+    if session and session.game_code == "20" and session.game:
+        settings_manager.set_setting(chat_id, "seen_addis", session.game.used_images)
 
 
 async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -54,11 +54,12 @@ class GameSession:
         self.quit_votes: Set[int] = set()  # user_ids who voted to quit
         self.quit_vote_message_id: Optional[int] = None
         
-    def set_game_code(self, code: str) -> bool:
+    def set_game_code(self, code: str, used_images: Optional[List[str]] = None) -> bool:
         """Set the game code and initialize the appropriate game.
         
         Args:
             code: Game code (e.g., "1" for word unscramble)
+            used_images: Optional list of already used images (for Guess Addis)
             
         Returns:
             True if game code is valid, False otherwise
@@ -160,7 +161,7 @@ class GameSession:
             return True
         elif code == "20":
             self.game_code = code
-            self.game = GuessAddisGame(rounds_limit=15)
+            self.game = GuessAddisGame(rounds_limit=15, used_images=used_images)
             self.state = GameState.JOINING
             return True
 
