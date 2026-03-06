@@ -9,7 +9,7 @@ from typing import Optional, Dict, List, Tuple, Union
 from dotenv import load_dotenv
 from flask import Flask
 
-from telegram import Update, ChatMember, ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton, ReactionTypeEmoji
+from telegram import Update, Chat, ChatMember, ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton, ReactionTypeEmoji
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -46,6 +46,15 @@ from guess_the_song import GuessTheSongGame
 from crazy_eight import Crazy8Game
 from guess_the_book import GuessTheBookGame
 from guess_the_marvel import GuessMarvelGame
+from guess_addis import GuessAddisGame
+from settings_manager import settings_manager
+from leaderboard import (
+    record_game_scores,
+    get_total_leaderboard,
+    get_game_leaderboard,
+    get_game_names,
+    GAME_CODE_NAMES,
+)
 
 
 
@@ -115,6 +124,73 @@ QUIRKY_RESPONSES = [
     "Ask me again and I’ll still say no.",
     "I refuse to acknowledge this."
 ]
+
+
+# Game Categories for the Menu (Emojis removed)
+GAME_CATEGORIES = {
+    "Word Games": {
+        "games": [("1", "Word Unscramble"), ("11", "Word Connect"), ("2", "Story Builder")]
+    },
+    "Guessing Games": {
+        "games": [
+            ("4", "Guess the Logo"), ("5", "GuessMoji"), ("10", "Guess the Character"),
+            ("6", "Guess the Movie"), ("18", "Guess the Book"), ("19", "Guess the Marvel Character"),
+            ("20", "Guess Addis")
+        ]
+    },
+    "Trivia & Knowledge": {
+        "games": [
+            ("9", "General Knowledge"), ("13", "Taylor Swift Or Shakespeare"),
+            ("8", "Soccer Trivia"), ("7", "Guess the Flag")
+        ]
+    },
+    "Music & Media": {
+        "games": [("16", "Guess the Song"), ("12", "What You Meme")]
+    },
+    "Party Games": {
+        "games": [("3", "Guess the Imposter"), ("14", "The Silent Game"), ("15", "20 Questions")]
+    },
+    "Card Games": {
+        "games": [("17", "Crazy 8")]
+    }
+}
+
+
+# Games Metadata for List Menu
+GAMES_METADATA = {
+    "1": ("Word Unscramble", "2"),
+    "2": ("Story Builder", "2"),
+    "3": ("Guess the Imposter", "3"),
+    "4": ("Guess the Logo", "2"),
+    "5": ("GuessMoji", "2"),
+    "6": ("Guess the Movie", "2"),
+    "7": ("Guess the Flag", "2"),
+    "8": ("Soccer Trivia", "2"),
+    "9": ("General Knowledge", "2"),
+    "10": ("Guess the Character", "2"),
+    "11": ("Word Connect", "2"),
+    "12": ("What You Meme", "2"),
+    "13": ("Taylor Swift Or Shakespeare", "2"),
+    "14": ("The Silent Game", "2"),
+    "15": ("20 Questions", "2"),
+    "16": ("Guess the Song", "2"),
+    "17": ("Crazy 8", "2"),
+    "18": ("Guess the Book", "2"),
+    "19": ("Guess the Marvel Character", "2"),
+    "20": ("Guess Addis", "2")
+}
+
+
+async def is_user_mod(chat: Chat, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if a user is a moderator (Admin or Owner) in the group."""
+    if chat.type == ChatType.PRIVATE:
+        return True
+    try:
+        member = await chat.get_member(user_id)
+        return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except Exception as e:
+        logger.error(f"Error checking mod status: {e}")
+        return False
 
 
 async def check_bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -203,7 +279,7 @@ def extract_status_change(chat_member_update: ChatMemberUpdated) -> Optional[tup
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command to initiate a game."""
+    """Handle /start command to initiate a game selection."""
     chat = update.effective_chat
     user = update.effective_user
     
@@ -242,33 +318,214 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     session = game_manager.create_game(chat.id)
     session.initiator_id = user.id
     
-    # Quirky intro
-    await update.message.reply_text(
-        "🎮 <b>Welcome to Game Bot!</b>\n\n"
-        "Please select a game by sending its code:\n\n"
-        "<b>1</b> - Word Unscramble Game\n"
-        "<b>2</b> - Story Builder Game\n"
-        "<b>3</b> - Guess the Imposter\n"
-        "<b>4</b> - Guess the Logo\n"
-        "<b>5</b> - GuessMoji Game\n"
-        "<b>6</b> - Guess the Movie\n"
-        "<b>7</b> - Guess the Flag\n"
-        "<b>8</b> - Soccer Trivia\n"
-        "<b>9</b> - General Knowledge\n"
-        "<b>10</b> - Guess the Character\n"
-        "<b>11</b> - Word Connect Game\n"
-        "<b>12</b> - What You Meme\n"
-        "<b>13</b> - Taylor Swift Or Shakespeare\n"
-        "<b>14</b> - The Silent Game\n"
-        "<b>15</b> - 20 Questions\n"
-        "<b>16</b> - Guess the Song\n"
-        "<b>17</b> - 🃏 Crazy 8\n"
-        "<b>18</b> - 📚 Guess the Book\n"
-        "<b>19</b> - 🦸 Guess the Marvel Character\n\n"
-        "Send the game code to continue...",
+    # Check menu style setting
+    menu_style = settings_manager.get_setting(chat.id, "menu_style", "inline")
+    
+    if menu_style == "list":
+        # Original numbered list
+        text = "🎮 <b>Welcome to Game Bot!</b>\n\n"
+        text += "Please select a game by sending its code:\n\n"
+        for code, (name, _) in GAMES_METADATA.items():
+            text += f"<b>{code}</b> - {name}\n"
+        text += "\nSend the game code to continue..."
+        
+        await update.message.reply_text(text, parse_mode="HTML")
+    else:
+        # Categories keyboard - 2 columns
+        keyboard = []
+        cat_names = list(GAME_CATEGORIES.keys())
+        for i in range(0, len(cat_names), 2):
+            row = [
+                InlineKeyboardButton(cat_names[i], callback_data=f"game_cat_{cat_names[i]}", api_kwargs={"style": "primary"})
+            ]
+            if i + 1 < len(cat_names):
+                row.append(InlineKeyboardButton(cat_names[i+1], callback_data=f"game_cat_{cat_names[i+1]}", api_kwargs={"style": "primary"}))
+            keyboard.append(row)
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🎮 <b>Welcome to Game Bot!</b>\n\n"
+            "Please select a game category to see available games:",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
 
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /settings command for moderators."""
+    chat = update.effective_chat
+    user = update.effective_user
+    
+    if chat.type == ChatType.PRIVATE:
+        await update.message.reply_text("This command only works in groups.")
+        return
+        
+    if not await is_user_mod(chat, user.id, context):
+        await update.message.reply_text("❌ Only moderators can change settings.")
+        return
+        
+    menu_style = settings_manager.get_setting(chat.id, "menu_style", "inline")
+    
+    keyboard = [[
+        InlineKeyboardButton(
+            f"Menu Style: {menu_style.capitalize()}", 
+            callback_data="set_toggle_menu"
+        )
+    ]]
+    
+    await update.message.reply_text(
+        "⚙️ <b>Group Settings</b>\n\n"
+        "Configure how the bot behaves in this group:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML"
     )
+
+
+async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle settings menu interactions."""
+    query = update.callback_query
+    chat = query.message.chat
+    user = query.from_user
+    
+    if not await is_user_mod(chat, user.id, context):
+        await query.answer("Only moderators can change settings!", show_alert=True)
+        return
+        
+    if query.data == "set_toggle_menu":
+        current = settings_manager.get_setting(chat.id, "menu_style", "inline")
+        new_style = "list" if current == "inline" else "inline"
+        settings_manager.set_setting(chat.id, "menu_style", new_style)
+        
+        keyboard = [[
+            InlineKeyboardButton(
+                f"Menu Style: {new_style.capitalize()}", 
+                callback_data="set_toggle_menu"
+            )
+        ]]
+        
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.answer(f"Menu style changed to {new_style}")
+
+
+async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle game category and game selection callbacks."""
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    user_id = query.from_user.id
+    
+    session = game_manager.get_game(chat_id)
+    if not session:
+        await query.answer("No active game session. Use /start to begin!", show_alert=True)
+        return
+    
+    # Only initiator can pick game
+    if session.initiator_id and user_id != session.initiator_id:
+        await query.answer("Only the person who started the session can choose the game!", show_alert=True)
+        return
+
+    data = query.data
+    
+    if data.startswith("game_cat_"):
+        category = data.replace("game_cat_", "")
+        if category in GAME_CATEGORIES:
+            cat_data = GAME_CATEGORIES[category]
+            keyboard = []
+            
+            # Add games in category - 2 columns
+            games_list = cat_data["games"]
+            for i in range(0, len(games_list), 2):
+                row = [
+                    InlineKeyboardButton(games_list[i][1], callback_data=f"game_pick_{games_list[i][0]}", api_kwargs={"style": "primary"})
+                ]
+                if i + 1 < len(games_list):
+                    row.append(InlineKeyboardButton(games_list[i+1][1], callback_data=f"game_pick_{games_list[i+1][0]}", api_kwargs={"style": "primary"}))
+                keyboard.append(row)
+            
+            # Add back button
+            keyboard.append([InlineKeyboardButton("⬅️", callback_data="game_menu_main", api_kwargs={"style": "success"})])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"<b>{category}</b>\n\n"
+                "Select a game to start:",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+            await query.answer()
+            
+    elif data == "game_menu_main":
+        # Back to categories - 2 columns
+        keyboard = []
+        cat_names = list(GAME_CATEGORIES.keys())
+        for i in range(0, len(cat_names), 2):
+            row = [
+                InlineKeyboardButton(cat_names[i], callback_data=f"game_cat_{cat_names[i]}", api_kwargs={"style": "primary"})
+            ]
+            if i + 1 < len(cat_names):
+                row.append(InlineKeyboardButton(cat_names[i+1], callback_data=f"game_cat_{cat_names[i+1]}", api_kwargs={"style": "primary"}))
+            keyboard.append(row)
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🎮 <b>Welcome to Game Bot!</b>\n\n"
+            "Please select a game category to see available games:",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        await query.answer()
+        
+    elif data.startswith("game_pick_"):
+        game_code = data.replace("game_pick_", "")
+        
+        if session.set_game_code(game_code):
+            # Define game names and min players
+            game_info = {
+                "1": ("Word Unscramble", "2"),
+                "2": ("Story Builder", "2"),
+                "3": ("Guess the Imposter", "3"),
+                "4": ("Guess the Logo", "2"),
+                "5": ("GuessMoji", "2"),
+                "6": ("Guess the Movie", "2"),
+                "7": ("Guess the Flag", "2"),
+                "8": ("Soccer Trivia", "2"),
+                "9": ("General Knowledge", "2"),
+                "10": ("Guess the Character", "2"),
+                "11": ("Word Connect", "2"),
+                "12": ("What You Meme", "2"),
+                "13": ("Taylor Swift Or Shakespeare", "2"),
+                "14": ("The Silent Game", "2"),
+                "15": ("20 Questions", "2"),
+                "16": ("Guess the Song", "2"),
+                "17": ("Crazy 8", "2"),
+                "18": ("Guess the Book", "2"),
+                "19": ("Guess the Marvel Character", "2"),
+                "20": ("Guess Addis", "2")
+            }
+            
+            game_name, min_players = game_info.get(game_code, ("General Knowledge", "2"))
+            
+            # Answer query before deleting message
+            await query.answer(f"Selected: {game_name}")
+            
+            # Delete selection message
+            await query.message.delete()
+            
+            # Send selection confirmation
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🎯 <b>{game_name} Game Selected!</b>\n\n"
+                     f"🎮 The game will start in 40 seconds!\n"
+                     f"Send /join to participate.\n\n"
+                     f"<b>Minimum {min_players} players required</b>",
+                parse_mode="HTML"
+            )
+            
+            # Start timer
+            track_game_task(chat_id, asyncio.create_task(start_game_after_delay(chat_id, context, 40)))
+        else:
+            await query.answer("Invalid game selected!", show_alert=True)
 
 
 async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYPE, delay: int) -> None:
@@ -378,6 +635,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "19":
             # Guess the Marvel Character
             await start_marvel_game(chat_id, context, session)
+        elif session.game_code == "20":
+            # Guess Addis
+            await start_guess_addis_game(chat_id, context, session)
 
 
 
@@ -480,86 +740,36 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not session:
         return
     
-    # If waiting for game code, process numbers
+    # If waiting for game code, process numbers (Conditional based on menu_style)
     if session.state == GameState.WAITING_FOR_GAME_CODE:
+        menu_style = settings_manager.get_setting(chat.id, "menu_style", "inline")
+        if menu_style != "list":
+            return # Emojis/Inline mode ignores text codes
+            
         # Check if it's the initiator
         if session.initiator_id and user.id != session.initiator_id:
-            return # Ignore others picking game
+            return 
             
         game_code = message.text.strip()
-        
-        if session.set_game_code(game_code):
-            if game_code == "1":
-                game_name = "Word Unscramble"
-                min_players = "2"
-            elif game_code == "2":
-                game_name = "Story Builder"
-                min_players = "2"
-            elif game_code == "3":
-                game_name = "Guess the Imposter"
-                min_players = "3"
-            elif game_code == "4":
-                game_name = "Guess the Logo"
-                min_players = "2"
-            elif game_code == "7":
-                game_name = "Guess the Flag"
-                min_players = "2"
-            elif game_code == "8":
-                game_name = "Soccer Trivia"
-                min_players = "2"
-            elif game_code == "9":
-                game_name = "General Knowledge"
-                min_players = "2"
-            elif game_code == "10":
-                game_name = "Guess the Character"
-                min_players = "2"
-            elif game_code == "11":
-                game_name = "Word Connect"
-                min_players = "2"
-            elif game_code == "12":
-                game_name = "What You Meme"
-                min_players = "2"
-            elif game_code == "13":
-                game_name = "Taylor Swift Or Shakespeare"
-                min_players = "2"
-            elif game_code == "14":
-                game_name = "The Silent Game"
-                min_players = "2"
-            elif game_code == "15":
-                game_name = "20 Questions"
-                min_players = "2"
-            elif game_code == "16":
-                game_name = "Guess the Song"
-                min_players = "2"
-            elif game_code == "17":
-                game_name = "Crazy 8"
-                min_players = "2"
-            elif game_code == "18":
-                game_name = "Guess the Book"
-                min_players = "2"
-            elif game_code == "19":
-                game_name = "Guess the Marvel Character"
-                min_players = "2"
-
+        if game_code in GAMES_METADATA:
+            game_name, min_players = GAMES_METADATA[game_code]
+            if session.set_game_code(game_code):
+                await message.reply_text(
+                    f"🎯 <b>{game_name} Game Selected!</b>\n\n"
+                    "🎮 The game will start in 40 seconds!\n"
+                    "Send /join to participate.\n\n"
+                    f"<b>Minimum {min_players} players required</b>",
+                    parse_mode="HTML"
+                )
+                track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
             else:
-                game_name = "General Knowledge" # Default fallback
-                min_players = "2"
-
-            await message.reply_text(
-                f"🎯 <b>{game_name} Game Selected!</b>\n\n"
-                "🎮 The game will start in 40 seconds!\n"
-                "Send /join to participate.\n\n"
-                f"<b>Minimum {min_players} players required</b>",
-                parse_mode="HTML"
-            )
-            
-            # Schedule game start after 40 seconds (non-blocking)
-            track_game_task(chat.id, asyncio.create_task(start_game_after_delay(chat.id, context, 40)))
+                await message.reply_text("❌ Error starting game. Please try again.")
         else:
-            await message.reply_text(
-                "❌ Invalid game code. Please send <b>1</b> to <b>19</b>.",
-                parse_mode="HTML"
-            )
+            # We don't want to reply to every number in the chat, only if it looks like a selection
+            # But in WAITING_FOR_GAME_CODE, the initiator might have made a mistake.
+            # We'll ignore invalid codes to minimize noise unless it's a clear intention.
+            pass
+        return
 
     
     elif session.state == GameState.IN_PROGRESS and session.game:
@@ -860,6 +1070,23 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_marvel_round(chat.id, context)
+
+        # Handle Guess Addis Game
+        elif session.game_code == "20":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                primary_answer = session.game.resolve_round(correct=True)
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"The place was: <b>{primary_answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                # Next round
+                await start_guess_addis_round(chat.id, context)
 
         # Handle Word Connect Game
         elif session.game_code == "11":
@@ -1174,7 +1401,11 @@ async def end_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) ->
     # Handle Word Unscramble Game (and others with scores)
     scoreboard = session.game.get_scoreboard()
     
-
+    # Save scores to persistent leaderboard
+    try:
+        await record_game_scores(scoreboard, session.game_code, chat_id, context)
+    except Exception as e:
+        logger.error(f"Error recording leaderboard scores: {e}")
     
     winners = session.game.get_winners()
     
@@ -1823,6 +2054,75 @@ async def marvel_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round
         
         # Start next round
         await start_marvel_round(chat_id, context)
+
+
+async def start_guess_addis_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Guess Addis game."""
+    await start_guess_addis_round(chat_id, context)
+
+
+async def start_guess_addis_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Guess Addis."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "20":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    image_path, round_num = result
+    
+    try:
+        with open(image_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"🏘️ <b>Guess Addis! (Sefer)</b>\n\n"
+                        f"Round {round_num}/{session.game.rounds_limit}\n"
+                        f"First to guess correctly wins! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending Guess Addis image: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading image. Skipping round...")
+        await start_guess_addis_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(addis_timeout(chat_id, context, round_num)))
+
+
+async def addis_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for Guess Addis."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "20":
+        return
+    
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\nThe correct answer was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Start next round
+        await start_guess_addis_round(chat_id, context)
 
 
 async def start_guessmoji_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3216,6 +3516,185 @@ async def handle_c8_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer("Use the 'Play / Draw' button to interact!", show_alert=True)
 
 
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /leaderboard command to show the group leaderboard."""
+    chat = update.effective_chat
+
+    # Only work in groups
+    if chat.type == ChatType.PRIVATE:
+        await update.message.reply_text("Leaderboards only work in groups!")
+        return
+
+    # Show total leaderboard page 1
+    text, reply_markup = _build_leaderboard_message(page=1, game_filter=None)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+async def handle_leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline button presses for leaderboard navigation."""
+    query = update.callback_query
+    data = query.data  # e.g. "lb_page_2", "lb_game_Guess the Logo", "lb_back"
+
+    if data == "lb_noop":
+        await query.answer()
+        return
+
+    if data == "lb_back" or data == "lb_total":
+        # Back to total leaderboard
+        text, reply_markup = _build_leaderboard_message(page=1, game_filter=None)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data == "lb_games":
+        # Show game filter selection
+        text, reply_markup = _build_game_filter_message()
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("lb_page_"):
+        # Pagination for total leaderboard
+        try:
+            page = int(data.split("_")[2])
+        except (IndexError, ValueError):
+            page = 1
+        text, reply_markup = _build_leaderboard_message(page=page, game_filter=None)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("lb_gpage_"):
+        # Pagination for game-filtered leaderboard: lb_gpage_<page>_<game_name>
+        parts = data.split("_", 3)  # ['lb', 'gpage', '<page>', '<game_name>']
+        try:
+            page = int(parts[2])
+            game_name = parts[3]
+        except (IndexError, ValueError):
+            await query.answer("Error")
+            return
+        text, reply_markup = _build_leaderboard_message(page=page, game_filter=game_name)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    if data.startswith("lb_game_"):
+        # Filter by specific game
+        game_name = data[8:]  # everything after "lb_game_"
+        text, reply_markup = _build_leaderboard_message(page=1, game_filter=game_name)
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
+        await query.answer()
+        return
+
+    await query.answer()
+
+
+def _build_leaderboard_message(page: int, game_filter: Optional[str] = None):
+    """
+    Build the leaderboard text and inline keyboard.
+    Returns (text, InlineKeyboardMarkup).
+    """
+    if game_filter:
+        entries, current_page, total_pages = get_game_leaderboard(game_filter, page)
+        title = f"<b>{game_filter} Leaderboard</b>"
+    else:
+        entries, current_page, total_pages = get_total_leaderboard(page)
+        title = "<b>All-Time Leaderboard</b>"
+
+    if not entries:
+        text = f"{title}\n\nNo scores recorded yet! Play some games first."
+        keyboard = []
+        if game_filter:
+            keyboard.append([InlineKeyboardButton("< Back to Overall", callback_data="lb_total")])
+        return text, InlineKeyboardMarkup(keyboard) if keyboard else None
+
+    # Build leaderboard text
+    text = f"{title}\n\n"
+    start_rank = (current_page - 1) * 10 + 1
+    for i, (uid, username, score) in enumerate(entries):
+        rank = start_rank + i
+        medal = "#1" if rank == 1 else "#2" if rank == 2 else "#3" if rank == 3 else f"#{rank}"
+        text += f"{medal} <a href=\"tg://user?id={uid}\"><b>{username}</b></a> — {score} pts\n"
+
+    text += f"\nPage {current_page}/{total_pages}"
+
+    # Build keyboard
+    rows = []
+
+    # Pagination row
+    nav_buttons = []
+    if current_page > 1:
+        if game_filter:
+            nav_buttons.append(InlineKeyboardButton("< Prev", callback_data=f"lb_gpage_{current_page - 1}_{game_filter}"))
+        else:
+            nav_buttons.append(InlineKeyboardButton("< Prev", callback_data=f"lb_page_{current_page - 1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton(" ", callback_data="lb_noop"))
+
+    nav_buttons.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="lb_noop"))
+
+    if current_page < total_pages:
+        if game_filter:
+            nav_buttons.append(InlineKeyboardButton("Next >", callback_data=f"lb_gpage_{current_page + 1}_{game_filter}"))
+        else:
+            nav_buttons.append(InlineKeyboardButton("Next >", callback_data=f"lb_page_{current_page + 1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton(" ", callback_data="lb_noop"))
+
+    rows.append(nav_buttons)
+
+    # Filter / back buttons
+    if game_filter:
+        rows.append([InlineKeyboardButton("< Back to Overall", callback_data="lb_total")])
+        rows.append([InlineKeyboardButton("Filter by Game", callback_data="lb_games")])
+    else:
+        rows.append([InlineKeyboardButton("Filter by Game", callback_data="lb_games")])
+
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _build_game_filter_message():
+    """
+    Build a message showing all available games as filter buttons.
+    Returns (text, InlineKeyboardMarkup).
+    """
+    game_names = get_game_names()
+
+    if not game_names:
+        text = "<b>Filter by Game</b>\n\nNo games with recorded scores yet!"
+        keyboard = [[InlineKeyboardButton("< Back", callback_data="lb_total")]]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    text = "<b>Filter by Game</b>\n\nSelect a game to view its leaderboard:"
+
+    rows = []
+    # Two buttons per row
+    for i in range(0, len(game_names), 2):
+        row = [InlineKeyboardButton(game_names[i], callback_data=f"lb_game_{game_names[i]}")]
+        if i + 1 < len(game_names):
+            row.append(InlineKeyboardButton(game_names[i + 1], callback_data=f"lb_game_{game_names[i + 1]}"))
+        rows.append(row)
+
+    rows.append([InlineKeyboardButton("< Back to Overall", callback_data="lb_total")])
+
+    return text, InlineKeyboardMarkup(rows)
+
+
 def main() -> None:
     """Start the bot."""
     # Get bot token from environment
@@ -3238,6 +3717,11 @@ def main() -> None:
     application.add_handler(CommandHandler("quit", quit_command))
     application.add_handler(CommandHandler("vote", vote_command))
     application.add_handler(CommandHandler("extend", extend_command))
+    application.add_handler(CommandHandler("leaderboard", leaderboard_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CallbackQueryHandler(handle_game_menu_callback, pattern="^game_"))
+    application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^set_"))
+    application.add_handler(CallbackQueryHandler(handle_leaderboard_callback, pattern="^lb_"))
     application.add_handler(CallbackQueryHandler(handle_vote_callback, pattern="^vote_"))
     application.add_handler(CallbackQueryHandler(handle_ts_callback, pattern="^ts_vote_"))
     application.add_handler(CallbackQueryHandler(handle_quit_vote_callback, pattern="^quit_game_vote$"))

@@ -40,3 +40,6 @@ env/
 Thumbs.db
 
 games/.DS_Store
+
+# Leaderboard data
+leaderboard_data.json
