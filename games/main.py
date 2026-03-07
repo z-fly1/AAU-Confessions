@@ -47,6 +47,7 @@ from crazy_eight import Crazy8Game
 from guess_the_book import GuessTheBookGame
 from guess_the_marvel import GuessMarvelGame
 from guess_addis import GuessAddisGame
+from hear_me_out import HearMeOutGame
 from settings_manager import settings_manager
 from leaderboard import (
     record_game_scores,
@@ -148,7 +149,7 @@ GAME_CATEGORIES = {
         "games": [("16", "Guess the Song"), ("12", "What You Meme")]
     },
     "Party Games": {
-        "games": [("3", "Guess the Imposter"), ("14", "The Silent Game"), ("15", "20 Questions")]
+        "games": [("3", "Guess the Imposter"), ("14", "The Silent Game"), ("15", "20 Questions"), ("21", "Hear Me Out")]
     },
     "Card Games": {
         "games": [("17", "Crazy 8")]
@@ -177,7 +178,8 @@ GAMES_METADATA = {
     "17": ("Crazy 8", "2"),
     "18": ("Guess the Book", "2"),
     "19": ("Guess the Marvel Character", "2"),
-    "20": ("Guess Addis", "2")
+    "20": ("Guess Addis", "2"),
+    "21": ("Hear Me Out", "2")
 }
 
 
@@ -506,7 +508,8 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
                 "17": ("Crazy 8", "2"),
                 "18": ("Guess the Book", "2"),
                 "19": ("Guess the Marvel Character", "2"),
-                "20": ("Guess Addis", "2")
+                "20": ("Guess Addis", "2"),
+                "21": ("Hear Me Out", "2")
             }
             
             game_name, min_players = game_info.get(game_code, ("General Knowledge", "2"))
@@ -643,8 +646,25 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "20":
             # Guess Addis
             await start_guess_addis_game(chat_id, context, session)
+        elif session.game_code == "21":
+            # Hear Me Out
+            await start_hear_me_out_game(chat_id, context, session)
 
 
+
+
+async def start_hear_me_out_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Hear Me Out game."""
+    start_text = session.game.start_game()
+    current_player_id = session.game.get_current_player_id()
+    current_player_name = session.game.get_current_player_name()
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🎂 <b>{start_text}</b>\n\n"
+             f"👉 It's <a href=\"tg://user?id={current_player_id}\">{current_player_name}</a>'s turn! Send a picture.",
+        parse_mode="HTML"
+    )
 
 def start_story_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     """Start the story builder game."""
@@ -2878,6 +2898,46 @@ async def wdym_timeout_manager(chat_id: int, context: ContextTypes.DEFAULT_TYPE,
                 await start_wdym_round(chat_id, context)
 
 
+async def process_hear_me_out_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Process a photo submission for the Hear Me Out game."""
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    if session.game.get_current_player_id() != user.id:
+        return
+        
+    photo = message.photo[-1]  # Get highest resolution
+    file = await context.bot.get_file(photo.file_id)
+    
+    # Save the photo temporarily
+    tmp_path = f"/tmp/hmo_user_{user.id}_{session.game.current_turn}.jpg"
+    await file.download_to_drive(tmp_path)
+    
+    # Process it
+    composite_path = session.game.submit_picture(user.id, tmp_path)
+    if not composite_path:
+        await message.reply_text("❌ Error processing picture.")
+        return
+        
+    if session.game.is_game_over():
+        await message.reply_photo(
+            photo=open(composite_path, 'rb'),
+            caption="🎉 <b>The Hear Me Out cake is complete!</b>",
+            parse_mode="HTML"
+        )
+        await end_game(chat.id, context, session)
+    else:
+        current_player_id = session.game.get_current_player_id()
+        current_player_name = session.game.get_current_player_name()
+        
+        await message.reply_photo(
+            photo=open(composite_path, 'rb'),
+            caption=f"🎂 <b>Picture added!</b>\n\n"
+                    f"👉 It's <a href=\"tg://user?id={current_player_id}\">{current_player_name}</a>'s turn! Send a picture.",
+            parse_mode="HTML"
+        )
+
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Detect meme submissions by watching for photos in WDYM games."""
     message = update.effective_message
@@ -2895,6 +2955,11 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if session.game_code == "14":
         if await process_silent_game_content(update, context, session):
             return
+
+    # Check for Hear Me Out photo
+    if session.game_code == "21":
+        await process_hear_me_out_photo(update, context, session)
+        return
 
     if session.game_code != "12" or not session.game.round_in_progress:
         return
