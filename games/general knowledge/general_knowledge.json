@@ -1,638 +1,398 @@
 [
     {
-        "question": "What is the Spanish word for bull?",
-        "answer": "Toro"
+        "question": "What planet is known as the Red Planet?",
+        "answer": "Mars"
     },
     {
-        "question": "What is the capital of the Philippines?",
-        "answer": "Manila"
+        "question": "What is the largest ocean on Earth?",
+        "answer": "Pacific Ocean"
     },
     {
-        "question": "Who died in 1948, having never won the Nobel Peace Prize? (It has been called the greatest omission in the history of the award)",
-        "answer": "Mohandas Gandhi"
+        "question": "Who wrote the play 'Romeo and Juliet'?",
+        "answer": "William Shakespeare"
     },
     {
-        "question": "According to cliché, what do birds of a feather do?",
-        "answer": "Flock together"
+        "question": "What is the capital city of Japan?",
+        "answer": "Tokyo"
     },
     {
-        "question": "What element has symbol Pb?",
-        "answer": "Lead"
+        "question": "What gas do plants absorb from the atmosphere during photosynthesis?",
+        "answer": "Carbon dioxide"
     },
     {
-        "question": "Who was John Lennon's second wife?",
-        "answer": "Yoko Ono"
+        "question": "What is the hardest natural substance on Earth?",
+        "answer": "Diamond"
     },
     {
-        "question": "The West Bank is one Palestinian territory. What is the other one?",
-        "answer": "The Gaza Strip"
+        "question": "What is the largest mammal in the world?",
+        "answer": "Blue whale"
     },
     {
-        "question": "In what language was Catholic mass always delivered, until the 1960s?",
-        "answer": "Latin"
+        "question": "What instrument has 88 keys?",
+        "answer": "Piano"
     },
     {
-        "question": "What country built the Maginot Line to resist invasion from its eastern neighbor?",
-        "answer": "France"
+        "question": "Which continent is the Sahara Desert located on?",
+        "answer": "Africa"
     },
     {
-        "question": "Who are the best-selling Swedish band of all time?",
-        "answer": "ABBA"
+        "question": "What is the boiling point of water at sea level in Celsius?",
+        "answer": "100"
     },
     {
-        "question": "What city is bordered by the Golden Horn, the Bosphorus, and the Sea of Marmara?",
-        "answer": "Istanbul"
+        "question": "Who painted the Mona Lisa?",
+        "answer": "Leonardo da Vinci"
     },
     {
-        "question": "What is the term for the smallest animal in a litter?",
-        "answer": "Runt"
+        "question": "Which country is famous for the Great Wall?",
+        "answer": "China"
     },
     {
-        "question": "What single word sounds like \"Youth in Asia\"?",
-        "answer": "Euthanasia"
+        "question": "What is the smallest prime number?",
+        "answer": "2"
     },
     {
-        "question": "On what island would you find the city of Honolulu?",
-        "answer": "Oahu"
-    },
-    {
-        "question": "Two elements of the periodic table start with Z. Name either.",
-        "answer": [
-            "Zinc",
-            "Zirconium"
-        ]
-    },
-    {
-        "question": "Who said, of his son, \"I want Brooklyn to be Christened, but I don’t know into what religion yet\"?",
-        "answer": "David Beckham"
-    },
-    {
-        "question": "What is the nearest city to New York City which has a population over 10 million?",
-        "answer": "Mexico City"
-    },
-    {
-        "question": "What could Cassandra, Jeremiah, and Paul the Octopus see that most people can not?",
-        "answer": "The future"
-    },
-    {
-        "question": "Who starred as James Bond immediately before Daniel Craig?",
-        "answer": "Pierce Brosnan"
-    },
-    {
-        "question": "What former patent clerk was named Time Magazine's \"Person of the Century\" in 1999?",
-        "answer": "Albert Einstein"
-    },
-    {
-        "question": "What is the word for a male goose?",
-        "answer": "Gander"
-    },
-    {
-        "question": "Which country has won the most men's soccer World Cups?",
-        "answer": "Brazil"
-    },
-    {
-        "question": "What is Islam's holiest city?",
-        "answer": "Mecca"
-    },
-    {
-        "question": "Who resigned as Apple CEO in 2011?",
-        "answer": "Steve Jobs"
-    },
-    {
-        "question": "What \"Wild World\" singer changed his name to Yusuf Islam in 1977?",
-        "answer": "Cat Stevens"
-    },
-    {
-        "question": "Who wrote the \"Moonlight Sonata\"?",
-        "answer": "Ludwig van Beethoven"
-    },
-    {
-        "question": "What did Little Miss Muffet eat while sitting on a tuffet?",
-        "answer": "Curds and whey"
-    },
-    {
-        "question": "Who was the king of the Roman gods?",
-        "answer": "Jupiter"
-    },
-    {
-        "question": "Among all the cities in the world with a metro population over 1 million people, which one is last alphabetically?",
-        "answer": "Zürich"
-    },
-    {
-        "question": "What type of animal has a head, thorax, and abdomen?",
-        "answer": "Insect"
-    },
-    {
-        "question": "What did Abebe Bikila wear on his feet when winning the marathon at the 1960 Summer Olympics?",
-        "answer": "Nothing"
-    },
-    {
-        "question": "What African country had an outbreak of piracy in the early 21st century?",
-        "answer": "Somalia"
-    },
-    {
-        "question": "Who served as Prime Minister of the U.K. from 1937–1940?",
-        "answer": "Neville Chamberlain"
-    },
-    {
-        "question": "What is the mineral pyrite commonly known as?",
-        "answer": "Fool's gold"
-    },
-    {
-        "question": "What country borders San Marino?",
-        "answer": "Italy"
-    },
-    {
-        "question": "What two-digit number has the most syllables when spoken?",
-        "answer": "Seventy-seven"
-    },
-    {
-        "question": "Who was rated the #1 guitarist of all time by Rolling Stone magazine?",
-        "answer": "Jimi Hendrix"
-    },
-    {
-        "question": "What is the English translation of the German word \"Wurst\"?",
-        "answer": "Sausage"
-    },
-    {
-        "question": "What is \"good\" when it's HDL and \"bad\" when it's LDL?",
-        "answer": "Cholesterol"
-    },
-    {
-        "question": "What did Moses bring with him when he climbed down from Mt. Sinai?",
-        "answer": "The Ten Commandments"
-    },
-    {
-        "question": "What is the tallest mountain in Africa?",
-        "answer": "Kilimanjaro"
-    },
-    {
-        "question": "What city celebrates the original Oktoberfest?",
-        "answer": "Munich"
-    },
-    {
-        "question": "What is the largest species of animal?",
-        "answer": "The blue whale"
-    },
-    {
-        "question": "What 1972 movie, directed by Francis Ford Coppola, won the Oscar for Best Picture?",
-        "answer": "The Godfather"
-    },
-    {
-        "question": "What Asian country passed Brazil around 2017 to become the world's fifth most populous?",
-        "answer": "Pakistan"
-    },
-    {
-        "question": "What is the Southern Hemisphere's equivalent to the Tropic of Cancer?",
-        "answer": "Tropic of Capricorn"
-    },
-    {
-        "question": "What \"secret\" society has counted fourteen U.S. Presidents among its members?",
-        "answer": "Freemasons"
-    },
-    {
-        "question": "In what building is Queen Elizabeth I buried?",
-        "answer": "Westminster Abbey"
-    },
-    {
-        "question": "Who was the second person to walk on the Moon?",
-        "answer": "Buzz Aldrin"
-    },
-    {
-        "question": "What shape are SpongeBob's pants?",
-        "answer": "Square"
-    },
-    {
-        "question": "What city were the Beatles from?",
-        "answer": "Liverpool"
-    },
-    {
-        "question": "What conquistador conquered the Aztecs?",
-        "answer": "Hernán Cortés"
-    },
-    {
-        "question": "Sushi often comes wrapped in nori. What is nori a type of?",
-        "answer": "Seaweed"
-    },
-    {
-        "question": "Who are the parents of Blue Ivy, Rumi, and Sir?",
-        "answer": "Beyoncé and Jay-Z"
-    },
-    {
-        "question": "What is the capital of Saudi Arabia?",
-        "answer": "Riyadh"
-    },
-    {
-        "question": "What city is still commonly known by its former name, Saigon?",
-        "answer": "Ho Chi Minh City"
-    },
-    {
-        "question": "Who crossed the Rubicon?",
-        "answer": "Julius Caesar"
-    },
-    {
-        "question": "Who was ruled to be \"infallible\" at the First Vatican Council of 1869–70?",
-        "answer": "The Pope"
-    },
-    {
-        "question": "In the Old Testament, which two cities were destroyed by fire and brimstone as punishment for their wickedness?",
-        "answer": [
-            "Sodom",
-            "Gomorrah"
-        ]
-    },
-    {
-        "question": "Who recorded the song \"Poker Face\"?",
-        "answer": "Lady Gaga"
-    },
-    {
-        "question": "What is the first book of the Bible?",
-        "answer": "Genesis"
-    },
-    {
-        "question": "What actor lent his basso profondo voice to Mufasa and Darth Vader?",
-        "answer": "James Earl Jones"
-    },
-    {
-        "question": "What Roman numeral is equal to 2159?",
-        "answer": "MMCLIX"
-    },
-    {
-        "question": "What prison was stormed on July 14th, 1789?",
-        "answer": "La Bastille"
-    },
-    {
-        "question": "Who resigned as pope in 2013?",
-        "answer": "Pope Benedict XVI"
-    },
-    {
-        "question": "Who fought Ivan Drago and Clubber Lang?",
-        "answer": "Rocky Balboa"
-    },
-    {
-        "question": "What country's unofficial national anthem is \"Waltzing Matilda\"?",
-        "answer": "Australia"
-    },
-    {
-        "question": "What do we call the mineral Beryl when it's green?",
-        "answer": "Emerald"
-    },
-    {
-        "question": "In what country would you find the city of Haarlem?",
-        "answer": "Netherlands"
-    },
-    {
-        "question": "Who was the first Roman emperor?",
-        "answer": "Augustus"
-    },
-    {
-        "question": "Whose net worth declined by a record $29 billion in a single day due to a decline in the stock of Meta Systems in 2022?",
-        "answer": "Mark Zuckerberg"
-    },
-    {
-        "question": "Who is Steffi Graf's husband?",
-        "answer": "Andre Agassi"
-    },
-    {
-        "question": "How many ships did Helen's face launch?",
-        "answer": "1000"
-    },
-    {
-        "question": "What do pitcher plants eat?",
-        "answer": "Insects"
-    },
-    {
-        "question": "British people call them courgettes. What do Americans call them?",
-        "answer": "Zucchini"
-    },
-    {
-        "question": "Who is the lead singer of The Rolling Stones?",
-        "answer": "Mick Jagger"
-    },
-    {
-        "question": "What South American country has won more major international beauty pageants than any other countries besides the U.S.?",
-        "answer": "Venezuela"
-    },
-    {
-        "question": "What major Japanese city was spared bombing damage during WWII because of its cultural value?",
-        "answer": "Kyoto"
-    },
-    {
-        "question": "Correctly spell the capital of Iceland.",
-        "answer": "Reykjavík"
-    },
-    {
-        "question": "What city hosted the first Modern Olympics in 1896?",
-        "answer": "Athens"
-    },
-    {
-        "question": "Throughout most of the Harry Potter books, who was the headmaster at Hogwarts?",
-        "answer": "Albus Dumbledore"
-    },
-    {
-        "question": "If you are born on August 1st, what is your sign?",
-        "answer": "Leo"
-    },
-    {
-        "question": "What was Mumbai formerly called?",
-        "answer": "Bombay"
-    },
-    {
-        "question": "Not including external territories, what is the world's southernmost country?",
-        "answer": "Chile"
-    },
-    {
-        "question": "In the original Super Mario Brothers, who is Mario's enemy?",
-        "answer": "Bowser"
-    },
-    {
-        "question": "What international song contest was won by ABBA and Celine Dion?",
-        "answer": "Eurovision"
-    },
-    {
-        "question": "What's another name for D sharp?",
-        "answer": "E Flat"
-    },
-    {
-        "question": "Who wrote \"Les Misérables\"?",
-        "answer": "Victor Hugo"
-    },
-    {
-        "question": "What world leader was born as Jorge Mario Bergoglio in 1936 in Buenos Aires?",
-        "answer": "Pope Francis"
-    },
-    {
-        "question": "What landmark is also known as Ayers Rock?",
-        "answer": "Uluru"
-    },
-    {
-        "question": "Which province lies on British Columbia's eastern border?",
-        "answer": "Alberta"
-    },
-    {
-        "question": "What major city has initials HCMC?",
-        "answer": "Ho Chi Minh City"
-    },
-    {
-        "question": "Besides the sun, which star appears brightest from Earth?",
-        "answer": "Sirius"
-    },
-    {
-        "question": "If something is \"prêt-à-porter\" then what can you do with it right away?",
-        "answer": "Wear it"
-    },
-    {
-        "question": "Many cities in Germany have a U-Bahn. What is a U-Bahn?",
-        "answer": "A subway"
-    },
-    {
-        "question": "What are the two \"observer states\" of the UN that are not full members?",
-        "answer": [
-            "Palestine",
-            "Vatican City"
-        ]
-    },
-    {
-        "question": "What does a mixologist make?",
-        "answer": "Cocktails"
-    },
-    {
-        "question": "In what sport was Nadia Comăneci \"perfect\"?",
-        "answer": "Gymnastics"
-    },
-    {
-        "question": "What large desert can be found in China and Mongolia?",
-        "answer": "Gobi"
-    },
-    {
-        "question": "What type of reference book lists synonyms?",
-        "answer": "Thesaurus"
-    },
-    {
-        "question": "It's the third largest city in South Africa, and its name rhymes with a type of headwear commonly worn in India. What is it?",
-        "answer": "Durban"
-    },
-    {
-        "question": "Which musical group is will.i.am a member of?",
-        "answer": "Black Eyed Peas"
-    },
-    {
-        "question": "Who starred as Bella Swan in the movie \"Twilight\"?",
-        "answer": "Kristen Stewart"
-    },
-    {
-        "question": "In what country was Nazi war criminal Adolf Eichmann hiding when Mossad agents captured him in 1960?",
-        "answer": "Argentina"
-    },
-    {
-        "question": "Which two rivers form the boundaries of Mesopotamia?",
-        "answer": [
-            "Tigris",
-            "Euphrates"
-        ]
-    },
-    {
-        "question": "What award is given to the World Cup's leading goal scorer?",
-        "answer": "Golden Boot"
-    },
-    {
-        "question": "According to the Bible, Jesus was born in Bethlehem. But what city did he grow up in?",
-        "answer": "Nazareth"
-    },
-    {
-        "question": "Who was Henry VIII's second wife?",
-        "answer": "Anne Boleyn"
-    },
-    {
-        "question": "What singer is known as \"The Godfather of Soul\"?",
-        "answer": "James Brown"
-    },
-    {
-        "question": "In what activity can someone be \"en pointe\", which means standing on the very tips of their toes?",
-        "answer": "Ballet"
-    },
-    {
-        "question": "What does \"domo arigato\" mean?",
-        "answer": "Thank you"
-    },
-    {
-        "question": "What sweetener is usually used in Diet Coke?",
-        "answer": "Aspartame"
-    },
-    {
-        "question": "What major language sounds very similar to Urdu, but is written with a different script?",
-        "answer": "Hindi"
-    },
-    {
-        "question": "What country was Nefertiti the queen of?",
-        "answer": "Egypt"
-    },
-    {
-        "question": "In what country did fortune cookies originate?",
-        "answer": "United States"
-    },
-    {
-        "question": "What power-up makes Mario temporarily invincible?",
-        "answer": "Star"
-    },
-    {
-        "question": "What type of number are 8, 27, 64, and 125?",
-        "answer": "Perfect cubes"
-    },
-    {
-        "question": "What, primarily, do giant pandas eat?",
-        "answer": "Bamboo"
-    },
-    {
-        "question": "What country borders Switzerland to the west?",
-        "answer": "France"
-    },
-    {
-        "question": "What article of clothing is famously worn by Dracula and Superman?",
-        "answer": "Cape"
-    },
-    {
-        "question": "What movie took place on the moon of the planet Pandora?",
-        "answer": "Avatar"
-    },
-    {
-        "question": "What comet passes near Earth every 76 years?",
-        "answer": "Halley's Comet"
-    },
-    {
-        "question": "What country was formerly known as Ceylon?",
-        "answer": "Sri Lanka"
-    },
-    {
-        "question": "What is necrotizing fasciitis commonly known as?",
-        "answer": "Flesh-eating bacteria"
-    },
-    {
-        "question": "What comes between milli and nano?",
-        "answer": "Micro"
-    },
-    {
-        "question": "From what fish's eggs does caviar traditionally come from?",
-        "answer": "Beluga sturgeon"
-    },
-    {
-        "question": "What plant is used to make tequila?",
-        "answer": "Blue agave"
-    },
-    {
-        "question": "What tongue-tied Bible character relied on his brother Aaron to do his public speaking?",
-        "answer": "Moses"
-    },
-    {
-        "question": "2, 3, 7, 11, and 19 are all examples of what type of number?",
-        "answer": "Prime numbers"
-    },
-    {
-        "question": "What is the name of the three-headed dog that guards Hades?",
-        "answer": "Cerberus"
-    },
-    {
-        "question": "What word means either \"a business tycoon\" or \"a bump on a skiing course\"?",
-        "answer": "Mogul"
-    },
-    {
-        "question": "What are the three most-mentioned fashion labels in hip hop music?",
-        "answer": [
-            "Gucci",
-            "Versace",
-            "Prada"
-        ]
-    },
-    {
-        "question": "What is a chorophobe afraid of?",
-        "answer": "Dancing"
-    },
-    {
-        "question": "What actress starred as Hermione Granger?",
-        "answer": "Emma Watson"
-    },
-    {
-        "question": "What country is mostly located in Anatolia?",
-        "answer": "Turkey"
-    },
-    {
-        "question": "What river flows through Paris?",
-        "answer": "The Seine"
-    },
-    {
-        "question": "Who is Posh Spice's husband?",
-        "answer": "David Beckham"
-    },
-    {
-        "question": "When Jack fell down and broke his crown, who came tumbling after?",
-        "answer": "Jill"
-    },
-    {
-        "question": "What Starbucks size, larger than a grande, is also the Italian word for \"twenty\"?",
-        "answer": "Venti"
-    },
-    {
-        "question": "What is Superman's Achilles heel?",
-        "answer": "Kryptonite"
-    },
-    {
-        "question": "What is Eminem's real name?",
-        "answer": "Marshall Mathers"
-    },
-    {
-        "question": "What toxic element were hatters once exposed to - causing some to become \"mad\"?",
+        "question": "Which planet is closest to the Sun?",
         "answer": "Mercury"
     },
     {
-        "question": "What was the name of Italy's currency prior to the Euro?",
-        "answer": "The Lira"
+        "question": "Who developed the theory of relativity?",
+        "answer": "Albert Einstein"
     },
     {
-        "question": "What is 5 factorial?",
-        "answer": "120"
+        "question": "Which animal is known as the king of the jungle?",
+        "answer": "Lion"
     },
     {
-        "question": "What is the only Olympic sport where the gender of the participant is not considered, and men and women can directly compete against each other?",
-        "answer": "Equestrian"
+        "question": "What is the chemical symbol for gold?",
+        "answer": "Au"
     },
     {
-        "question": "What famous document was King John forced to agree to in 1215?",
-        "answer": "Magna Carta"
+        "question": "What is the tallest mountain in the world?",
+        "answer": "Mount Everest"
     },
     {
-        "question": "Other than Mexico and Canada, what country's territory lies closest to the United States?",
-        "answer": "Russia"
+        "question": "What organ pumps blood through the human body?",
+        "answer": "Heart"
     },
     {
-        "question": "The star Betelgeuse is pronounced like what two English words?",
-        "answer": "Beetle Juice"
+        "question": "Which language has the most native speakers in the world?",
+        "answer": "Mandarin Chinese"
     },
     {
-        "question": "What does the Sandman bring to children?",
-        "answer": "Good dreams"
+        "question": "What is the capital of Canada?",
+        "answer": "Ottawa"
     },
     {
-        "question": "If you follow the Yellow Brick Road, where do you end up?",
-        "answer": "The Emerald City"
+        "question": "Which sport uses a shuttlecock?",
+        "answer": "Badminton"
     },
     {
-        "question": "What is the English translation of the Latin word \"Rex\"?",
-        "answer": "King"
+        "question": "What is the fastest land animal?",
+        "answer": "Cheetah"
     },
     {
-        "question": "What is the biggest stadium in the United Kingdom?",
-        "answer": "Wembley Stadium"
+        "question": "What is the largest continent by land area?",
+        "answer": "Asia"
     },
     {
-        "question": "In the U.S., what profession is practiced by a person who ends their name with \"esquire\"?",
-        "answer": "Law"
+        "question": "Who was the first person to walk on the Moon?",
+        "answer": "Neil Armstrong"
     },
     {
-        "question": "What famous Paris cabaret theater has a name that means \"Red Mill\"?",
-        "answer": "Moulin Rouge"
+        "question": "Which element has the chemical symbol O?",
+        "answer": "Oxygen"
     },
     {
-        "question": "What body part can be affected by cataracts?",
-        "answer": "Eye"
+        "question": "What is the capital of Australia?",
+        "answer": "Canberra"
+    },
+    {
+        "question": "Which organ in the human body is responsible for filtering blood?",
+        "answer": "Kidneys"
+    },
+    {
+        "question": "What is the largest desert in the world?",
+        "answer": "Antarctica"
+    },
+    {
+        "question": "What is the longest river in the world?",
+        "answer": "Nile"
+    },
+    {
+        "question": "Who wrote '1984'?",
+        "answer": "George Orwell"
+    },
+    {
+        "question": "Which country hosted the 2016 Summer Olympics?",
+        "answer": "Brazil"
+    },
+    {
+        "question": "What is the capital of Italy?",
+        "answer": "Rome"
+    },
+    {
+        "question": "Which metal is liquid at room temperature?",
+        "answer": "Mercury"
+    },
+    {
+        "question": "What is the largest island in the world?",
+        "answer": "Greenland"
+    },
+    {
+        "question": "Which planet has the most moons?",
+        "answer": "Saturn"
+    },
+    {
+        "question": "What is the study of earthquakes called?",
+        "answer": "Seismology"
+    },
+    {
+        "question": "What is the currency of the United Kingdom?",
+        "answer": "Pound sterling"
+    },
+    {
+        "question": "Which bird is known for its ability to mimic human speech?",
+        "answer": "Parrot"
+    },
+    {
+        "question": "What is the capital of Egypt?",
+        "answer": "Cairo"
+    },
+    {
+        "question": "Which scientist proposed the theory of evolution by natural selection?",
+        "answer": "Charles Darwin"
+    },
+    {
+        "question": "Which organ is responsible for producing insulin?",
+        "answer": "Pancreas"
+    },
+    {
+        "question": "What is the tallest building in the world?",
+        "answer": "Burj Khalifa"
+    },
+    {
+        "question": "Which country invented paper?",
+        "answer": "China"
+    },
+    {
+        "question": "What is the freezing point of water in Celsius?",
+        "answer": "0"
+    },
+    {
+        "question": "Which blood type is known as the universal donor?",
+        "answer": "O negative"
+    },
+    {
+        "question": "What is the largest planet in our solar system?",
+        "answer": "Jupiter"
+    },
+    {
+        "question": "What is the capital city of Germany?",
+        "answer": "Berlin"
+    },
+    {
+        "question": "Which vitamin is produced when skin is exposed to sunlight?",
+        "answer": "Vitamin D"
+    },
+    {
+        "question": "Which animal is the tallest in the world?",
+        "answer": "Giraffe"
+    },
+    {
+        "question": "What is the only metal that is liquid at room temperature?",
+        "answer": "Mercury"
+    },
+    {
+        "question": "What is the name of the process by which plants lose water vapor through their leaves?",
+        "answer": "Transpiration"
+    },
+    {
+        "question": "Which treaty ended World War I in 1919?",
+        "answer": "Treaty of Versailles"
+    },
+    {
+        "question": "What is the smallest bone in the human body?",
+        "answer": "Stapes"
+    },
+    {
+        "question": "What mathematical constant is approximately equal to 2.71828?",
+        "answer": "Euler's number"
+    },
+    {
+        "question": "What is the capital of Kazakhstan?",
+        "answer": "Astana"
+    },
+    {
+        "question": "What is the longest cranial nerve in the human body?",
+        "answer": "Vagus nerve"
+    },
+    {
+        "question": "Which element has the atomic number 26?",
+        "answer": "Iron"
+    },
+    {
+        "question": "Who composed the opera 'The Magic Flute'?",
+        "answer": "Wolfgang Amadeus Mozart"
+    },
+    {
+        "question": "Which philosopher wrote 'Critique of Pure Reason'?",
+        "answer": "Immanuel Kant"
+    },
+    {
+        "question": "What is the SI unit of electric resistance?",
+        "answer": "Ohm"
+    },
+    {
+        "question": "Which war was triggered by the assassination of Archduke Franz Ferdinand?",
+        "answer": "World War I"
+    },
+    {
+        "question": "What is the rarest naturally occurring stable element on Earth?",
+        "answer": "Tantalum"
+    },
+    {
+        "question": "Which country has the longest coastline in the world?",
+        "answer": "Canada"
+    },
+    {
+        "question": "What is the name of the deepest part of the world's oceans?",
+        "answer": "Challenger Deep"
+    },
+    {
+        "question": "Which mathematician proved Fermat's Last Theorem in 1994?",
+        "answer": "Andrew Wiles"
+    },
+    {
+        "question": "What is the study of fungi called?",
+        "answer": "Mycology"
+    },
+    {
+        "question": "What is the capital city of Mongolia?",
+        "answer": "Ulaanbaatar"
+    },
+    {
+        "question": "Which element is the most abundant in the Earth's crust?",
+        "answer": "Oxygen"
+    },
+    {
+        "question": "Which battle in 1815 marked the final defeat of Napoleon Bonaparte?",
+        "answer": "Battle of Waterloo"
+    },
+    {
+        "question": "What does the 'G' stand for in the unit 'GHz'?",
+        "answer": "Giga"
+    },
+    {
+        "question": "What is the largest moon of Saturn?",
+        "answer": "Titan"
+    },
+    {
+        "question": "Which Renaissance artist sculpted the statue of David?",
+        "answer": "Michelangelo"
+    },
+    {
+        "question": "What branch of mathematics deals with limits and derivatives?",
+        "answer": "Calculus"
+    },
+    {
+        "question": "What is the chemical formula for table salt?",
+        "answer": "NaCl"
+    },
+    {
+        "question": "What language family does Amharic belong to?",
+        "answer": "Afro-Asiatic"
+    },
+    {
+        "question": "Which physicist formulated the uncertainty principle?",
+        "answer": "Werner Heisenberg"
+    },
+    {
+        "question": "What is the world's largest coral reef system?",
+        "answer": "Great Barrier Reef"
+    },
+    {
+        "question": "What is the name of the galaxy that contains our Solar System?",
+        "answer": "Milky Way"
+    },
+    {
+        "question": "Which scientist discovered penicillin in 1928?",
+        "answer": "Alexander Fleming"
+    },
+    {
+        "question": "Which organelle is responsible for producing ATP in cells?",
+        "answer": "Mitochondria"
+    },
+    {
+        "question": "What is the name of the boundary around a black hole beyond which nothing can escape?",
+        "answer": "Event horizon"
+    },
+    {
+        "question": "Which empire built the city of Machu Picchu?",
+        "answer": "Inca Empire"
+    },
+    {
+        "question": "What is the official language of Brazil?",
+        "answer": "Portuguese"
+    },
+    {
+        "question": "Which country was formerly known as Ceylon?",
+        "answer": "Sri Lanka"
+    },
+    {
+        "question": "Which desert is the largest hot desert in the world?",
+        "answer": "Sahara Desert"
+    },
+    {
+        "question": "Which programming language was created by Guido van Rossum?",
+        "answer": "Python"
+    },
+    {
+        "question": "What is the hardest known natural material in the universe?",
+        "answer": "Diamond"
+    },
+    {
+        "question": "Which scientist introduced the three laws of motion?",
+        "answer": "Isaac Newton"
+    },
+    {
+        "question": "What is the longest river in Asia?",
+        "answer": "Yangtze River"
+    },
+    {
+        "question": "What is the main gas found in the Earth's atmosphere?",
+        "answer": "Nitrogen"
+    },
+    {
+        "question": "Which ancient civilization built Petra?",
+        "answer": "Nabataeans"
+    },
+    {
+        "question": "Which ocean current is responsible for warming Western Europe?",
+        "answer": "Gulf Stream"
+    },
+    {
+        "question": "What does DNA stand for?",
+        "answer": "Deoxyribonucleic acid"
+    },
+    {
+        "question": "Which planet has the shortest day in the Solar System?",
+        "answer": "Jupiter"
+    },
+    {
+        "question": "What type of animal is a Komodo dragon?",
+        "answer": "Lizard"
+    },
+    {
+        "question": "Which philosopher is associated with the concept of the 'social contract' and wrote 'Leviathan'?",
+        "answer": "Thomas Hobbes"
+    },
+    {
+        "question": "Which element has the highest melting point of all metals?",
+        "answer": "Tungsten"
+    },
+    {
+        "question": "What is the study of ancient human societies through artifacts called?",
+        "answer": "Archaeology"
     }
 ]
