@@ -48,6 +48,7 @@ from guess_the_book import GuessTheBookGame
 from guess_the_marvel import GuessMarvelGame
 from guess_addis import GuessAddisGame
 from hear_me_out import HearMeOutGame
+from name_the_player import NameThePlayerGame
 from settings_manager import settings_manager
 from leaderboard import (
     record_game_scores,
@@ -136,7 +137,7 @@ GAME_CATEGORIES = {
         "games": [
             ("4", "Guess the Logo"), ("5", "GuessMoji"), ("10", "Guess the Character"),
             ("6", "Guess the Movie"), ("18", "Guess the Book"), ("19", "Guess the Marvel Character"),
-            ("20", "Guess Addis")
+            ("20", "Guess Addis"), ("22", "Name the Player")
         ]
     },
     "Trivia & Knowledge": {
@@ -179,7 +180,8 @@ GAMES_METADATA = {
     "18": ("Guess the Book", "2"),
     "19": ("Guess the Marvel Character", "2"),
     "20": ("Guess Addis", "2"),
-    "21": ("Hear Me Out", "2")
+    "21": ("Hear Me Out", "2"),
+    "22": ("Name the Player", "2")
 }
 
 
@@ -481,10 +483,12 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
     elif data.startswith("game_pick_"):
         game_code = data.replace("game_pick_", "")
         
-        # Load persistent seen images for Guess Addis
+        # Load persistent seen images
         used_images = None
         if game_code == "20":
             used_images = settings_manager.get_setting(chat_id, "seen_addis", [])
+        elif game_code == "22":
+            used_images = settings_manager.get_setting(chat_id, "seen_soccer_players", [])
             
         if session.set_game_code(game_code, used_images=used_images):
             # Define game names and min players
@@ -509,7 +513,8 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
                 "18": ("Guess the Book", "2"),
                 "19": ("Guess the Marvel Character", "2"),
                 "20": ("Guess Addis", "2"),
-                "21": ("Hear Me Out", "2")
+                "21": ("Hear Me Out", "2"),
+                "22": ("Name the Player", "2")
             }
             
             game_name, min_players = game_info.get(game_code, ("General Knowledge", "2"))
@@ -649,6 +654,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "21":
             # Hear Me Out
             await start_hear_me_out_game(chat_id, context, session)
+        elif session.game_code == "22":
+            # Name the Player
+            await start_name_the_player_game(chat_id, context, session)
 
 
 
@@ -1115,6 +1123,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_guess_addis_round(chat.id, context)
+
+        # Handle Name the Player Game
+        elif session.game_code == "22":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                primary_answer = session.game.resolve_round(correct=True)
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"The player was: <b>{primary_answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                # Save progress
+                save_soccer_players_progress(chat.id, session)
+                
+                # Next round
+                await start_name_the_player_round(chat.id, context)
 
         # Handle Word Connect Game
         elif session.game_code == "11":
@@ -1932,6 +1960,83 @@ async def logo_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_n
         
         # Start next round
         await start_logo_round(chat_id, context)
+
+
+async def start_name_the_player_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Name the Player game."""
+    await start_name_the_player_round(chat_id, context)
+
+
+async def start_name_the_player_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Name the Player."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "22":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started (for player order init)
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    image_path, round_num = result
+    
+    try:
+        with open(image_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"⚽ <b>Name the Player!</b>\n\n"
+                        f"First to guess gets a point! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending player image {image_path}: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading image. Skipping round...")
+        await start_name_the_player_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(name_the_player_timeout(chat_id, context, round_num)))
+
+
+async def name_the_player_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for name the player guess."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "22":
+        return
+    
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\nThe player was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Save progress
+        save_soccer_players_progress(chat_id, session)
+        
+        # Start next round
+        await start_name_the_player_round(chat_id, context)
+
+
+def save_soccer_players_progress(chat_id: int, session) -> None:
+    """Save the persistent progress for Name the Player."""
+    if session and session.game_code == "22" and session.game:
+        settings_manager.set_setting(chat_id, "seen_soccer_players", session.game.used_images)
 
 
 async def start_book_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
