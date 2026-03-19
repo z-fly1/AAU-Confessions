@@ -1,5 +1,9 @@
 {
   "-1003696845309": {
-    "menu_style": "inline"
+    "menu_style": "inline",
+    "seen_movie_scenes": [
+      "/Users/adisu/Documents/aau-confessions/games/Movie Scene/Before Sunrise.jpg",
+      "/Users/adisu/Documents/aau-confessions/games/Movie Scene/Superman.jpg"
+    ]
   }
 }

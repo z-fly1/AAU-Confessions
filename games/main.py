@@ -137,7 +137,7 @@ GAME_CATEGORIES = {
         "games": [
             ("4", "Guess the Logo"), ("5", "GuessMoji"), ("10", "Guess the Character"),
             ("6", "Guess the Movie"), ("18", "Guess the Book"), ("19", "Guess the Marvel Character"),
-            ("20", "Guess Addis"), ("22", "Name the Player")
+            ("20", "Guess Addis"), ("22", "Name the Player"), ("23", "Movie Scene")
         ]
     },
     "Trivia & Knowledge": {
@@ -181,7 +181,8 @@ GAMES_METADATA = {
     "19": ("Guess the Marvel Character", "2"),
     "20": ("Guess Addis", "2"),
     "21": ("Hear Me Out", "2"),
-    "22": ("Name the Player", "2")
+    "22": ("Name the Player", "2"),
+    "23": ("Movie Scene", "2")
 }
 
 
@@ -489,6 +490,8 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
             used_images = settings_manager.get_setting(chat_id, "seen_addis", [])
         elif game_code == "22":
             used_images = settings_manager.get_setting(chat_id, "seen_soccer_players", [])
+        elif game_code == "23":
+            used_images = settings_manager.get_setting(chat_id, "seen_movie_scenes", [])
             
         if session.set_game_code(game_code, used_images=used_images):
             # Define game names and min players
@@ -514,7 +517,8 @@ async def handle_game_menu_callback(update: Update, context: ContextTypes.DEFAUL
                 "19": ("Guess the Marvel Character", "2"),
                 "20": ("Guess Addis", "2"),
                 "21": ("Hear Me Out", "2"),
-                "22": ("Name the Player", "2")
+                "22": ("Name the Player", "2"),
+                "23": ("Movie Scene", "2")
             }
             
             game_name, min_players = game_info.get(game_code, ("General Knowledge", "2"))
@@ -657,6 +661,9 @@ async def start_game_after_delay(chat_id: int, context: ContextTypes.DEFAULT_TYP
         elif session.game_code == "22":
             # Name the Player
             await start_name_the_player_game(chat_id, context, session)
+        elif session.game_code == "23":
+            # Movie Scene
+            await start_movie_scene_game(chat_id, context, session)
 
 
 
@@ -1143,6 +1150,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 # Next round
                 await start_name_the_player_round(chat.id, context)
+
+        # Handle Movie Scene Game
+        elif session.game_code == "23":
+            if session.game.check_answer(user.id, message.text):
+                # Correct answer
+                score = session.game.scores.get(user.id, 0)
+                primary_answer = session.game.resolve_round(correct=True)
+                
+                await message.reply_text(
+                    f"🎉 <b>Correct! <a href=\"tg://user?id={user.id}\">{user.first_name}</a></b>\n\n"
+                    f"The movie was: <b>{primary_answer}</b>\n"
+                    f"Your score: <b>{score}</b> point(s)",
+                    parse_mode="HTML"
+                )
+                
+                # Save progress
+                save_movie_scene_progress(chat.id, session)
+                
+                # Next round
+                await start_movie_scene_round(chat.id, context)
 
         # Handle Word Connect Game
         elif session.game_code == "11":
@@ -1655,6 +1682,53 @@ async def handle_quit_vote_callback(update: Update, context: ContextTypes.DEFAUL
             pass
 
 
+async def forcequit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /forcequit command to instantly quit a game (admins only)."""
+    chat = update.effective_chat
+    user = update.effective_user
+    
+    if chat.type == ChatType.PRIVATE:
+        return
+        
+    session = game_manager.get_game(chat.id)
+    if not session:
+        await update.message.reply_text("⚠️ No active game to quit.")
+        return
+
+    try:
+        member = await chat.get_member(user.id)
+        if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            await update.message.reply_text("❌ Only group admins can force quit a game.")
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        return
+
+    await update.message.reply_text("🛑 <b>Game Force Quit!</b>", parse_mode="HTML")
+    session.end_game()
+    game_manager.remove_game(chat.id)
+    cancel_game_tasks(chat.id)
+
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /export command to export the leaderboard_data.json file."""
+    if update.effective_user.id != 7388700051:
+        return
+    
+    try:
+        with open("leaderboard_data.json", "rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename="leaderboard_data.json",
+                caption="Here is the leaderboard backup."
+            )
+    except FileNotFoundError:
+        await update.message.reply_text("leaderboard_data.json not found.")
+    except Exception as e:
+        await update.message.reply_text(f"Error exporting file: {e}")
+
+
 async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /extend command to extend the joining period."""
     chat = update.effective_chat
@@ -2037,6 +2111,83 @@ def save_soccer_players_progress(chat_id: int, session) -> None:
     """Save the persistent progress for Name the Player."""
     if session and session.game_code == "22" and session.game:
         settings_manager.set_setting(chat_id, "seen_soccer_players", session.game.used_images)
+
+
+async def start_movie_scene_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    """Start the Movie Scene game."""
+    await start_movie_scene_round(chat_id, context)
+
+
+async def start_movie_scene_round(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new round of Movie Scene."""
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "23":
+        return
+
+    # Delay slightly
+    await asyncio.sleep(2)
+    
+    # Ensure game is started (for player order init)
+    if session.game.current_round == 0:
+        session.game.start_game()
+
+    result = session.game.start_new_round()
+    if not result:
+        # Game Over
+        await end_game(chat_id, context, session)
+        return
+
+    image_path, round_num = result
+    
+    try:
+        with open(image_path, 'rb') as f:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=f,
+                caption=f"🎬 <b>Movie Scene!</b>\n\n"
+                        f"First to guess gets a point! (60s)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Error sending movie scene image {image_path}: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Error loading image. Skipping round...")
+        await start_movie_scene_round(chat_id, context)
+        return
+
+    # Start timeout task (60 seconds)
+    track_game_task(chat_id, asyncio.create_task(movie_scene_timeout(chat_id, context, round_num)))
+
+
+async def movie_scene_timeout(chat_id: int, context: ContextTypes.DEFAULT_TYPE, round_num: int) -> None:
+    """Handle timeout for movie scene guess."""
+    await asyncio.sleep(60)
+    
+    session = game_manager.get_game(chat_id)
+    if not session or session.game_code != "23":
+        return
+    
+    # Check if we are still in the same round
+    if session.game.current_round == round_num and session.game.waiting_for_answer:
+        # Resolve round and reveal answer
+        answer = session.game.resolve_round()
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ <b>Time's Up!</b>\n\nThe movie was: <b>{answer}</b>",
+            parse_mode="HTML"
+        )
+        
+        # Save progress
+        save_movie_scene_progress(chat_id, session)
+        
+        # Start next round
+        await start_movie_scene_round(chat_id, context)
+
+
+def save_movie_scene_progress(chat_id: int, session) -> None:
+    """Save the persistent progress for Movie Scene."""
+    if session and session.game_code == "23" and session.game:
+        settings_manager.set_setting(chat_id, "seen_movie_scenes", session.game.used_images)
 
 
 async def start_book_game(chat_id: int, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -3902,6 +4053,8 @@ def main() -> None:
     application.add_handler(CommandHandler("join", join_command))
     application.add_handler(CommandHandler("leave", leave_command))
     application.add_handler(CommandHandler("quit", quit_command))
+    application.add_handler(CommandHandler("forcequit", forcequit_command))
+    application.add_handler(CommandHandler("export", export_command))
     application.add_handler(CommandHandler("vote", vote_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CommandHandler("leaderboard", leaderboard_command))
