@@ -228,6 +228,207 @@ class AdManagement(StatesGroup):
 
 # --- Database ---
 db = None
+
+# --- Comments Cache ---
+COMMENTS_CACHE_FILE = "comments_cache.json"
+comments_cache = {}  # Dict[int, List[Dict[str, Any]]]
+
+def save_comments_cache():
+    try:
+        # Convert keys to strings for JSON serializability
+        serializable_cache = {}
+        for conf_id, comments in comments_cache.items():
+            comments_copy = []
+            for c in comments:
+                c_copy = dict(c)
+                if isinstance(c_copy.get('created_at'), datetime):
+                    c_copy['created_at'] = c_copy['created_at'].isoformat()
+                comments_copy.append(c_copy)
+            serializable_cache[str(conf_id)] = comments_copy
+        with open(COMMENTS_CACHE_FILE, "w") as f:
+            json.dump(serializable_cache, f, indent=4)
+        logging.info("Comments cache saved to JSON.")
+    except Exception as e:
+        logging.error(f"Failed to save comments cache: {e}")
+
+async def load_comments_cache():
+    global comments_cache
+    if os.path.exists(COMMENTS_CACHE_FILE):
+        try:
+            with open(COMMENTS_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            comments_cache = {}
+            for k, v in data.items():
+                for c in v:
+                    if 'created_at' in c and isinstance(c['created_at'], str):
+                        try:
+                            c['created_at'] = datetime.fromisoformat(c['created_at'])
+                        except ValueError:
+                            pass
+                comments_cache[int(k)] = v
+            logging.info(f"Loaded comments cache for {len(comments_cache)} confessions from JSON.")
+        except Exception as e:
+            logging.error(f"Failed to load comments cache from file: {e}")
+            comments_cache = {}
+    else:
+        comments_cache = {}
+
+async def populate_comments_cache():
+    """Fetches the latest 100 approved confessions' comments and populates the cache."""
+    global comments_cache
+    logging.info("Populating comments cache from DB...")
+    query = """
+        SELECT c.id, c.confession_id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
+               COALESCE(up.points, 0) as user_points,
+               us.nickname,
+               us.profile_emoji,
+               us.profile_token,
+               COALESCE(likes.count, 0) as likes_count,
+               COALESCE(dislikes.count, 0) as dislikes_count
+        FROM comments c
+        LEFT JOIN user_points up ON c.user_id = up.user_id
+        LEFT JOIN user_status us ON c.user_id = us.user_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'like' GROUP BY comment_id
+        ) likes ON c.id = likes.comment_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'dislike' GROUP BY comment_id
+        ) dislikes ON c.id = dislikes.comment_id
+        WHERE c.confession_id IN (
+            SELECT id FROM confessions WHERE status = 'approved' ORDER BY id DESC LIMIT 100
+        )
+        ORDER BY c.created_at ASC
+    """
+    try:
+        async with db.acquire() as conn:
+            rows = await conn.fetch(query)
+            
+        new_cache = {}
+        for r in rows:
+            conf_id = r['confession_id']
+            if conf_id not in new_cache:
+                new_cache[conf_id] = []
+            
+            c_dict = dict(r)
+            if not c_dict.get('profile_token'):
+                c_dict['profile_token'] = await get_or_create_profile_token(c_dict['user_id'])
+            new_cache[conf_id].append(c_dict)
+            
+        comments_cache = new_cache
+        save_comments_cache()
+        logging.info(f"Comments cache populated successfully with {len(comments_cache)} confessions.")
+    except Exception as e:
+        logging.error(f"Error populating comments cache: {e}", exc_info=True)
+
+async def get_comments_for_confession_cached(confession_id: int) -> List[Dict[str, Any]]:
+    global comments_cache
+    if confession_id in comments_cache:
+        return comments_cache[confession_id]
+        
+    query = """
+        SELECT c.id, c.confession_id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
+               COALESCE(up.points, 0) as user_points,
+               us.nickname,
+               us.profile_emoji,
+               us.profile_token,
+               COALESCE(likes.count, 0) as likes_count,
+               COALESCE(dislikes.count, 0) as dislikes_count
+        FROM comments c
+        LEFT JOIN user_points up ON c.user_id = up.user_id
+        LEFT JOIN user_status us ON c.user_id = us.user_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'like' GROUP BY comment_id
+        ) likes ON c.id = likes.comment_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'dislike' GROUP BY comment_id
+        ) dislikes ON c.id = dislikes.comment_id
+        WHERE c.confession_id = $1
+        ORDER BY c.created_at ASC
+    """
+    try:
+        async with db.acquire() as conn:
+            rows = await conn.fetch(query, confession_id)
+            
+        comments_list = []
+        for r in rows:
+            c_dict = dict(r)
+            if not c_dict.get('profile_token'):
+                c_dict['profile_token'] = await get_or_create_profile_token(c_dict['user_id'])
+            comments_list.append(c_dict)
+            
+        comments_cache[confession_id] = comments_list
+        save_comments_cache()
+        return comments_list
+    except Exception as e:
+        logging.error(f"Error fetching comments for confession {confession_id}: {e}")
+        return []
+
+async def update_comment_in_cache(comment_id: int):
+    query = """
+        SELECT c.id, c.confession_id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
+               COALESCE(up.points, 0) as user_points,
+               us.nickname,
+               us.profile_emoji,
+               us.profile_token,
+               COALESCE(likes.count, 0) as likes_count,
+               COALESCE(dislikes.count, 0) as dislikes_count
+        FROM comments c
+        LEFT JOIN user_points up ON c.user_id = up.user_id
+        LEFT JOIN user_status us ON c.user_id = us.user_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'like' GROUP BY comment_id
+        ) likes ON c.id = likes.comment_id
+        LEFT JOIN (
+            SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'dislike' GROUP BY comment_id
+        ) dislikes ON c.id = dislikes.comment_id
+        WHERE c.id = $1
+    """
+    try:
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(query, comment_id)
+        if row:
+            c_dict = dict(row)
+            if not c_dict.get('profile_token'):
+                c_dict['profile_token'] = await get_or_create_profile_token(c_dict['user_id'])
+            
+            conf_id = c_dict['confession_id']
+            
+            if conf_id not in comments_cache:
+                comments_cache[conf_id] = []
+                
+            existing_index = -1
+            for idx, c in enumerate(comments_cache[conf_id]):
+                if c['id'] == comment_id:
+                    existing_index = idx
+                    break
+            
+            if existing_index != -1:
+                comments_cache[conf_id][existing_index] = c_dict
+            else:
+                comments_cache[conf_id].append(c_dict)
+                
+            save_comments_cache()
+    except Exception as e:
+        logging.error(f"Error updating comment {comment_id} in cache: {e}")
+
+def remove_comment_from_cache(comment_id: int):
+    global comments_cache
+    found = False
+    for conf_id, comments in list(comments_cache.items()):
+        new_comments = [c for c in comments if c['id'] != comment_id]
+        if len(new_comments) != len(comments):
+            comments_cache[conf_id] = new_comments
+            found = True
+            break
+    if found:
+        save_comments_cache()
+
+def remove_confession_from_cache(confession_id: int):
+    global comments_cache
+    if confession_id in comments_cache:
+        del comments_cache[confession_id]
+        save_comments_cache()
+
 async def create_db_pool():
     try:
         pool = await asyncpg.create_pool(DATABASE_URL)
@@ -549,6 +750,10 @@ async def setup():
         logging.info("Checked/Created 'user_channel_verifications' table.")
 
         logging.info("Database tables setup complete.")
+
+    # Load and populate comments cache
+    await load_comments_cache()
+    await populate_comments_cache()
 
 
 # --- Dummy HTTP Server Functions ---
@@ -884,9 +1089,11 @@ async def forward_voice_to_admin(user_id: int, voice_file_id: str, confession_id
         # Don't raise - we don't want to block the user's comment if forwarding fails
 
 
-async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int ):
-    likes, dislikes = await get_comment_reactions(comment_id)
-    user_reaction = await get_user_reaction(comment_id, viewer_user_id)
+async def build_comment_keyboard(comment_id: int, commenter_user_id: int, viewer_user_id: int, confession_owner_id: int, likes: Optional[int] = None, dislikes: Optional[int] = None, user_reaction: Optional[str] = 'unset'):
+    if likes is None or dislikes is None:
+        likes, dislikes = await get_comment_reactions(comment_id)
+    if user_reaction == 'unset':
+        user_reaction = await get_user_reaction(comment_id, viewer_user_id)
     
     # Use pale emojis by default, regular emojis when user has reacted
     like_emoji = "👍" if user_reaction == 'like' else "👍🏻"
@@ -949,57 +1156,48 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             return
 
         user_page_size = await conn.fetchval("SELECT comments_per_page FROM user_status WHERE user_id = $1", user_id)
-        page_size_to_use = user_page_size if user_page_size is not None else PAGE_SIZE
-        use_pagination = page_size_to_use > 0
+    
+    page_size_to_use = user_page_size if user_page_size is not None else PAGE_SIZE
+    use_pagination = page_size_to_use > 0
+    confession_owner_id = conf_data['user_id']
 
+    comments_raw = await get_comments_for_confession_cached(confession_id)
+    total_count = len(comments_raw)
+    
+    if total_count == 0:
+        msg_text = "<i>No comments yet. Be the first!</i>"
+        if message_to_edit: await message_to_edit.edit_text(msg_text, reply_markup=None)
+        else: await safe_send_message(user_id, msg_text)
+        nav = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
+        await safe_send_message(user_id, "You can add your own comment below:", reply_markup=nav)
+        return
 
-        confession_owner_id = conf_data['user_id']
-        total_count = await conn.fetchval("SELECT COUNT(*) FROM comments WHERE confession_id = $1", confession_id) or 0
-        if total_count == 0:
-            msg_text = "<i>No comments yet. Be the first!</i>"
-            if message_to_edit: await message_to_edit.edit_text(msg_text, reply_markup=None)
-            else: await safe_send_message(user_id, msg_text)
-            nav = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_{confession_id}")]])
-            await safe_send_message(user_id, "You can add your own comment below:", reply_markup=nav)
-            return
+    total_pages = (total_count + page_size_to_use - 1) // page_size_to_use if use_pagination else 1
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * page_size_to_use if use_pagination else 0
+    page_comments = comments_raw[offset : offset + page_size_to_use] if use_pagination else comments_raw
 
-        total_pages = (total_count + page_size_to_use - 1) // page_size_to_use if use_pagination else 1
-        page = max(1, min(page, total_pages))
-        offset = (page - 1) * page_size_to_use if use_pagination else 0
-        limit = page_size_to_use if use_pagination else None
+    viewer_reactions = {}
+    if page_comments:
+        comment_ids = [c['id'] for c in page_comments]
+        async with db.acquire() as conn:
+            rows = await conn.fetch("SELECT comment_id, reaction_type FROM reactions WHERE user_id = $1 AND comment_id = ANY($2)", user_id, comment_ids)
+            for r in rows:
+                viewer_reactions[r['comment_id']] = r['reaction_type']
 
-        query = """
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
-                   COALESCE(up.points, 0) as user_points,
-                   us.nickname,
-                   us.profile_emoji
-            FROM comments c
-            LEFT JOIN user_points up ON c.user_id = up.user_id
-            LEFT JOIN user_status us ON c.user_id = us.user_id
-            WHERE c.confession_id = $1
-            ORDER BY c.created_at ASC
-        """
-        if use_pagination:
-            query += " LIMIT $2 OFFSET $3"
-            comments_raw = await conn.fetch(query, confession_id, limit, offset)
-        else:
-            comments_raw = await conn.fetch(query, confession_id)
-
-
+    comments_by_id = {c['id']: c for c in comments_raw}
     db_id_to_message_id: Dict[int, int] = {}
 
-    if not comments_raw:
+    if not page_comments:
         await safe_send_message(user_id, f"<i>No comments on page {page}.</i>")
     else:
-        for i, c_data_row in enumerate(comments_raw):
-            c_data = dict(c_data_row)
+        for i, c_data in enumerate(page_comments):
             db_id, commenter_uid = c_data['id'], c_data['user_id']
             medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
 
             nickname = c_data.get('nickname') or "Anonymous"
             
-            # --- MODIFICATION: Use profile token for the link ---
-            profile_token = await get_or_create_profile_token(commenter_uid)
+            profile_token = c_data.get('profile_token') or await get_or_create_profile_token(commenter_uid)
             profile_url = f"https://t.me/{bot_info.username}?start=profile_{profile_token}"
             
             if commenter_uid == confession_owner_id:
@@ -1011,7 +1209,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
 
             profile_emoji = c_data.get('profile_emoji') or '👤'
             
-
             admin_info = f" [UID: <code>{commenter_uid}</code>]" if user_id == ADMIN_ID or user_id == CONTACT_ADMIN_ID else ""
             display_tag = f" {profile_emoji} {tag}{medal_str}"
 
@@ -1021,36 +1218,37 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             if parent_db_id:
                 if parent_db_id in db_id_to_message_id:
                     reply_to_msg_id = db_id_to_message_id[parent_db_id]
-                else: 
-                    async with db.acquire() as conn_for_quote:
-                        parent_comment_data = await conn_for_quote.fetchrow(
-                            "SELECT text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption FROM comments WHERE id = $1", parent_db_id
-                        )
-                    if parent_comment_data:
-                        if parent_comment_data['text']:
-                            quoted_text = html.quote(parent_comment_data['text'][:150]) + ('...' if len(parent_comment_data['text']) > 150 else '')
-                        elif parent_comment_data['sticker_file_id']:
-                            quoted_text = "<i>[Sticker]</i>"
-                        elif parent_comment_data['animation_file_id']:
-                             quoted_text = "<i>[GIF]</i>"
-                        elif parent_comment_data['voice_file_id']:
-                             quoted_text = "<i>[Voice Message]</i>"
-                        elif parent_comment_data.get('photo_file_id'):
-                             if parent_comment_data.get('photo_caption'):
-                                 caption_preview = html.quote(parent_comment_data['photo_caption'][:50])
-                                 quoted_text = f"<i>[Photo: {caption_preview}...]</i>"
-                             else:
-                                 quoted_text = "<i>[Photo]</i>"
-                        else:
-                            quoted_text = "<i>[Original message]</i>"
-                        
-                        text_reply_prefix = f"<blockquote>{quoted_text}</blockquote>"
+                
+                parent_comment_data = comments_by_id.get(parent_db_id)
+                if parent_comment_data:
+                    if parent_comment_data['text']:
+                        quoted_text = html.quote(parent_comment_data['text'][:150]) + ('...' if len(parent_comment_data['text']) > 150 else '')
+                    elif parent_comment_data['sticker_file_id']:
+                        quoted_text = "<i>[Sticker]</i>"
+                    elif parent_comment_data['animation_file_id']:
+                         quoted_text = "<i>[GIF]</i>"
+                    elif parent_comment_data['voice_file_id']:
+                         quoted_text = "<i>[Voice Message]</i>"
+                    elif parent_comment_data.get('photo_file_id'):
+                         if parent_comment_data.get('photo_caption'):
+                             caption_preview = html.quote(parent_comment_data['photo_caption'][:50])
+                             quoted_text = f"<i>[Photo: {caption_preview}...]</i>"
+                         else:
+                             quoted_text = "<i>[Photo]</i>"
                     else:
-                        text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
-
+                        quoted_text = "<i>[Original message]</i>"
+                    
+                    text_reply_prefix = f"<blockquote>{quoted_text}</blockquote>"
+                else:
+                    text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
 
             metadata_text = f"<i>{display_tag}{admin_info}</i>"
-            keyboard = await build_comment_keyboard(db_id, commenter_uid, user_id, confession_owner_id)
+            keyboard = await build_comment_keyboard(
+                db_id, commenter_uid, user_id, confession_owner_id,
+                likes=c_data.get('likes_count', 0),
+                dislikes=c_data.get('dislikes_count', 0),
+                user_reaction=viewer_reactions.get(db_id, None)
+            )
             
             sent_message = None
             try:
@@ -1064,7 +1262,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                     sent_message = await bot.send_voice(user_id, voice=c_data['voice_file_id'], reply_to_message_id=reply_to_msg_id)
                     await bot.send_message(user_id, f"{text_reply_prefix}🎙️ Voice Message\n\n{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data.get('photo_file_id'):
-                    # Send photo with caption if available
                     caption_text = ""
                     if c_data.get('photo_caption'):
                         caption_text = f"📷 {html.quote(c_data['photo_caption'])}\n\n{metadata_text}"
@@ -1077,11 +1274,9 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                         caption=caption_text,
                         reply_to_message_id=reply_to_msg_id
                     )
-                    # Send keyboard in separate message if there's reply prefix
                     if text_reply_prefix:
                         await bot.send_message(user_id, text_reply_prefix, reply_markup=keyboard, disable_web_page_preview=True)
                     else:
-                        # Edit the photo message to add keyboard
                         try:
                             await bot.edit_message_reply_markup(
                                 chat_id=user_id,
@@ -1089,7 +1284,6 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
                                 reply_markup=keyboard
                             )
                         except:
-                            # If editing fails, send keyboard in separate message
                             await bot.send_message(user_id, "⬆️", reply_markup=keyboard, disable_web_page_preview=True)
                 elif c_data['text']:
                     full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
@@ -1128,15 +1322,24 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
 
         confession_owner_id = conf_data['user_id']
         
-        # Fetch the parent comment
+        # Fetch the parent comment with all reactions and profile tokens
         parent_comment = await conn.fetchrow("""
-            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.created_at,
+            SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.parent_comment_id, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
-                   us.profile_emoji
+                   us.profile_emoji,
+                   us.profile_token,
+                   COALESCE(likes.count, 0) as likes_count,
+                   COALESCE(dislikes.count, 0) as dislikes_count
             FROM comments c
             LEFT JOIN user_points up ON c.user_id = up.user_id
             LEFT JOIN user_status us ON c.user_id = us.user_id
+            LEFT JOIN (
+                SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'like' GROUP BY comment_id
+            ) likes ON c.id = likes.comment_id
+            LEFT JOIN (
+                SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'dislike' GROUP BY comment_id
+            ) dislikes ON c.id = dislikes.comment_id
             WHERE c.id = $1 AND c.confession_id = $2
         """, parent_comment_id, confession_id)
         
@@ -1144,18 +1347,42 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
             await safe_send_message(user_id, "The comment you're looking for was not found or has been deleted.")
             return
         
-        # Fetch all replies to this parent comment
+        # Fetch all replies to this parent comment with all reactions and profile tokens
         replies = await conn.fetch("""
             SELECT c.id, c.user_id, c.text, c.sticker_file_id, c.animation_file_id, c.voice_file_id, c.photo_file_id, c.photo_caption, c.created_at,
                    COALESCE(up.points, 0) as user_points,
                    us.nickname,
-                   us.profile_emoji
+                   us.profile_emoji,
+                   us.profile_token,
+                   COALESCE(likes.count, 0) as likes_count,
+                   COALESCE(dislikes.count, 0) as dislikes_count
             FROM comments c
             LEFT JOIN user_points up ON c.user_id = up.user_id
             LEFT JOIN user_status us ON c.user_id = us.user_id
+            LEFT JOIN (
+                SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'like' GROUP BY comment_id
+            ) likes ON c.id = likes.comment_id
+            LEFT JOIN (
+                SELECT comment_id, COUNT(*) as count FROM reactions WHERE reaction_type = 'dislike' GROUP BY comment_id
+            ) dislikes ON c.id = dislikes.comment_id
             WHERE c.parent_comment_id = $1 AND c.confession_id = $2
             ORDER BY c.created_at ASC
         """, parent_comment_id, confession_id)
+
+    # Fetch viewer reactions for the whole thread in a single query
+    viewer_reactions = {}
+    all_comments = []
+    if parent_comment:
+        all_comments.append(dict(parent_comment))
+    for r in replies:
+        all_comments.append(dict(r))
+
+    if all_comments:
+        comment_ids = [c['id'] for c in all_comments]
+        async with db.acquire() as conn:
+            rows = await conn.fetch("SELECT comment_id, reaction_type FROM reactions WHERE user_id = $1 AND comment_id = ANY($2)", user_id, comment_ids)
+            for r in rows:
+                viewer_reactions[r['comment_id']] = r['reaction_type']
 
     # Display thread header
     await safe_send_message(user_id, f"<b>📌 Comment Thread in Confession #{confession_id}</b>")
@@ -1168,7 +1395,7 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
         medal_str = f" ⚡︎{c_data.get('user_points', 0)} Aura"
         nickname = c_data.get('nickname') or "Anonymous"
         
-        profile_token = await get_or_create_profile_token(commenter_uid)
+        profile_token = c_data.get('profile_token') or await get_or_create_profile_token(commenter_uid)
         profile_url = f"https://t.me/{bot_info.username}?start=profile_{profile_token}"
         
         if commenter_uid == confession_owner_id:
@@ -1190,7 +1417,12 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
             reply_to_msg_id = db_id_to_message_id[parent_comment_id]
 
         metadata_text = f"<i>{display_tag}{admin_info}</i>"
-        keyboard = await build_comment_keyboard(db_id, commenter_uid, user_id, confession_owner_id)
+        keyboard = await build_comment_keyboard(
+            db_id, commenter_uid, user_id, confession_owner_id,
+            likes=c_data.get('likes_count', 0),
+            dislikes=c_data.get('dislikes_count', 0),
+            user_reaction=viewer_reactions.get(db_id, None)
+        )
         
         sent_message = None
         try:
@@ -1204,7 +1436,6 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
                 sent_message = await bot.send_voice(user_id, voice=c_data['voice_file_id'], reply_to_message_id=reply_to_msg_id)
                 await bot.send_message(user_id, f"{text_reply_prefix}🎙️ Voice Message\n\n{metadata_text}", reply_markup=keyboard, disable_web_page_preview=True)
             elif c_data.get('photo_file_id'):
-                # Send photo with caption if available
                 caption_text = ""
                 if c_data.get('photo_caption'):
                     caption_text = f"📷 {html.quote(c_data['photo_caption'])}\n\n{metadata_text}"
@@ -1217,7 +1448,6 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
                     caption=caption_text,
                     reply_to_message_id=reply_to_msg_id
                 )
-                # Try to add keyboard to photo message
                 try:
                     await bot.edit_message_reply_markup(
                         chat_id=user_id,
@@ -1225,7 +1455,6 @@ async def show_comment_thread(user_id: int, confession_id: int, parent_comment_i
                         reply_markup=keyboard
                     )
                 except:
-                    # If editing fails, send keyboard in separate message
                     await bot.send_message(user_id, "⬆️", reply_markup=keyboard, disable_web_page_preview=True)
             elif c_data['text']:
                 full_text = f"{text_reply_prefix}💬 {html.quote(c_data['text'])}\n\n{metadata_text}"
@@ -3479,6 +3708,9 @@ async def admin_handle_deletion_request(callback_query: types.CallbackQuery):
                 await safe_send_message(req_data['user_id'], f"❌ Your request to delete Confession #{conf_id} was rejected by the admin.")
                 final_status = "Rejected"
 
+    if action == "approve" and final_status == "Approved & Deleted":
+        remove_confession_from_cache(conf_id)
+
     await callback_query.message.edit_text(callback_query.message.html_text + f"\n\n-- Deletion Request: {final_status} --", reply_markup=None)
     await callback_query.answer(f"Request {final_status}.")
 
@@ -3492,6 +3724,8 @@ async def handle_admin_delete_comment(callback: types.CallbackQuery):
         comment_id = int(callback.data.split("_")[-1])
         async with db.acquire() as conn:
             await conn.execute("DELETE FROM comments WHERE id = $1", comment_id)
+        
+        remove_comment_from_cache(comment_id)
         
         await callback.message.edit_text(f"✅ Comment #{comment_id} deleted.")
         await callback.answer("Comment deleted.")
@@ -3835,6 +4069,7 @@ async def receive_comment(message: types.Message, state: FSMContext):
                         "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id", 
                         conf_id, user_id, comm_text, sticker_id, animation_id, voice_id, None, None
                     )
+        await update_comment_in_cache(new_comm_id)
         await message.answer("💬 Your comment has been added!", reply_markup=keyboard);
         await update_channel_post_button(conf_id)
         
@@ -3990,16 +4225,17 @@ async def receive_reply(message: types.Message, state: FSMContext):
                 conf_data = await conn.fetchrow("SELECT user_id FROM confessions WHERE id = $1", conf_id)
                 
                 if message.photo:
-                    await conn.execute(
-                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                    new_comm_id = await conn.fetchval(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
                         conf_id, user_id, None, None, None, None, photo_id, photo_caption, parent_id
                     )
                 else:
-                    await conn.execute(
-                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                    new_comm_id = await conn.fetchval(
+                        "INSERT INTO comments (confession_id, user_id, text, sticker_file_id, animation_file_id, voice_file_id, photo_file_id, photo_caption, parent_comment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
                         conf_id, user_id, reply_text, sticker_id, animation_id, voice_id, None, None, parent_id
                     )
 
+        await update_comment_in_cache(new_comm_id)
         await message.answer("↪️ Your reply has been sent!", reply_markup=keyboard)
         await update_channel_post_button(conf_id)
         
@@ -4080,7 +4316,24 @@ async def handle_reaction(callback_query: types.CallbackQuery):
                         )
 
             if point_delta != 0: await update_user_points(conn, info['comm_uid'], point_delta)
-    kbd = await build_comment_keyboard(comm_id, info['comm_uid'], user_id, info['conf_owner_id'])
+    
+    await update_comment_in_cache(comm_id)
+    
+    likes_count, dislikes_count = 0, 0
+    conf_id = info['conf_id']
+    if conf_id in comments_cache:
+        for c in comments_cache[conf_id]:
+            if c['id'] == comm_id:
+                likes_count = c.get('likes_count', 0)
+                dislikes_count = c.get('dislikes_count', 0)
+                break
+                
+    kbd = await build_comment_keyboard(
+        comm_id, info['comm_uid'], user_id, info['conf_owner_id'],
+        likes=likes_count,
+        dislikes=dislikes_count,
+        user_reaction=r_type if "removed" not in alert else None
+    )
     try: await callback_query.message.edit_reply_markup(reply_markup=kbd); await callback_query.answer(alert)
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower(): logging.warning(f"Could not edit markup for react on comment {comm_id}: {e}")
