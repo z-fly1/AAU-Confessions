@@ -1218,28 +1218,7 @@ async def show_comments_for_confession(user_id: int, confession_id: int, message
             if parent_db_id:
                 if parent_db_id in db_id_to_message_id:
                     reply_to_msg_id = db_id_to_message_id[parent_db_id]
-                
-                parent_comment_data = comments_by_id.get(parent_db_id)
-                if parent_comment_data:
-                    if parent_comment_data['text']:
-                        quoted_text = html.quote(parent_comment_data['text'][:150]) + ('...' if len(parent_comment_data['text']) > 150 else '')
-                    elif parent_comment_data['sticker_file_id']:
-                        quoted_text = "<i>[Sticker]</i>"
-                    elif parent_comment_data['animation_file_id']:
-                         quoted_text = "<i>[GIF]</i>"
-                    elif parent_comment_data['voice_file_id']:
-                         quoted_text = "<i>[Voice Message]</i>"
-                    elif parent_comment_data.get('photo_file_id'):
-                         if parent_comment_data.get('photo_caption'):
-                             caption_preview = html.quote(parent_comment_data['photo_caption'][:50])
-                             quoted_text = f"<i>[Photo: {caption_preview}...]</i>"
-                         else:
-                             quoted_text = "<i>[Photo]</i>"
-                    else:
-                        quoted_text = "<i>[Original message]</i>"
-                    
-                    text_reply_prefix = f"<blockquote>{quoted_text}</blockquote>"
-                else:
+                if parent_db_id not in comments_by_id:
                     text_reply_prefix = "↪️ <i>Replying to another comment...</i>\n"
 
             metadata_text = f"<i>{display_tag}{admin_info}</i>"
@@ -3401,6 +3380,14 @@ async def display_current_review_confession(message: types.Message, state: FSMCo
         skip_row.append(InlineKeyboardButton(text="Next +10 ⏭️", callback_data="admin_review_nav_skip_10"))
     if skip_row:
         builder.row(*skip_row)
+
+    # "Jump to Last" button — only show if not already at or near the last item
+    if current_index < len(pending_ids) - 1:
+        remaining = len(pending_ids) - 1 - current_index
+        builder.row(InlineKeyboardButton(
+            text=f"⏩ Jump to Last (#{len(pending_ids)})",
+            callback_data=f"admin_review_nav_skip_{remaining}"
+        ))
 
     builder.row(InlineKeyboardButton(text="Exit Review", callback_data="admin_review_nav_exit"))
     
