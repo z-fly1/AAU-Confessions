@@ -25,6 +25,7 @@ import itertools
 import secrets # <-- NEW: For generating secure tokens
 import json
 from chat.start_chat_api import start_chat_api
+from games.world_cup_data import WC_GROUPS, GROUP_ORDER, ROUND_NAMES, build_matchups, build_next_round
 
 # --- Dummy HTTP Server Imports ---
 from aiohttp import web
@@ -152,7 +153,8 @@ bot_info = None
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="⚽️ FIFA WC 2026™")]
     ],
     resize_keyboard=True
 )
@@ -162,7 +164,8 @@ admin_main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📬 Review Pending")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="⚽️ FIFA WC 2026™")]
     ],
     resize_keyboard=True
 )
@@ -172,7 +175,8 @@ contact_admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📢 Post Ads")],
         [KeyboardButton(text="✍️ Confess")],
-        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")]
+        [KeyboardButton(text="👤 Profile"), KeyboardButton(text="ℹ️ Help")],
+        [KeyboardButton(text="⚽️ FIFA WC 2026™")]
     ],
     resize_keyboard=True
 )
@@ -212,6 +216,10 @@ class ChatState(StatesGroup):
     
 class ReportForm(StatesGroup):
     waiting_for_reason = State()
+
+class WorldCupForm(StatesGroup):
+    group_selection = State()
+    knockout_selection = State()
 
 
 # --- ADMIN REVIEW --- New state for the review process
@@ -685,14 +693,35 @@ async def setup():
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS profile_token VARCHAR(16) NULL;")
         await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_status_profile_token ON user_status(profile_token);")
         logging.info("Ensured 'profile_token' column and index exist in 'user_status'.")
-        
+
+        # --- World Cup Predictions Table ---
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS world_cup_predictions (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL UNIQUE,
+                group_picks JSONB NOT NULL,
+                knockout_picks JSONB NOT NULL DEFAULT '{}'::jsonb,
+                champion TEXT,
+                points INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_wc_pred_user ON world_cup_predictions(user_id);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_wc_pred_points ON world_cup_predictions(points DESC);
+        """)
+        logging.info("Checked/Created 'world_cup_predictions' table.")
+
         # --- NEW: Add voice_effect_preset column ---
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS voice_effect_preset VARCHAR(20) NULL DEFAULT 'original';")
         logging.info("Ensured 'voice_effect_preset' column exists in 'user_status'.")
 
         logging.info("Ensured all customizable profile columns exist in 'user_status'.")
 
-        # --- NEW: Notification Preference Columns ---
+# --- NEW: Notification Preference Columns ---
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_confession_comment BOOLEAN NOT NULL DEFAULT TRUE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_comment_reply BOOLEAN NOT NULL DEFAULT TRUE;")
         await conn.execute("ALTER TABLE user_status ADD COLUMN IF NOT EXISTS notify_on_like BOOLEAN NOT NULL DEFAULT TRUE;")
@@ -5779,6 +5808,474 @@ async def verify_channel_membership(callback_query: types.CallbackQuery):
         logging.error(f"Error verifying channel membership for user {user_id}: {e}", exc_info=True)
         await callback_query.answer("❌ An error occurred. Please try again.", show_alert=True)
 
+
+# ==================== FIFA WORLD CUP 2026 PREDICTION ====================
+
+def _build_wc_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🏆 Make Prediction", callback_data="wc_predict")
+    builder.button(text="🏅 Leaderboard", callback_data="wc_leaderboard")
+    builder.button(text="📤 Share Prediction", callback_data="wc_share")
+    builder.button(text="👁 View My Prediction", callback_data="wc_view")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def _build_group_keyboard(group_letter, selected):
+    group = WC_GROUPS[group_letter]
+    builder = InlineKeyboardBuilder()
+    for team in group:
+        prefix = "✅ " if team in selected else ""
+        builder.button(text=f"{prefix}{team}", callback_data=f"wcg_{group_letter}_{team}")
+    builder.adjust(1)
+    nav = []
+    if len(selected) >= 2:
+        nav.append(InlineKeyboardButton(text="💾 Save & Next ➡️", callback_data=f"wcg_save_{group_letter}"))
+    nav.append(InlineKeyboardButton(text="❌ Cancel", callback_data="wcg_cancel"))
+    builder.row(*nav)
+    return builder.as_markup()
+
+def _build_knockout_match_keyboard(round_num, match_idx, match, picked_winner):
+    builder = InlineKeyboardBuilder()
+    t1, t2 = match
+    t1_prefix = "✅ " if picked_winner == t1 else ""
+    t2_prefix = "✅ " if picked_winner == t2 else ""
+    builder.button(text=f"{t1_prefix}{t1}", callback_data=f"wck_{round_num}_{match_idx}_{t1}")
+    builder.button(text=f"{t2_prefix}{t2}", callback_data=f"wck_{round_num}_{match_idx}_{t2}")
+    builder.adjust(2)
+    nav = []
+    if picked_winner:
+        if match_idx > 0:
+            nav.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"wck_nav_{round_num}_{match_idx - 1}"))
+        nav.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"wck_nav_{round_num}_{match_idx + 1}"))
+    builder.row(*nav)
+    cancel_row = [InlineKeyboardButton(text="❌ Cancel", callback_data="wcg_cancel")]
+    builder.row(*cancel_row)
+    return builder.as_markup()
+
+def _build_champion_keyboard(teams, picked):
+    builder = InlineKeyboardBuilder()
+    for t in teams:
+        prefix = "✅ " if t == picked else ""
+        builder.button(text=f"{prefix}{t}", callback_data=f"wc_champion_{t}")
+    builder.adjust(1)
+    nav = []
+    if picked:
+        nav.append(InlineKeyboardButton(text="✅ Confirm Champion", callback_data="wc_champion_confirm"))
+    nav.append(InlineKeyboardButton(text="❌ Cancel", callback_data="wcg_cancel"))
+    builder.row(*nav)
+    return builder.as_markup()
+
+@dp.message(F.text == "⚽️ FIFA WC 2026™")
+async def handle_world_cup_button(message: types.Message, state: FSMContext):
+    await state.clear()
+    text = (
+        "⚽️ <b>FIFA World Cup 2026™ Prediction</b>\n\n"
+        "Predict the winners of the World Cup! Start from the group stage "
+        "and pick your way through to the final.\n\n"
+        "<b>How it works:</b>\n"
+        "1️⃣ Pick 2 teams to qualify from each group\n"
+        "2️⃣ Predict winners through the knockout rounds\n"
+        "3️⃣ Pick your champion\n"
+        "4️⃣ Earn points for correct predictions!\n\n"
+        "Choose an option below:"
+    )
+    await message.answer(text, reply_markup=_build_wc_menu_keyboard())
+
+@dp.callback_query(F.data.startswith("wc_"))
+async def handle_wc_menu_callbacks(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split("_", 1)[1]
+    user_id = callback_query.from_user.id
+    await callback_query.answer()
+
+    if action == "predict":
+        async with db.acquire() as conn:
+            existing = await conn.fetchval("SELECT id FROM world_cup_predictions WHERE user_id = $1", user_id)
+        if existing:
+            confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Yes, Start Fresh", callback_data="wc_predict_confirm")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="wc_menu_back")]
+            ])
+            await callback_query.message.edit_text(
+                "⚠️ You already have a prediction saved. Starting a new one will overwrite it. Continue?",
+                reply_markup=confirm_kb
+            )
+            return
+        await _start_wc_prediction(callback_query, state)
+    elif action == "predict_confirm":
+        await _start_wc_prediction(callback_query, state)
+    elif action == "menu_back":
+        await callback_query.message.edit_text(
+            "⚽️ <b>FIFA World Cup 2026™ Prediction</b>\n\nChoose an option below:",
+            reply_markup=_build_wc_menu_keyboard()
+        )
+    elif action == "leaderboard":
+        await _show_wc_leaderboard(callback_query)
+    elif action == "share":
+        await _share_wc_prediction(callback_query)
+    elif action == "view":
+        await _view_wc_prediction(callback_query)
+    else:
+        await callback_query.answer("Unknown option.", show_alert=True)
+
+async def _start_wc_prediction(callback_query, state):
+    user_id = callback_query.from_user.id
+    await state.set_state(WorldCupForm.group_selection)
+    await state.update_data(wc_group_picks={}, wc_current_group_idx=0, wc_round_picks={})
+    first_group = GROUP_ORDER[0]
+    await callback_query.message.edit_text(
+        f"🏆 <b>Group Stage - Group {first_group}</b>\n\n"
+        f"Select <b>2 teams</b> that will qualify from Group {first_group}:",
+        reply_markup=_build_group_keyboard(first_group, [])
+    )
+
+@dp.callback_query(WorldCupForm.group_selection, F.data.startswith("wcg_"))
+async def handle_wc_group_selection(callback_query: types.CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    data = await state.get_data()
+    action = callback_query.data.split("_")[1]
+
+    if action == "cancel":
+        await state.clear()
+        await callback_query.message.edit_text("Prediction cancelled.")
+        await callback_query.message.answer("Back to main menu.", reply_markup=get_main_keyboard(user_id))
+        await callback_query.answer()
+        return
+
+    if action == "save":
+        group_letter = callback_query.data.split("_")[2]
+        group_picks = data.get("wc_group_picks", {})
+        if len(group_picks.get(group_letter, [])) < 2:
+            await callback_query.answer("Please select 2 teams first!", show_alert=True)
+            return
+
+        current_idx = data.get("wc_current_group_idx", 0)
+        next_idx = current_idx + 1
+
+        if next_idx >= len(GROUP_ORDER):
+            # All groups done, show summary and move to knockout
+            await state.set_state(WorldCupForm.knockout_selection)
+            await _show_knockout_start(callback_query, state, data)
+            return
+
+        next_group = GROUP_ORDER[next_idx]
+        await state.update_data(wc_current_group_idx=next_idx)
+        await callback_query.message.edit_text(
+            f"🏆 <b>Group Stage - Group {next_group}</b>\n\n"
+            f"Select <b>2 teams</b> that will qualify from Group {next_group}:",
+            reply_markup=_build_group_keyboard(next_group, [])
+        )
+        await callback_query.answer()
+        return
+
+    # Team selection toggle
+    group_letter = action
+    team = callback_query.data.split("_", 2)[2]
+    group_picks = data.get("wc_group_picks", {})
+    selected = list(group_picks.get(group_letter, []))
+
+    if team in selected:
+        selected.remove(team)
+    elif len(selected) < 2:
+        selected.append(team)
+    else:
+        await callback_query.answer("You can only select 2 teams!", show_alert=True)
+        return
+
+    group_picks[group_letter] = selected
+    await state.update_data(wc_group_picks=group_picks)
+    await callback_query.message.edit_reply_markup(reply_markup=_build_group_keyboard(group_letter, selected))
+    await callback_query.answer(f"{'✅' if team in selected else '❌'} {team} {'selected' if team in selected else 'deselected'}.")
+
+async def _show_knockout_start(callback_query, state, data):
+    group_picks = data.get("wc_group_picks", {})
+    r1_matches = build_matchups(group_picks)
+    round_picks = data.get("wc_round_picks", {})
+    round_picks[1] = {}
+    await state.update_data(wc_round_picks=round_picks, wc_r1_matches=r1_matches, wc_current_round=1, wc_current_match=0)
+
+    summary = "<b>✅ Group Stage Complete!</b>\n\n<b>Qualified Teams:</b>\n"
+    for g in GROUP_ORDER:
+        teams = group_picks.get(g, [])
+        summary += f"\n<b>Group {g}:</b> {teams[0] if len(teams) > 0 else '?'} & {teams[1] if len(teams) > 1 else '?'}"
+    summary += "\n\n<b>Now let's predict the knockout stage!</b>"
+
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏆 Start Knockout Predictions", callback_data="wc_start_knockout")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="wcg_cancel")]
+    ])
+    await callback_query.message.edit_text(summary, reply_markup=confirm_kb)
+    await callback_query.answer()
+
+@dp.callback_query(WorldCupForm.knockout_selection, F.data == "wc_start_knockout")
+async def handle_start_knockout(callback_query, state):
+    data = await state.get_data()
+    await _show_knockout_match(callback_query, state, 1, 0)
+
+async def _show_knockout_match(callback_query, state, round_num, match_idx):
+    data = await state.get_data()
+    round_picks = data.get("wc_round_picks", {})
+    r1_matches = data.get("wc_r1_matches", [])
+
+    if round_num == 1:
+        matches = r1_matches
+    else:
+        prev_picks = round_picks.get(round_num - 1, {})
+        matches = build_next_round(prev_picks)
+
+    if match_idx >= len(matches):
+        if len(matches) <= 1:
+            await _show_champion_selection(callback_query, state)
+            return
+        await state.update_data(wc_current_round=round_num + 1, wc_current_match=0)
+        await _show_knockout_match(callback_query, state, round_num + 1, 0)
+        return
+
+    match = matches[match_idx]
+    t1, t2 = match
+    picks = round_picks.get(round_num, {})
+    picked_winner = picks.get(match_idx, None)
+
+    # Auto-advance when there's no opponent
+    if t2 is None:
+        if round_num not in round_picks:
+            round_picks[round_num] = {}
+        round_picks[round_num][match_idx] = t1
+        await state.update_data(wc_round_picks=round_picks)
+        await _show_knockout_match(callback_query, state, round_num, match_idx + 1)
+        return
+
+    round_name = ROUND_NAMES.get(round_num, f"Round {round_num}")
+    total = len(matches)
+    text = f"🏆 <b>{round_name}</b> (Match {match_idx + 1}/{total})\n\n<b>{t1}</b> vs <b>{t2}</b>\n\nPick the winner:"
+
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=_build_knockout_match_keyboard(round_num, match_idx, match, picked_winner)
+    )
+
+@dp.callback_query(WorldCupForm.knockout_selection, F.data.startswith("wck_"))
+async def handle_wc_knockout_selection(callback_query, state):
+    data = await state.get_data()
+    parts = callback_query.data.split("_")
+    action = parts[1]
+
+    if action == "nav":
+        round_num = int(parts[2])
+        match_idx = int(parts[3])
+        await _show_knockout_match(callback_query, state, round_num, match_idx)
+        await callback_query.answer()
+        return
+
+    # Pick winner: wck_{round_num}_{match_idx}_{team}
+    round_num = int(parts[1])
+    match_idx = int(parts[2])
+    team = "_".join(parts[3:])
+
+    round_picks = data.get("wc_round_picks", {})
+    if round_num not in round_picks:
+        round_picks[round_num] = {}
+    round_picks[round_num][match_idx] = team
+    await state.update_data(wc_round_picks=round_picks)
+
+    # Show next match
+    r1_matches = data.get("wc_r1_matches", [])
+    if round_num == 1:
+        matches = r1_matches
+    else:
+        prev_picks = round_picks.get(round_num - 1, {})
+        matches = build_next_round(prev_picks)
+
+    next_idx = match_idx + 1
+    if next_idx >= len(matches):
+        # Round complete
+        if len(matches) <= 1:
+            await _show_champion_selection(callback_query, state)
+            return
+        await state.update_data(wc_current_round=round_num + 1, wc_current_match=0)
+        await _show_knockout_match(callback_query, state, round_num + 1, 0)
+        return
+
+    await state.update_data(wc_current_match=next_idx)
+    await _show_knockout_match(callback_query, state, round_num, next_idx)
+    await callback_query.answer(f"✅ Winner: {team}")
+
+async def _show_champion_selection(callback_query, state):
+    data = await state.get_data()
+    round_picks = data.get("wc_round_picks", {})
+    champion = data.get("wc_champion")
+
+    # Collect all finalists
+    last_round = max(round_picks.keys()) if round_picks else 0
+    candidates = list(round_picks.get(last_round, {}).values()) if last_round > 0 else []
+    if not candidates:
+        # Fallback: last match of previous round
+        prev = round_picks.get(last_round - 1, {}) if last_round > 1 else {}
+        candidates = list(prev.values()) if prev else []
+
+    text = (
+        "🏆 <b>Champion Selection</b>\n\n"
+        "We've reached the final! Now pick your World Cup champion:\n\n"
+        f"<b>Candidates:</b>\n" + "\n".join(f"• {t}" for t in candidates)
+    )
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=_build_champion_keyboard(candidates, champion)
+    )
+
+@dp.callback_query(WorldCupForm.knockout_selection, F.data.startswith("wc_champion_"))
+async def handle_wc_champion_selection(callback_query, state):
+    data = await state.get_data()
+    action = callback_query.data.split("_", 2)[2]
+
+    if action == "confirm":
+        champion = data.get("wc_champion")
+        if not champion:
+            await callback_query.answer("Please pick a champion first!", show_alert=True)
+            return
+        await _save_wc_prediction(callback_query, state, data, champion)
+        return
+
+    team = action
+    await state.update_data(wc_champion=team)
+    round_picks = data.get("wc_round_picks", {})
+    last_round = max(round_picks.keys()) if round_picks else 0
+    candidates = list(round_picks.get(last_round, {}).values()) if last_round > 0 else []
+    await callback_query.message.edit_reply_markup(reply_markup=_build_champion_keyboard(candidates, team))
+    await callback_query.answer(f"🏆 Champion: {team}")
+
+async def _save_wc_prediction(callback_query, state, data, champion):
+    user_id = callback_query.from_user.id
+    group_picks = data.get("wc_group_picks", {})
+    round_picks = data.get("wc_round_picks", {})
+
+    async with db.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO world_cup_predictions (user_id, group_picks, knockout_picks, champion)
+            VALUES ($1, $2::jsonb, $3::jsonb, $4)
+            ON CONFLICT (user_id) DO UPDATE SET
+                group_picks = $2::jsonb,
+                knockout_picks = $3::jsonb,
+                champion = $4,
+                updated_at = CURRENT_TIMESTAMP
+        """, user_id, json.dumps(group_picks), json.dumps(round_picks), champion)
+
+    await state.clear()
+    summary = _build_prediction_summary(group_picks, round_picks, champion)
+    await callback_query.message.edit_text(
+        f"✅ <b>Prediction Saved!</b>\n\n{summary}",
+        reply_markup=_build_wc_menu_keyboard()
+    )
+    await callback_query.answer("✅ Prediction saved!")
+
+def _build_prediction_summary(group_picks, round_picks, champion):
+    text = "<b>📋 Your Prediction Summary</b>\n\n<b>Group Stage:</b>\n"
+    for g in GROUP_ORDER:
+        teams = group_picks.get(g, [])
+        if teams:
+            text += f"  <b>{g}:</b> {teams[0]}, {teams[1]}\n"
+    text += "\n<b>Knockout Stage:</b>\n"
+    for rn in sorted(round_picks.keys()):
+        rname = ROUND_NAMES.get(rn, f"Round {rn}")
+        picks = round_picks[rn]
+        winners = list(picks.values())
+        text += f"  <b>{rname}:</b> {' → '.join(winners)}\n"
+    text += f"\n🏆 <b>Champion:</b> {champion or 'Not picked'}"
+    return text
+
+async def _view_wc_prediction(callback_query):
+    user_id = callback_query.from_user.id
+    async with db.acquire() as conn:
+        pred = await conn.fetchrow(
+            "SELECT group_picks, knockout_picks, champion, points FROM world_cup_predictions WHERE user_id = $1",
+            user_id
+        )
+    if not pred:
+        await callback_query.message.edit_text(
+            "❌ You haven't made a prediction yet. Use 'Make Prediction' to create one!",
+            reply_markup=_build_wc_menu_keyboard()
+        )
+        return
+
+    group_picks = pred['group_picks'] if isinstance(pred['group_picks'], dict) else {}
+    round_picks = pred['knockout_picks'] if isinstance(pred['knockout_picks'], dict) else {}
+    champion = pred['champion']
+    points = pred['points'] or 0
+
+    summary = _build_prediction_summary(group_picks, round_picks, champion)
+    summary += f"\n\n⭐ <b>Points:</b> {points}"
+    await callback_query.message.edit_text(summary, reply_markup=_build_wc_menu_keyboard())
+
+async def _share_wc_prediction(callback_query):
+    user_id = callback_query.from_user.id
+    async with db.acquire() as conn:
+        pred = await conn.fetchrow(
+            """
+            SELECT group_picks, knockout_picks, champion, points,
+                   COALESCE(us.nickname, 'Anonymous') as nickname,
+                   COALESCE(us.profile_emoji, '👤') as emoji
+            FROM world_cup_predictions wp
+            LEFT JOIN user_status us ON wp.user_id = us.user_id
+            WHERE wp.user_id = $1
+            """,
+            user_id
+        )
+    if not pred:
+        await callback_query.message.edit_text(
+            "❌ You haven't made a prediction yet. Use 'Make Prediction' to create one!",
+            reply_markup=_build_wc_menu_keyboard()
+        )
+        return
+
+    group_picks = pred['group_picks'] if isinstance(pred['group_picks'], dict) else {}
+    champion = pred['champion']
+    nickname = pred['nickname'] or "Anonymous"
+    emoji = pred['emoji'] or "👤"
+
+    share_text = f"{emoji} <b>{nickname}'s FIFA WC 2026™ Prediction</b>\n\n"
+    share_text += "<b>Group Qualifiers:</b>\n"
+    for g in GROUP_ORDER:
+        teams = group_picks.get(g, [])
+        if teams:
+            share_text += f"  <b>{g}:</b> {teams[0]}, {teams[1]}\n"
+    if champion:
+        share_text += f"\n🏆 <b>Champion:</b> {champion}"
+
+    await callback_query.message.edit_text(share_text, reply_markup=_build_wc_menu_keyboard())
+
+async def _show_wc_leaderboard(callback_query):
+    async with db.acquire() as conn:
+        leaders = await conn.fetch("""
+            SELECT wp.user_id, wp.points, wp.champion,
+                   COALESCE(us.nickname, 'Anonymous') as nickname,
+                   COALESCE(us.profile_emoji, '👤') as emoji
+            FROM world_cup_predictions wp
+            LEFT JOIN user_status us ON wp.user_id = us.user_id
+            ORDER BY wp.points DESC, wp.updated_at ASC
+            LIMIT 20
+        """)
+
+    if not leaders:
+        await callback_query.message.edit_text(
+            "🏅 <b>Leaderboard</b>\n\nNo predictions yet. Be the first!",
+            reply_markup=_build_wc_menu_keyboard()
+        )
+        return
+
+    text = "🏅 <b>FIFA WC 2026™ Leaderboard</b>\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, row in enumerate(leaders):
+        rank = i + 1
+        medal = f"{medals[i]} " if i < 3 else f"{rank}. "
+        nick = row['nickname'] or "Anonymous"
+        emoji = row['emoji'] or "👤"
+        points = row['points'] or 0
+        champ = row['champion'] or "TBD"
+        text += f"{medal}{emoji} <b>{nick}</b> — ⭐ {points} pts\n"
+        text += f"   🏆 {champ}\n"
+
+    await callback_query.message.edit_text(text, reply_markup=_build_wc_menu_keyboard())
+
+# ==================== END FIFA WORLD CUP 2026 ====================
 
 # --- Fallback Handler ---
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/'))
